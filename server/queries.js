@@ -301,25 +301,47 @@ export class Queries {
     const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);
     const offset = (Math.max(Number(page) || 1, 1) - 1) * safeLimit;
     const [rows] = await this.database.execute(`SELECT ${this.communityPostColumns()} FROM community_posts p JOIN users u ON u.id = p.author_user_id JOIN community_post_types pt ON pt.id = p.post_type_id JOIN community_categories c ON c.id = p.category_id LEFT JOIN community_categories sc ON sc.id = p.subcategory_id LEFT JOIN event_groups g ON g.id = p.group_id LEFT JOIN community_post_responses r ON r.post_id = p.id AND r.status = 'active' WHERE ${conditions.join(' AND ')} GROUP BY p.id, u.name, u.profile_picture, pt.id, pt.type_key, pt.name, c.id, c.name, c.slug, sc.id, sc.name, sc.slug, g.id, g.name, g.slug ORDER BY p.status = 'active' DESC, p.created_at DESC LIMIT ? OFFSET ?`, [...params, safeLimit, offset]);
-    return rows;
+    return this.withCommunityPostEventLinks(rows);
   }
   async communityPostBySlug(slug, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
     const [rows] = await this.database.execute(`SELECT ${this.communityPostColumns()} FROM community_posts p JOIN users u ON u.id = p.author_user_id JOIN community_post_types pt ON pt.id = p.post_type_id JOIN community_categories c ON c.id = p.category_id LEFT JOIN community_categories sc ON sc.id = p.subcategory_id LEFT JOIN event_groups g ON g.id = p.group_id LEFT JOIN community_post_responses r ON r.post_id = p.id AND r.status = 'active' WHERE p.slug = ? AND (${privileged ? 'TRUE' : "(p.visibility = 'public' AND p.status IN ('active', 'fulfilled', 'expired') AND p.is_indexable = TRUE) OR p.author_user_id = ?"}) GROUP BY p.id, u.name, u.profile_picture, pt.id, pt.type_key, pt.name, c.id, c.name, c.slug, sc.id, sc.name, sc.slug, g.id, g.name, g.slug`, privileged ? [slug] : [slug, userId]);
-    return rows[0] || null;
+    return (await this.withCommunityPostEventLinks(rows))[0] || null;
   }
   async communityPostForOwner(id, userId, role = null) { const privileged = ['manager', 'admin'].includes(role); const [rows] = await this.database.execute(`SELECT p.id, p.slug, p.author_user_id AS authorUserId, p.status, p.visibility, p.expires_at AS expiresAt, p.group_id AS groupId FROM community_posts p WHERE p.id = ?${privileged ? '' : ' AND p.author_user_id = ?'}`, privileged ? [id] : [id, userId]); return rows[0] || null; }
-  async linkCommunityPostEvent(postId, userId, role, eventId) {
+  async withCommunityPostEventLinks(posts) {
+    if (!posts.length) return posts;
+    const postIds = posts.map((post) => post.id);
+    const placeholders = postIds.map(() => '?').join(',');
+    const [links] = await this.database.execute(`SELECT post_id AS postId, event_id AS eventId FROM community_post_events WHERE post_id IN (${placeholders}) ORDER BY post_id, position`, postIds);
+    const byPostId = new Map(postIds.map((id) => [id, []]));
+    for (const link of links) byPostId.get(link.postId).push(link.eventId);
+    return posts.map((post) => {
+      const eventIds = byPostId.get(post.id) || [];
+      return { ...post, eventIds, eventId: eventIds[0] ?? null };
+    });
+  }
+  async replaceCommunityPostEvents(postId, userId, role, eventIds) {
     const privileged = ['manager', 'admin'].includes(role);
-    if (eventId !== null) {
-      const [events] = await this.database.execute(`SELECT id FROM events WHERE id = ? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]);
-      if (!events[0]) return { error: 'EVENT_NOT_FOUND' };
-    }
-    const [result] = await this.database.execute(`UPDATE community_posts SET event_id = ? WHERE id = ?${privileged ? '' : ' AND author_user_id = ?'}`, privileged ? [eventId, postId] : [eventId, postId, userId]);
-    return result.affectedRows ? { linked: eventId !== null } : { error: 'POST_NOT_FOUND' };
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [posts] = await connection.execute(`SELECT id FROM community_posts WHERE id = ?${privileged ? '' : ' AND author_user_id = ?'} FOR UPDATE`, privileged ? [postId] : [postId, userId]);
+      if (!posts[0]) { await connection.rollback(); return { error: 'POST_NOT_FOUND' }; }
+      if (eventIds.length) {
+        const placeholders = eventIds.map(() => '?').join(',');
+        const [events] = await connection.execute(`SELECT id FROM events WHERE id IN (${placeholders}) AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? eventIds : [...eventIds, userId]);
+        if (events.length !== eventIds.length) { await connection.rollback(); return { error: 'EVENT_NOT_FOUND' }; }
+      }
+      await connection.execute('DELETE FROM community_post_events WHERE post_id = ?', [postId]);
+      for (const [position, eventId] of eventIds.entries()) await connection.execute('INSERT INTO community_post_events (post_id, event_id, position) VALUES (?, ?, ?)', [postId, eventId, position]);
+      await connection.execute('UPDATE community_posts SET event_id = ? WHERE id = ?', [eventIds[0] ?? null, postId]);
+      await connection.commit();
+      return { eventIds };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async activeCommunityPost(id) { const [rows] = await this.database.execute("SELECT id, author_user_id AS authorUserId, status, visibility, expires_at AS expiresAt FROM community_posts WHERE id = ? AND visibility = 'public' AND status = 'active' AND (expires_at IS NULL OR expires_at > NOW())", [id]); return rows[0] || null; }
-  async myCommunityPosts(userId) { const [rows] = await this.database.execute(`SELECT ${this.communityPostColumns()} FROM community_posts p JOIN users u ON u.id = p.author_user_id JOIN community_post_types pt ON pt.id = p.post_type_id JOIN community_categories c ON c.id = p.category_id LEFT JOIN community_categories sc ON sc.id = p.subcategory_id LEFT JOIN event_groups g ON g.id = p.group_id LEFT JOIN community_post_responses r ON r.post_id = p.id AND r.status = 'active' WHERE p.author_user_id = ? GROUP BY p.id, u.name, u.profile_picture, pt.id, pt.type_key, pt.name, c.id, c.name, c.slug, sc.id, sc.name, sc.slug, g.id, g.name, g.slug ORDER BY p.updated_at DESC`, [userId]); return rows; }
+  async myCommunityPosts(userId) { const [rows] = await this.database.execute(`SELECT ${this.communityPostColumns()} FROM community_posts p JOIN users u ON u.id = p.author_user_id JOIN community_post_types pt ON pt.id = p.post_type_id JOIN community_categories c ON c.id = p.category_id LEFT JOIN community_categories sc ON sc.id = p.subcategory_id LEFT JOIN event_groups g ON g.id = p.group_id LEFT JOIN community_post_responses r ON r.post_id = p.id AND r.status = 'active' WHERE p.author_user_id = ? GROUP BY p.id, u.name, u.profile_picture, pt.id, pt.type_key, pt.name, c.id, c.name, c.slug, sc.id, sc.name, sc.slug, g.id, g.name, g.slug ORDER BY p.updated_at DESC`, [userId]); return this.withCommunityPostEventLinks(rows); }
   async createCommunityPost(data) { const [result] = await this.database.execute(`INSERT INTO community_posts (slug, author_user_id, city, city_slug, post_type_id, category_id, subcategory_id, title, short_description, body, location_name, latitude, longitude, location_radius_km, attributes, external_event_name, external_event_url, external_event_at, visibility, status, is_indexable, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [data.slug, data.authorUserId, data.city, data.citySlug, data.postTypeId, data.categoryId, data.subcategoryId, data.title, data.shortDescription, data.body, data.locationName, data.latitude, data.longitude, data.locationRadiusKm, data.attributes ? JSON.stringify(data.attributes) : null, data.externalEventName, data.externalEventUrl, data.externalEventAt, data.visibility, data.status, data.isIndexable, data.expiresAt]); return result.insertId; }
   async updateCommunityPost(id, userId, role, data) { const privileged = ['manager', 'admin'].includes(role); const [result] = await this.database.execute(`UPDATE community_posts SET city=?, city_slug=?, post_type_id=?, category_id=?, subcategory_id=?, title=?, short_description=?, body=?, location_name=?, latitude=?, longitude=?, location_radius_km=?, attributes=?, external_event_name=?, external_event_url=?, external_event_at=?, visibility=?, status=?, is_indexable=?, expires_at=? WHERE id=?${privileged ? '' : ' AND author_user_id=?'}`, [...data, id, ...(privileged ? [] : [userId])]); return result.affectedRows > 0; }
   async setCommunityPostStatus(id, userId, role, status, isIndexable = null) { const privileged = ['manager', 'admin'].includes(role); const values = [status]; let sql = 'UPDATE community_posts SET status = ?'; if (isIndexable !== null) { sql += ', is_indexable = ?'; values.push(isIndexable); } sql += ` WHERE id = ?${privileged ? '' : ' AND author_user_id = ?'}`; values.push(id, ...(privileged ? [] : [userId])); const [result] = await this.database.execute(sql, values); return result.affectedRows > 0; }

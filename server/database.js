@@ -180,6 +180,13 @@ export class Database {
         CONSTRAINT community_post_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL
       )`);
       try { await this.pool.execute('ALTER TABLE community_posts ADD COLUMN event_id INT UNSIGNED NULL, ADD INDEX (event_id), ADD CONSTRAINT community_post_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_DUP_KEYNAME' && error.code !== 'ER_CANT_CREATE_TABLE') throw error; }
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_events (
+        post_id INT UNSIGNED NOT NULL, event_id INT UNSIGNED NOT NULL, position INT UNSIGNED NOT NULL,
+        PRIMARY KEY (post_id, event_id), UNIQUE KEY community_post_event_position (post_id, position), INDEX (event_id),
+        CONSTRAINT community_post_events_post_fk FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+        CONSTRAINT community_post_events_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute('INSERT IGNORE INTO community_post_events (post_id, event_id, position) SELECT id, event_id, 0 FROM community_posts WHERE event_id IS NOT NULL');
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_responses (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, post_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL,
         message VARCHAR(2000) NULL, status ENUM('active','accepted','declined','removed') NOT NULL DEFAULT 'active',
