@@ -1,4 +1,4 @@
-const domain = process.env.DOMAIN || 'yarohimko.com';
+const domain = process.env.DOMAIN || 'ykcircle.com';
 const siteUrl = (process.env.SITE_URL || `https://${domain}`).replace(/\/$/, '');
 
 export default {
