@@ -162,7 +162,7 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, slug VARCHAR(180) NOT NULL UNIQUE,
         author_user_id INT UNSIGNED NOT NULL, city VARCHAR(120) NOT NULL, city_slug VARCHAR(140) NOT NULL,
         post_type_id INT UNSIGNED NOT NULL, category_id INT UNSIGNED NOT NULL, subcategory_id INT UNSIGNED NULL,
-        group_id INT UNSIGNED NULL, title VARCHAR(180) NOT NULL, short_description VARCHAR(300) NOT NULL, body TEXT NULL,
+        group_id INT UNSIGNED NULL, event_id INT UNSIGNED NULL, title VARCHAR(180) NOT NULL, short_description VARCHAR(300) NOT NULL, body TEXT NULL,
         location_name VARCHAR(255) NULL, latitude DECIMAL(10,7) NULL, longitude DECIMAL(10,7) NULL,
         location_radius_km DECIMAL(6,2) NULL, attributes JSON NULL,
         external_event_name VARCHAR(255) NULL, external_event_url VARCHAR(1024) NULL, external_event_at DATETIME NULL,
@@ -171,13 +171,15 @@ export class Database {
         is_indexable BOOLEAN NOT NULL DEFAULT TRUE, expires_at DATETIME NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX community_post_public_index (status, visibility, is_indexable, city_slug, category_id, subcategory_id, expires_at),
-        INDEX community_post_author_index (author_user_id, status), INDEX (post_type_id), INDEX (group_id),
+        INDEX community_post_author_index (author_user_id, status), INDEX (post_type_id), INDEX (group_id), INDEX (event_id),
         CONSTRAINT community_post_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE,
         CONSTRAINT community_post_type_fk FOREIGN KEY (post_type_id) REFERENCES community_post_types(id),
         CONSTRAINT community_post_category_fk FOREIGN KEY (category_id) REFERENCES community_categories(id),
         CONSTRAINT community_post_subcategory_fk FOREIGN KEY (subcategory_id) REFERENCES community_categories(id),
-        CONSTRAINT community_post_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL
+        CONSTRAINT community_post_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL,
+        CONSTRAINT community_post_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL
       )`);
+      try { await this.pool.execute('ALTER TABLE community_posts ADD COLUMN event_id INT UNSIGNED NULL, ADD INDEX (event_id), ADD CONSTRAINT community_post_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_DUP_KEYNAME' && error.code !== 'ER_CANT_CREATE_TABLE') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_responses (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, post_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL,
         message VARCHAR(2000) NULL, status ENUM('active','accepted','declined','removed') NOT NULL DEFAULT 'active',
