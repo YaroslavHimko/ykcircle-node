@@ -122,9 +122,10 @@ export class Queries {
   }
   async groupEvents(groupId, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
+    const params = privileged ? [groupId] : [groupId, userId];
     const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, e.title, e.short_description AS shortDescription, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, e.created_at AS createdAt, manager.name AS managerName
       FROM events e JOIN users manager ON manager.id = e.manager_id
-      WHERE e.group_id = ? AND e.deleted_at IS NULL AND (${privileged ? 'TRUE' : "e.status = 'Published' AND e.visibility = 'Public'"}) ORDER BY e.starts_at ASC`, [groupId]);
+      WHERE e.group_id = ? AND e.deleted_at IS NULL AND (${privileged ? 'TRUE' : "e.manager_id = ? OR (e.status = 'Published' AND e.visibility = 'Public')"}) ORDER BY e.starts_at ASC`, params);
     return rows;
   }
   async updateGroup(id, userId, role, data) {
