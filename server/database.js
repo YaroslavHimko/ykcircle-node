@@ -51,6 +51,17 @@ export class Database {
       try { await this.pool.execute('ALTER TABLE events ADD COLUMN participation_fee DECIMAL(10,2) NOT NULL DEFAULT 0'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
       try { await this.pool.execute("ALTER TABLE events MODIFY status ENUM('Draft', 'Published', 'Cancelled', 'Completed', 'Archived') NOT NULL DEFAULT 'Draft'"); } catch (error) { console.error('Event status migration failed:', error.message); throw error; }
       try { await this.pool.execute("ALTER TABLE events MODIFY visibility ENUM('Public', 'Private', 'Members', 'Unlisted') NOT NULL DEFAULT 'Public'"); } catch (error) { console.error('Event visibility migration failed:', error.message); throw error; }
+      for (const [column, definition] of [
+        ['series_id', 'INT UNSIGNED NULL'],
+        ['recurrence_frequency', "ENUM('none','daily','weekly','monthly') NOT NULL DEFAULT 'none'"],
+        ['recurrence_interval', 'SMALLINT UNSIGNED NOT NULL DEFAULT 1'],
+        ['recurrence_count', 'SMALLINT UNSIGNED NOT NULL DEFAULT 1'],
+        ['occurrence_number', 'SMALLINT UNSIGNED NOT NULL DEFAULT 1'],
+      ]) {
+        try { await this.pool.execute(`ALTER TABLE events ADD COLUMN ${column} ${definition}`); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
+      }
+      try { await this.pool.execute('ALTER TABLE events ADD INDEX events_series_id_idx (series_id, occurrence_number)'); } catch (error) { if (error.code !== 'ER_DUP_KEYNAME') throw error; }
+      try { await this.pool.execute('ALTER TABLE events ADD CONSTRAINT events_series_fk FOREIGN KEY (series_id) REFERENCES events(id) ON DELETE SET NULL'); } catch (error) { if (error.code !== 'ER_FK_DUP_NAME' && error.code !== 'ER_CANT_CREATE_TABLE') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_groups (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, organizer_id INT UNSIGNED NOT NULL,
         name VARCHAR(120) NOT NULL, slug VARCHAR(140) NOT NULL UNIQUE, description TEXT NULL, cover_image VARCHAR(255) NULL,
@@ -146,6 +157,13 @@ export class Database {
       )`);
       try { await this.pool.execute("ALTER TABLE event_participants ADD COLUMN payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required'"); } catch (error) { if (error.code === 'ER_DUP_FIELDNAME') await this.pool.execute("ALTER TABLE event_participants MODIFY payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required'"); else throw error; }
       try { await this.pool.execute('ALTER TABLE event_participants ADD COLUMN participant_phone VARCHAR(40) NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_ratings (
+        event_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL, rating TINYINT UNSIGNED NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (event_id, user_id), INDEX (event_id, rating),
+        CONSTRAINT event_ratings_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+        CONSTRAINT event_ratings_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_invitations (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL,
         manager_id INT UNSIGNED NOT NULL, name VARCHAR(160) NOT NULL, email VARCHAR(255) NOT NULL,
