@@ -12,7 +12,16 @@ const IMAGE_TYPES = new Map([
 export class FtpService {
   constructor(config) {
     this.config = { ...config, uploadPath: this.normalizePath(config.uploadPath) };
+    this.assertPersistentUploadPath();
     this.enabled = Boolean(this.config.host && this.config.user && this.config.password && this.config.uploadPath);
+  }
+
+  assertPersistentUploadPath() {
+    const segments = this.config.uploadPath.toLowerCase().split('/').filter(Boolean);
+    if (!segments.includes('nodejs')) return;
+    const error = new Error('FTP upload paths must not be inside Hostinger\'s deployed nodejs directory. Use a persistent path such as /public_html/uploads/article-images.');
+    error.code = 'UNSAFE_FTP_UPLOAD_PATH';
+    throw error;
   }
 
   normalizePath(value) {

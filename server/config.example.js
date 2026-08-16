@@ -43,10 +43,11 @@ export default {
     },
   },
   ftp: {
-    // Paths are relative to the FTP account's root. A domain FTP account may
-    // already be chrooted to public_html (/uploads/...), while a main account
-    // commonly needs /public_html/uploads/.... Set the matching *_UPLOAD_PATH
-    // environment variable for the account used in production.
+    // Store media outside Hostinger's redeployed `nodejs` application folder.
+    // With a main FTP account, use persistent paths such as
+    // /public_html/uploads/article-images. A domain FTP account may already
+    // be chrooted to public_html, in which case use /uploads/article-images.
+    // Set every matching *_UPLOAD_PATH environment variable in production.
     // Profile-picture settings use the FTP_PROFILE_* prefix.
     profilePictures: {
       host: process.env.FTP_PROFILE_HOST || process.env.FTP_PROFILE_IP,
