@@ -27,6 +27,10 @@ export class FtpService {
     try {
       return this.normalizePath(new URL(configured).pathname) || '/uploads';
     } catch {
+      // Accept a common malformed scheme ("https//host/path") by retaining
+      // only its path. API asset URLs must never contain a second host.
+      const malformedUrl = configured.match(/^https?\/\/[^/]+(\/.*)?$/i);
+      if (malformedUrl) return this.normalizePath(malformedUrl[1]) || '/uploads';
       return this.normalizePath(configured).replace(/^([^/])/, '/$1') || '/uploads';
     }
   }

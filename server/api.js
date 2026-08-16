@@ -65,9 +65,16 @@ export class Api {
       if (post.status !== 'active') return { code: 'COMMUNITY_POST_DISCUSSION_UNAVAILABLE', error: 'Discussions are only available while a community post is active.' };
       return null;
     };
-    const articleImageUrl = (filename) => `${this.config.site.apiUrl}${this.articleFtpService.publicPath()}/${encodeURIComponent(filename)}`;
-    const groupCoverUrl = (filename) => filename ? `${this.config.site.apiUrl}${this.groupFtpService.publicPath()}/${encodeURIComponent(filename)}` : null;
-    const apiAssetUrl = (value) => typeof value === 'string' && value.startsWith('/') ? `${this.config.site.apiUrl}${value}` : value;
+    const articleImageUrl = (filename) => `${this.articleFtpService.publicPath()}/${encodeURIComponent(filename)}`;
+    const groupCoverUrl = (filename) => filename ? `${this.groupFtpService.publicPath()}/${encodeURIComponent(filename)}` : null;
+    const apiAssetUrl = (value) => {
+      if (!value || typeof value !== 'string') return value;
+      if (value.startsWith('/')) return value;
+      try { return new URL(value).pathname; } catch { /* Stored event images are normally filenames. */ }
+      const malformedUrl = value.match(/^https?\/\/[^/]+(\/.*)?$/i);
+      if (malformedUrl) return malformedUrl[1] || null;
+      return `${this.eventFtpService.publicPath()}/${encodeURIComponent(value)}`;
+    };
     const decorateGroup = (group) => {
       if (!group) return group;
       if (group.coverImage) group.coverImageUrl = groupCoverUrl(group.coverImage);
