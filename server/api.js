@@ -65,14 +65,8 @@ export class Api {
       if (post.status !== 'active') return { code: 'COMMUNITY_POST_DISCUSSION_UNAVAILABLE', error: 'Discussions are only available while a community post is active.' };
       return null;
     };
-    const groupCoverAccess = (filename, expires) => crypto.createHmac('sha256', this.authSecret).update(`${filename}:${expires}`).digest('base64url');
     const articleImageUrl = (filename) => `${this.articleFtpService.publicPath()}/${encodeURIComponent(filename)}`;
-    const groupCoverUrl = (filename) => {
-      if (!filename) return null;
-      const expires = Date.now() + 5 * 60 * 1000;
-      const signature = groupCoverAccess(filename, expires);
-      return `${this.groupFtpService.publicPath()}/${encodeURIComponent(filename)}?expires=${expires}&signature=${signature}`;
-    };
+    const groupCoverUrl = (filename) => filename ? `${this.groupFtpService.publicPath()}/${encodeURIComponent(filename)}` : null;
     const apiAssetUrl = (value) => {
       if (!value || typeof value !== 'string') return value;
       if (value.startsWith('/')) return value;
@@ -149,13 +143,7 @@ export class Api {
       } catch { /* Treat invalid optional credentials as anonymous. */ }
       return next();
     };
-    const signedGroupCoverRequest = (filename, expires, signature) => {
-      const expiration = Number(expires);
-      if (!Number.isSafeInteger(expiration) || expiration < Date.now()) return false;
-      const expected = groupCoverAccess(filename, expiration);
-      return typeof signature === 'string' && signature.length === expected.length && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-    };
-    app.get(groupUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); const signed = signedGroupCoverRequest(req.params.filename, req.query.expires, req.query.signature); if (!signed && !await this.queries.groupForCover(req.params.filename, req.user?.id ?? null, req.user?.role ?? null)) return res.status(404).json({ error: 'Group cover not found.' }); if (!await this.groupFtpService.streamGroupCover(req.params.filename, res)) return res.status(404).json({ error: 'Group cover not found.' }); } catch (error) { console.error('Group cover proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load group cover.' }); } });
+    app.get(groupUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); if (!await this.queries.groupForCover(req.params.filename, req.user?.id ?? null, req.user?.role ?? null)) return res.status(404).json({ error: 'Group cover not found.' }); if (!await this.groupFtpService.streamGroupCover(req.params.filename, res)) return res.status(404).json({ error: 'Group cover not found.' }); } catch (error) { console.error('Group cover proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load group cover.' }); } });
     app.get(articleUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); if (!this.articleFtpService || !await this.queries.articleImageVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null) || !await this.articleFtpService.streamArticleImage(req.params.filename, res)) return res.status(404).json({ error: 'Article image not found.' }); } catch (error) { console.error('Article image proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load article image.' }); } });
     const requireAdmin = (req, res, next) => req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required.' });
     // Any registered role can manage the events it owns.  Managers and admins
