@@ -11,8 +11,67 @@ const IMAGE_TYPES = new Map([
 
 export class FtpService {
   constructor(config) {
-    this.config = config;
-    this.enabled = Boolean(config.host && config.user && config.password && config.uploadPath);
+    this.config = { ...config, uploadPath: this.normalizePath(config.uploadPath) };
+    this.enabled = Boolean(this.config.host && this.config.user && this.config.password && this.config.uploadPath);
+  }
+
+  normalizePath(value) {
+    const path = String(value || '').trim().replace(/\\/g, '/');
+    if (!path) return '';
+    return path.length > 1 ? path.replace(/\/+$/, '') : path;
+  }
+
+  publicPath() {
+    const configured = String(this.config.publicUrl || '').trim();
+    if (!configured) return '/uploads';
+    try {
+      return this.normalizePath(new URL(configured).pathname) || '/uploads';
+    } catch {
+      return this.normalizePath(configured).replace(/^([^/])/, '/$1') || '/uploads';
+    }
+  }
+
+  async connect() {
+    const client = new ftp.Client(this.config.timeoutMs);
+    client.ftp.verbose = false;
+    try {
+      await client.access({
+        host: this.config.host,
+        user: this.config.user,
+        password: this.config.password,
+        secure: this.config.secure,
+        secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined,
+      });
+      return client;
+    } catch (error) {
+      client.close();
+      throw error;
+    }
+  }
+
+  async upload(file, remoteName) {
+    if (!this.enabled) {
+      const error = new Error('FTP image storage is not configured.');
+      error.code = 'FTP_NOT_CONFIGURED';
+      throw error;
+    }
+    const client = await this.connect();
+    try {
+      // ensureDir changes the current directory. Uploading the basename from
+      // that directory avoids absolute-path/chroot differences between FTP
+      // providers and makes reads and writes use exactly the same location.
+      await client.ensureDir(this.config.uploadPath);
+      await client.uploadFrom(Readable.from(file.buffer), remoteName);
+      const uploadedSize = await client.size(remoteName);
+      if (uploadedSize !== file.buffer.length) {
+        const error = new Error(`FTP upload verification failed for ${remoteName}.`);
+        error.code = 'FTP_UPLOAD_VERIFY_FAILED';
+        throw error;
+      }
+      return remoteName;
+    } finally {
+      client.close();
+    }
   }
 
   validateImage(file) {
@@ -26,34 +85,17 @@ export class FtpService {
   }
 
   async uploadProfilePicture(userId, file) {
-    if (!this.enabled) { const error = new Error('FTP profile picture storage is not configured.'); error.code = 'FTP_NOT_CONFIGURED'; throw error; }
     const extension = this.validateImage(file);
     const remoteName = `user-${userId}-${Date.now()}.${extension}`;
-    const remotePath = `${this.config.uploadPath.replace(/[\\/]+$/, '')}/${remoteName}`;
-    const client = new ftp.Client(this.config.timeoutMs);
-    client.ftp.verbose = false;
-    try {
-      await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
-      await client.ensureDir(this.config.uploadPath);
-      await client.uploadFrom(Readable.from(file.buffer), remotePath);
-      return `/uploads/profile-pictures/${remoteName}`;
-    } finally { client.close(); }
+    const filename = await this.upload(file, remoteName);
+    return `${this.publicPath()}/${filename}`;
   }
 
   async uploadEventCover(eventId, file) {
-    if (!this.enabled) { const error = new Error('FTP event image storage is not configured.'); error.code = 'FTP_NOT_CONFIGURED'; throw error; }
     const extension = this.validateImage(file);
     const remoteName = `event-${eventId}-${Date.now()}.${extension}`;
-    const uploadPath = this.config.eventUploadPath || this.config.uploadPath;
-    const remotePath = `${uploadPath.replace(/[\\/]+$/, '')}/${remoteName}`;
-    const client = new ftp.Client(this.config.timeoutMs);
-    client.ftp.verbose = false;
-    try {
-      await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
-      await client.ensureDir(uploadPath);
-      await client.uploadFrom(Readable.from(file.buffer), remotePath);
-      return `/uploads/event-covers/${remoteName}`;
-    } finally { client.close(); }
+    const filename = await this.upload(file, remoteName);
+    return `${this.publicPath()}/${filename}`;
   }
 
   async uploadGroupCover(groupId, file) {
@@ -63,17 +105,8 @@ export class FtpService {
       error.code = 'INVALID_IMAGE';
       throw error;
     }
-    if (!this.enabled) { const error = new Error('FTP group image storage is not configured.'); error.code = 'FTP_NOT_CONFIGURED'; throw error; }
     const remoteName = `group-${groupId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${type.extension}`;
-    const remotePath = `${this.config.uploadPath.replace(/[\\/]+$/, '')}/${remoteName}`;
-    const client = new ftp.Client(this.config.timeoutMs);
-    client.ftp.verbose = false;
-    try {
-      await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
-      await client.ensureDir(this.config.uploadPath);
-      await client.uploadFrom(Readable.from(file.buffer), remotePath);
-      return remoteName;
-    } finally { client.close(); }
+    return this.upload(file, remoteName);
   }
 
   async streamProfilePicture(filename, response) {
@@ -89,18 +122,9 @@ export class FtpService {
   }
 
   async uploadArticleImage(articleId, file) {
-    if (!this.enabled) { const error = new Error('FTP article image storage is not configured.'); error.code = 'FTP_NOT_CONFIGURED'; throw error; }
     const extension = this.validateImage(file);
     const remoteName = `article-${articleId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
-    const remotePath = `${this.config.uploadPath.replace(/[\\/]+$/, '')}/${remoteName}`;
-    const client = new ftp.Client(this.config.timeoutMs);
-    client.ftp.verbose = false;
-    try {
-      await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
-      await client.ensureDir(this.config.uploadPath);
-      await client.uploadFrom(Readable.from(file.buffer), remotePath);
-      return remoteName;
-    } finally { client.close(); }
+    return this.upload(file, remoteName);
   }
 
   async streamArticleImage(filename, response) { return this.streamImage(filename, this.config.uploadPath, response); }
@@ -111,19 +135,20 @@ export class FtpService {
     client.ftp.verbose = false;
     try {
       await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
-      await client.remove(`${this.config.uploadPath.replace(/[\\/]+$/, '')}/${filename}`);
+      await client.cd(this.config.uploadPath);
+      await client.remove(filename);
       return true;
     } catch (error) { if (String(error.code) === '550') return false; throw error; } finally { client.close(); }
   }
 
   async deleteGroupCover(filename) {
     if (!this.enabled || !/^[a-zA-Z0-9._-]+\.(?:jpg|jpeg|png|webp)$/i.test(filename)) return false;
-    const remotePath = `${this.config.uploadPath.replace(/[\\/]+$/, '')}/${filename}`;
     const client = new ftp.Client(this.config.timeoutMs);
     client.ftp.verbose = false;
     try {
       await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
-      await client.remove(remotePath);
+      await client.cd(this.config.uploadPath);
+      await client.remove(filename);
       return true;
     } catch (error) {
       if (String(error.code) === '550') return false;
@@ -132,8 +157,8 @@ export class FtpService {
   }
 
   async streamImage(filename, uploadPath, response, cacheControl = 'public, max-age=86400') {
+    uploadPath = this.normalizePath(uploadPath || this.config.uploadPath);
     if (!this.enabled || !uploadPath || !/^[a-zA-Z0-9._-]+\.(?:jpg|jpeg|png|gif|webp)$/i.test(filename)) return false;
-    const remotePath = `${uploadPath.replace(/[\\/]+$/, '')}/${filename}`;
     const contentTypes = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
     const extension = filename.split('.').pop().toLowerCase();
     const client = new ftp.Client(this.config.timeoutMs);
@@ -141,16 +166,21 @@ export class FtpService {
     const stream = new PassThrough();
     try {
       await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
+      await client.cd(uploadPath);
+      // Check existence before sending response headers. A missing file is a
+      // genuine 404; connection/authentication failures must remain errors.
+      await client.size(filename);
       response.set('Content-Type', contentTypes[extension]);
       response.set('Cache-Control', cacheControl);
       stream.on('close', () => client.close());
       stream.pipe(response);
-      await client.downloadTo(stream, remotePath);
+      await client.downloadTo(stream, filename);
       stream.end();
       return true;
     } catch (error) {
       client.close();
-      if (!response.headersSent) return false;
+      if (String(error.code) === '550' || String(error.code) === '450') return false;
+      if (!response.headersSent) throw error;
       stream.destroy(error);
       return true;
     }

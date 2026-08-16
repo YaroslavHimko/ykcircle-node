@@ -109,6 +109,34 @@ export class Configuration {
       }),
     };
 
+    // A local configuration file is intentionally ignored by git, but its
+    // values should still be overridable in deployment. This is particularly
+    // important for FTP roots: Hostinger accounts may be rooted at
+    // public_html or one level above it.
+    const overrideFtp = (current, prefix, genericPrefix = null) => {
+      const env = (name) => process.env[name];
+      const first = (...names) => names.map(env).find((value) => value !== undefined);
+      const value = (key, ...names) => {
+        const selected = first(...names);
+        if (selected !== undefined) current[key] = selected;
+      };
+      value('host', `${prefix}_HOST`, ...(genericPrefix ? [`${genericPrefix}_HOST`, `${genericPrefix}_IP`] : []));
+      value('user', `${prefix}_USERNAME`, ...(genericPrefix ? [`${genericPrefix}_USER`] : []));
+      value('password', `${prefix}_PASSWORD`, ...(genericPrefix ? [`${genericPrefix}_PASSWORD`] : []));
+      value('uploadPath', `${prefix}_UPLOAD_PATH`, ...(genericPrefix ? [`${genericPrefix}_UPLOAD_PATH`] : []));
+      value('publicUrl', `${prefix}_PUBLIC_URL`, ...(genericPrefix ? [`${genericPrefix}_PUBLIC_URL`] : []));
+      value('tlsServername', `${prefix}_TLS_SERVERNAME`, ...(genericPrefix ? [`${genericPrefix}_TLS_SERVERNAME`] : []));
+      value('secure', `${prefix}_SECURE`, ...(genericPrefix ? [`${genericPrefix}_SECURE`] : []));
+      const timeout = first(`${prefix}_TIMEOUT_MS`, ...(genericPrefix ? [`${genericPrefix}_TIMEOUT_MS`] : []));
+      if (timeout !== undefined) current.timeoutMs = Number(timeout || 30000);
+      current.secure = current.secure === true || current.secure === 'true';
+      return current;
+    };
+    overrideFtp(this.ftp.profilePictures, 'FTP', 'FTP');
+    overrideFtp(this.ftp.events, 'FTP_EVENT');
+    overrideFtp(this.ftp.groups, 'FTP_GROUP');
+    overrideFtp(this.ftp.articles, 'FTP_ARTICLE');
+
     const runtimeValues = values.runtime || {};
     this.runtime = {
       uploadsDir: runtimeValues.uploadsDir || values.uploadsDir || process.env.UPLOADS_DIR || 'uploads',

@@ -43,6 +43,10 @@ export default {
     },
   },
   ftp: {
+    // Paths are relative to the FTP account's root. A domain FTP account may
+    // already be chrooted to public_html (/uploads/...), while a main account
+    // commonly needs /public_html/uploads/.... Set the matching *_UPLOAD_PATH
+    // environment variable for the account used in production.
     profilePictures: {
       host: process.env.FTP_HOST || process.env.FTP_HOSTNAME || process.env.FTP_IP,
       user: process.env.FTP_USERNAME,
