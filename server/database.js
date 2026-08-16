@@ -67,6 +67,16 @@ export class Database {
         CONSTRAINT group_memberships_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE CASCADE,
         CONSTRAINT group_memberships_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS group_invitations (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, group_id INT UNSIGNED NOT NULL, invited_by_user_id INT UNSIGNED NOT NULL,
+        invited_user_id INT UNSIGNED NULL, email VARCHAR(255) NOT NULL, token_hash CHAR(64) NOT NULL UNIQUE,
+        status ENUM('pending','accepted','declined','revoked') NOT NULL DEFAULT 'pending', expires_at DATETIME NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY group_invitation_email (group_id, email), INDEX (invited_user_id, status), INDEX (expires_at),
+        CONSTRAINT group_invitation_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE CASCADE,
+        CONSTRAINT group_invitation_inviter_fk FOREIGN KEY (invited_by_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT group_invitation_user_fk FOREIGN KEY (invited_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
       try { await this.pool.execute('ALTER TABLE events ADD COLUMN group_id INT UNSIGNED NULL, ADD INDEX (group_id)'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_DUP_KEYNAME') throw error; }
       try { await this.pool.execute('ALTER TABLE events ADD INDEX events_group_id_idx (group_id)'); } catch (error) { if (error.code !== 'ER_DUP_KEYNAME') throw error; }
       try { await this.pool.execute('ALTER TABLE events ADD CONSTRAINT events_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL'); } catch (error) { if (error.code !== 'ER_DUP_KEYNAME' && error.code !== 'ER_FK_DUP_NAME' && error.code !== 'ER_CANT_CREATE_TABLE') throw error; }
@@ -194,6 +204,69 @@ export class Database {
         UNIQUE KEY community_post_response_user (post_id, user_id), INDEX (user_id, status),
         CONSTRAINT community_response_post_fk FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
         CONSTRAINT community_response_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_conversations (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, post_id INT UNSIGNED NOT NULL, owner_user_id INT UNSIGNED NOT NULL, member_user_id INT UNSIGNED NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY community_conversation_participants (post_id, member_user_id), INDEX (owner_user_id, updated_at),
+        CONSTRAINT community_conversation_post_fk FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+        CONSTRAINT community_conversation_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT community_conversation_member_fk FOREIGN KEY (member_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_conversation_messages (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, conversation_id INT UNSIGNED NOT NULL, sender_user_id INT UNSIGNED NOT NULL, body VARCHAR(4000) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (conversation_id, created_at),
+        CONSTRAINT community_conversation_message_fk FOREIGN KEY (conversation_id) REFERENCES community_post_conversations(id) ON DELETE CASCADE,
+        CONSTRAINT community_conversation_sender_fk FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_conversation_reads (
+        conversation_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL, last_read_message_id INT UNSIGNED NOT NULL,
+        read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY (conversation_id, user_id), INDEX (user_id, read_at),
+        CONSTRAINT community_conversation_read_fk FOREIGN KEY (conversation_id) REFERENCES community_post_conversations(id) ON DELETE CASCADE,
+        CONSTRAINT community_conversation_read_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`INSERT IGNORE INTO community_post_conversations (post_id, owner_user_id, member_user_id)
+        SELECT p.id, p.author_user_id, r.user_id FROM community_post_responses r JOIN community_posts p ON p.id = r.post_id`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_forum_threads (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, post_id INT UNSIGNED NOT NULL, author_user_id INT UNSIGNED NOT NULL, title VARCHAR(180) NOT NULL,
+        status ENUM('active','locked','removed') NOT NULL DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX (post_id, status, updated_at), CONSTRAINT community_forum_post_fk FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+        CONSTRAINT community_forum_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_forum_messages (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, thread_id INT UNSIGNED NOT NULL, author_user_id INT UNSIGNED NOT NULL, body VARCHAR(4000) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (thread_id, created_at),
+        CONSTRAINT community_forum_message_thread_fk FOREIGN KEY (thread_id) REFERENCES community_post_forum_threads(id) ON DELETE CASCADE,
+        CONSTRAINT community_forum_message_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS group_forum_threads (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, group_id INT UNSIGNED NOT NULL, author_user_id INT UNSIGNED NOT NULL, title VARCHAR(180) NOT NULL,
+        status ENUM('active','locked','removed') NOT NULL DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX (group_id, status, updated_at), CONSTRAINT group_forum_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE CASCADE,
+        CONSTRAINT group_forum_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS group_forum_messages (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, thread_id INT UNSIGNED NOT NULL, author_user_id INT UNSIGNED NOT NULL, body VARCHAR(4000) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (thread_id, created_at),
+        CONSTRAINT group_forum_message_thread_fk FOREIGN KEY (thread_id) REFERENCES group_forum_threads(id) ON DELETE CASCADE,
+        CONSTRAINT group_forum_message_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_forum_threads (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL, author_user_id INT UNSIGNED NOT NULL, title VARCHAR(180) NOT NULL,
+        status ENUM('active','locked','removed') NOT NULL DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX (event_id, status, updated_at), CONSTRAINT event_forum_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+        CONSTRAINT event_forum_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_forum_messages (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, thread_id INT UNSIGNED NOT NULL, author_user_id INT UNSIGNED NOT NULL, body VARCHAR(4000) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (thread_id, created_at),
+        CONSTRAINT event_forum_message_thread_fk FOREIGN KEY (thread_id) REFERENCES event_forum_threads(id) ON DELETE CASCADE,
+        CONSTRAINT event_forum_message_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS forum_thread_reads (
+        scope ENUM('community','group','event') NOT NULL, thread_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL, last_read_message_id INT UNSIGNED NOT NULL,
+        read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY (scope, thread_id, user_id), INDEX (user_id, scope, read_at),
+        CONSTRAINT forum_thread_read_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_reports (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, post_id INT UNSIGNED NOT NULL, reporter_user_id INT UNSIGNED NOT NULL,

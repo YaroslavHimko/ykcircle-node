@@ -29,6 +29,7 @@ const start = async () => {
     managerEventUrl: config.email.urls.managerEvent,
     eventDetailsUrl: config.email.urls.eventDetails,
     invitationResponseUrl: config.email.urls.invitationResponse,
+    groupInvitationUrl: config.email.urls.groupInvitation,
     loginUrl: config.email.urls.login,
     unsubscribeUrl: config.email.urls.unsubscribe,
     unsubscribeEndpointUrl: config.email.urls.unsubscribeEndpoint,

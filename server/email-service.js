@@ -6,7 +6,7 @@ const eventFee = (event) => Number(event.fee) > 0 ? `\nFee: ${Number(event.fee).
 const eventFeeHtml = (event) => Number(event.fee) > 0 ? `<br><strong>Fee:</strong> ${escapeHtml(Number(event.fee).toFixed(2))} SEK` : '';
 
 export class EmailService {
-  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, applicationUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, loginUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
+  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, applicationUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, loginUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
     this.domain = domain;
     this.brandName = brandName;
     this.noReplyFrom = noReplyFrom;
@@ -16,6 +16,7 @@ export class EmailService {
     this.managerEventUrl = managerEventUrl;
     this.eventDetailsUrl = eventDetailsUrl;
     this.invitationResponseUrl = invitationResponseUrl;
+    this.groupInvitationUrl = groupInvitationUrl;
     this.loginUrl = loginUrl;
     this.notificationFrom = notificationFrom;
     this.invitationFrom = invitationFrom;
@@ -107,6 +108,15 @@ export class EmailService {
     return this.invitationMailer.sendMail({ from: this.invitationFrom, to: email, subject: `You are invited to ${event.title}`,
       text: `Hi ${name},\n\nYou have been invited to ${event.title}.\n\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}\n\nConfirm invitation: ${acceptUrl}\nDecline invitation: ${declineUrl}\nView event and register: ${eventUrl}`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>You are invited</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to <strong>${escapeHtml(event.title)}</strong>.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}</div><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Confirm invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p><p style="margin:20px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event and register</a></p>`) });
+  }
+
+  sendGroupInvitation(email, name, group, token) {
+    const responseUrl = `${this.groupInvitationUrl}?token=${encodeURIComponent(token)}`;
+    const acceptUrl = `${responseUrl}&action=accept`;
+    const declineUrl = `${responseUrl}&action=decline`;
+    return this.invitationMailer.sendMail({ from: this.invitationFrom, to: email, subject: `You are invited to join ${group.name}`,
+      text: `Hi ${name || 'there'},\n\nYou have been invited to join the private group ${group.name}.\n\nAccept invitation: ${acceptUrl}\nDecline invitation: ${declineUrl}\n\nIf you do not yet have an account, register with this email address before accepting.`,
+      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name || 'there')},</p><h1>You are invited to a private group</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to join <strong>${escapeHtml(group.name)}</strong>.</p><p style="font-size:14px;line-height:1.6;color:#526078">If you do not yet have an account, register with this email address before accepting the invitation.</p><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Accept invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p>`, 'Private group invitation') });
   }
 
   sendGroupEventNotification(email, name, group, event) {

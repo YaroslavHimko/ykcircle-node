@@ -54,6 +54,7 @@ export class Configuration {
         managerEvent: emailUrls.managerEvent || values.managerEventUrl || process.env.MANAGER_EVENT_URL || `${siteUrl}/manager/events`,
         eventDetails: emailUrls.eventDetails || values.eventDetailsUrl || process.env.EVENT_DETAILS_URL || `${siteUrl}/events`,
         invitationResponse: emailUrls.invitationResponse || values.invitationResponseUrl || process.env.INVITATION_RESPONSE_URL || `${siteUrl}/invitation-response`,
+        groupInvitation: emailUrls.groupInvitation || values.groupInvitationUrl || process.env.GROUP_INVITATION_URL || `${siteUrl}/group-invitation`,
         login: emailUrls.login || values.loginUrl || process.env.LOGIN_URL || `${siteUrl}/login`,
         unsubscribe: emailUrls.unsubscribe || values.unsubscribeUrl || process.env.UNSUBSCRIBE_URL || `${siteUrl}/unsubscribe`,
         unsubscribeEndpoint: emailUrls.unsubscribeEndpoint || values.unsubscribeEndpointUrl || process.env.UNSUBSCRIBE_ENDPOINT_URL || `${apiUrl}/api/email/unsubscribe`,
@@ -128,6 +129,7 @@ export class Configuration {
     this.managerEventUrl = this.email.urls.managerEvent;
     this.eventDetailsUrl = this.email.urls.eventDetails;
     this.invitationResponseUrl = this.email.urls.invitationResponse;
+    this.groupInvitationUrl = this.email.urls.groupInvitation;
     this.loginUrl = this.email.urls.login;
     this.unsubscribeUrl = this.email.urls.unsubscribe;
     this.unsubscribeEndpointUrl = this.email.urls.unsubscribeEndpoint;

@@ -3,7 +3,7 @@
 export class Queries {
   async publicEventParticipants(eventId) { const [rows] = await this.database.execute('SELECT p.id, p.user_id AS userId, COALESCE(u.name, p.participant_name) AS name, u.profile_picture AS profilePicture, p.joined_at AS joinedAt FROM event_participants p LEFT JOIN users u ON u.id = p.user_id WHERE p.event_id = ? ORDER BY p.joined_at DESC', [eventId]); return rows; }
   async publicEvents(userId = null) { const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.status = 'Published' AND e.visibility = 'Public' ORDER BY e.created_at DESC`, [userId]); return rows; }
-  async eventsForViewer(userId = null, role = null) { const privileged = ['manager', 'admin'].includes(role); const access = privileged ? 'TRUE' : `e.manager_id = ? OR (e.status = 'Published' AND e.visibility = 'Private' AND (r.id IS NOT NULL OR EXISTS (SELECT 1 FROM event_invitations i JOIN users invited ON LOWER(invited.email) = LOWER(i.email) WHERE i.event_id = e.id AND invited.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW())))`; const params = privileged ? [userId] : [userId, userId, userId]; const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.deleted_at IS NULL AND ((e.status = 'Published' AND e.visibility = 'Public') OR (${access})) ORDER BY e.created_at DESC`, params); return rows; }
+  async eventsForViewer(userId = null, role = null, { categorySlug = null } = {}) { const privileged = ['manager', 'admin'].includes(role); const access = privileged ? 'TRUE' : `e.manager_id = ? OR (e.status = 'Published' AND e.visibility = 'Private' AND (r.id IS NOT NULL OR EXISTS (SELECT 1 FROM event_invitations i JOIN users invited ON LOWER(invited.email) = LOWER(i.email) WHERE i.event_id = e.id AND invited.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW())))`; const params = privileged ? [userId] : [userId, userId, userId]; const categoryFilter = categorySlug ? ' AND c.slug = ?' : ''; if (categorySlug) params.push(categorySlug); const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, c.id AS categoryId, c.name AS categoryName, c.slug AS categorySlug, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_categories c ON c.id = e.category_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.deleted_at IS NULL AND ((e.status = 'Published' AND e.visibility = 'Public') OR (${access}))${categoryFilter} ORDER BY e.created_at DESC`, params); return rows; }
   async createVisibleEvent(data) { const [result] = await this.database.execute('INSERT INTO events (manager_id, title, description, location, starts_at, ends_at, capacity, participation_fee, visibility, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \'Draft\')', [data.managerId, data.title, data.description, data.location, data.startsAt, data.endsAt, data.capacity, data.fee, data.visibility]); return result.insertId; }
   async privateInvitationExists(eventId, userId) { const [rows] = await this.database.execute("SELECT i.id FROM event_invitations i JOIN users u ON LOWER(u.email) = LOWER(i.email) WHERE i.event_id = ? AND u.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW()", [eventId, userId]); return rows.length > 0; }
   async eventVisibility(eventId) { const [rows] = await this.database.execute('SELECT visibility FROM events WHERE id = ?', [eventId]); return rows[0]?.visibility; }
@@ -102,8 +102,8 @@ export class Queries {
       owner.name AS organizerName, COUNT(DISTINCT members.user_id) AS memberCount, gm.role AS membershipRole,
       IF(gm.user_id IS NULL, FALSE, TRUE) AS isMember, IF(g.organizer_id = ?, TRUE, FALSE) AS isOrganizer
       FROM event_groups g JOIN users owner ON owner.id = g.organizer_id
-      LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ?
-      LEFT JOIN group_memberships members ON members.group_id = g.id
+      LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ? AND gm.status = 'active'
+      LEFT JOIN group_memberships members ON members.group_id = g.id AND members.status = 'active'
       WHERE ${managedFilter}
       GROUP BY g.id, gm.role, gm.user_id, owner.name ORDER BY g.created_at DESC`, params);
     return rows;
@@ -114,8 +114,8 @@ export class Queries {
       owner.name AS organizerName, COUNT(DISTINCT members.user_id) AS memberCount, gm.role AS membershipRole,
       IF(gm.user_id IS NULL, FALSE, TRUE) AS isMember, IF(g.organizer_id = ?, TRUE, FALSE) AS isOrganizer
       FROM event_groups g JOIN users owner ON owner.id = g.organizer_id
-      LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ?
-      LEFT JOIN group_memberships members ON members.group_id = g.id
+      LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ? AND gm.status = 'active'
+      LEFT JOIN group_memberships members ON members.group_id = g.id AND members.status = 'active'
       WHERE g.id = ? AND (${privileged ? 'TRUE' : "g.visibility = 'Public' OR g.organizer_id = ? OR gm.user_id IS NOT NULL"})
       GROUP BY g.id, gm.role, gm.user_id, owner.name`, [userId, userId, id, ...(privileged ? [] : [userId])]);
     return rows[0] || null;
@@ -140,7 +140,7 @@ export class Queries {
   }
   async groupForCover(filename, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT g.id FROM event_groups g LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ? WHERE g.cover_image = ? AND (${privileged ? 'TRUE' : "g.visibility = 'Public' OR g.organizer_id = ? OR gm.user_id IS NOT NULL"})`, privileged ? [userId, filename] : [userId, filename, userId]);
+    const [rows] = await this.database.execute(`SELECT g.id FROM event_groups g LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ? AND gm.status = 'active' WHERE g.cover_image = ? AND (${privileged ? 'TRUE' : "g.visibility = 'Public' OR g.organizer_id = ? OR gm.user_id IS NOT NULL"})`, privileged ? [userId, filename] : [userId, filename, userId]);
     return rows[0] || null;
   }
   async deleteGroup(id, userId, role) {
@@ -152,7 +152,7 @@ export class Queries {
     const [groups] = await this.database.execute('SELECT id, visibility FROM event_groups WHERE id = ?', [id]);
     if (!groups[0]) return { error: 'NOT_FOUND' };
     if (groups[0].visibility !== 'Public') return { error: 'PRIVATE' };
-    const [result] = await this.database.execute("INSERT IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')", [id, userId]);
+    const [result] = await this.database.execute("INSERT INTO group_memberships (group_id, user_id, role, status) VALUES (?, ?, 'member', 'active') ON DUPLICATE KEY UPDATE status = 'active'", [id, userId]);
     return { joined: result.affectedRows > 0 };
   }
   async leaveGroup(id, userId) { const [result] = await this.database.execute("DELETE FROM group_memberships WHERE group_id = ? AND user_id = ? AND role = 'member'", [id, userId]); return result.affectedRows > 0; }
@@ -163,15 +163,60 @@ export class Queries {
       WHERE gm.group_id = ?${globalAccess ? '' : ' AND g.organizer_id = ?'} ORDER BY gm.role = 'owner' DESC, gm.joined_at ASC`, globalAccess ? [id] : [id, userId]);
     return rows;
   }
-  async groupMember(groupId, userId) { const [rows] = await this.database.execute('SELECT gm.user_id AS userId, u.name, u.email, u.profile_picture AS profilePicture, gm.role, gm.joined_at AS joinedAt FROM group_memberships gm JOIN users u ON u.id = gm.user_id WHERE gm.group_id = ? AND gm.user_id = ?', [groupId, userId]); return rows[0] || null; }
+  async groupMember(groupId, userId) { const [rows] = await this.database.execute('SELECT gm.user_id AS userId, u.name, u.email, u.profile_picture AS profilePicture, gm.role, gm.status, gm.joined_at AS joinedAt FROM group_memberships gm JOIN users u ON u.id = gm.user_id WHERE gm.group_id = ? AND gm.user_id = ?', [groupId, userId]); return rows[0] || null; }
   async addGroupMember(groupId, { userId = null, email = null }) {
+    const [groups] = await this.database.execute('SELECT visibility FROM event_groups WHERE id = ?', [groupId]);
+    if (!groups[0]) return { error: 'NOT_FOUND' };
+    if (groups[0].visibility === 'Private') return { error: 'PRIVATE' };
     const normalizedEmail = String(email || '').trim().toLowerCase();
     const [users] = await this.database.execute(userId ? 'SELECT id, isEmailConfirmed FROM users WHERE id = ?' : 'SELECT id, isEmailConfirmed FROM users WHERE LOWER(email) = ?', [userId || normalizedEmail]);
     const user = users[0];
     if (!user) return { error: 'USER_NOT_FOUND' };
     if (!user.isEmailConfirmed) return { error: 'EMAIL_NOT_VERIFIED' };
-    const [result] = await this.database.execute("INSERT IGNORE INTO group_memberships (group_id, user_id, role) VALUES (?, ?, 'member')", [groupId, user.id]);
+    const [result] = await this.database.execute("INSERT INTO group_memberships (group_id, user_id, role, status) VALUES (?, ?, 'member', 'active') ON DUPLICATE KEY UPDATE status = 'active'", [groupId, user.id]);
     return { added: result.affectedRows > 0, member: await this.groupMember(groupId, user.id) };
+  }
+  async createGroupInvitation(groupId, inviterId, { userId = null, email = null }, tokenHash) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const [groups] = await this.database.execute('SELECT id, name, visibility FROM event_groups WHERE id = ?', [groupId]);
+    const group = groups[0];
+    if (!group) return { error: 'NOT_FOUND' };
+    if (group.visibility !== 'Private') return { error: 'NOT_PRIVATE' };
+    const [users] = await this.database.execute(userId ? 'SELECT id, name, email FROM users WHERE id = ?' : 'SELECT id, name, email FROM users WHERE LOWER(email) = ?', [userId || normalizedEmail]);
+    const user = users[0] || null;
+    const recipientEmail = (user?.email || normalizedEmail).toLowerCase();
+    if (!recipientEmail) return { error: 'USER_NOT_FOUND' };
+    const [memberships] = await this.database.execute('SELECT role, status FROM group_memberships WHERE group_id = ? AND user_id = ?', [groupId, user?.id || null]);
+    if (memberships[0]?.status === 'active') return { error: 'ALREADY_MEMBER' };
+    await this.database.execute(`INSERT INTO group_invitations (group_id, invited_by_user_id, invited_user_id, email, token_hash, status, expires_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', DATE_ADD(NOW(), INTERVAL 14 DAY))
+      ON DUPLICATE KEY UPDATE invited_by_user_id = VALUES(invited_by_user_id), invited_user_id = VALUES(invited_user_id), token_hash = VALUES(token_hash), status = 'pending', expires_at = VALUES(expires_at), updated_at = CURRENT_TIMESTAMP`, [groupId, inviterId, user?.id || null, recipientEmail, tokenHash]);
+    const [invitations] = await this.database.execute('SELECT id, email, expires_at AS expiresAt FROM group_invitations WHERE group_id = ? AND email = ?', [groupId, recipientEmail]);
+    return { invitation: invitations[0], group, recipient: { id: user?.id || null, name: user?.name || null, email: recipientEmail } };
+  }
+  async respondToGroupInvitation(token, action) {
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [rows] = await connection.execute(`SELECT i.id, i.group_id AS groupId, i.invited_user_id AS invitedUserId, i.email, i.status, i.expires_at AS expiresAt, g.name AS groupName
+        FROM group_invitations i JOIN event_groups g ON g.id = i.group_id WHERE i.token_hash = ? FOR UPDATE`, [tokenHash]);
+      const invitation = rows[0];
+      if (!invitation || invitation.status !== 'pending' || new Date(invitation.expiresAt).getTime() <= Date.now()) { await connection.rollback(); return { error: 'INVALID' }; }
+      if (action === 'decline') {
+        await connection.execute("UPDATE group_invitations SET status = 'declined' WHERE id = ?", [invitation.id]);
+        await connection.commit();
+        return { status: 'declined', groupId: invitation.groupId, groupName: invitation.groupName };
+      }
+      const [users] = await connection.execute('SELECT id, name, isEmailConfirmed FROM users WHERE LOWER(email) = LOWER(?) FOR UPDATE', [invitation.email]);
+      const user = users[0];
+      if (!user) { await connection.rollback(); return { error: 'ACCOUNT_REQUIRED', email: invitation.email }; }
+      if (!user.isEmailConfirmed) { await connection.rollback(); return { error: 'EMAIL_NOT_VERIFIED' }; }
+      await connection.execute("INSERT INTO group_memberships (group_id, user_id, role, status) VALUES (?, ?, 'member', 'active') ON DUPLICATE KEY UPDATE status = 'active'", [invitation.groupId, user.id]);
+      await connection.execute("UPDATE group_invitations SET status = 'accepted', invited_user_id = ? WHERE id = ?", [user.id, invitation.id]);
+      await connection.commit();
+      return { status: 'accepted', groupId: invitation.groupId, groupName: invitation.groupName, userId: user.id, name: user.name };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async removeGroupMember(groupId, userId) {
     const member = await this.groupMember(groupId, userId);
@@ -188,7 +233,7 @@ export class Queries {
   async groupExists(id) { const [rows] = await this.database.execute('SELECT id FROM event_groups WHERE id = ?', [id]); return rows.length > 0; }
   async pendingGroupEventNotifications(eventId) {
     const [rows] = await this.database.execute(`SELECT u.id AS userId, u.name, u.email, g.id AS groupId, g.name AS groupName, e.id AS eventId, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt
-      FROM events e JOIN event_groups g ON g.id = e.group_id JOIN group_memberships gm ON gm.group_id = g.id AND gm.role = 'member' JOIN users u ON u.id = gm.user_id
+      FROM events e JOIN event_groups g ON g.id = e.group_id JOIN group_memberships gm ON gm.group_id = g.id AND gm.role = 'member' AND gm.status = 'active' JOIN users u ON u.id = gm.user_id
       LEFT JOIN group_event_notifications n ON n.event_id = e.id AND n.user_id = u.id
       WHERE e.id = ? AND n.user_id IS NULL`, [eventId]);
     return rows;
@@ -346,10 +391,62 @@ export class Queries {
   async createCommunityPost(data) { const [result] = await this.database.execute(`INSERT INTO community_posts (slug, author_user_id, city, city_slug, post_type_id, category_id, subcategory_id, title, short_description, body, location_name, latitude, longitude, location_radius_km, attributes, external_event_name, external_event_url, external_event_at, visibility, status, is_indexable, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [data.slug, data.authorUserId, data.city, data.citySlug, data.postTypeId, data.categoryId, data.subcategoryId, data.title, data.shortDescription, data.body, data.locationName, data.latitude, data.longitude, data.locationRadiusKm, data.attributes ? JSON.stringify(data.attributes) : null, data.externalEventName, data.externalEventUrl, data.externalEventAt, data.visibility, data.status, data.isIndexable, data.expiresAt]); return result.insertId; }
   async updateCommunityPost(id, userId, role, data) { const privileged = ['manager', 'admin'].includes(role); const [result] = await this.database.execute(`UPDATE community_posts SET city=?, city_slug=?, post_type_id=?, category_id=?, subcategory_id=?, title=?, short_description=?, body=?, location_name=?, latitude=?, longitude=?, location_radius_km=?, attributes=?, external_event_name=?, external_event_url=?, external_event_at=?, visibility=?, status=?, is_indexable=?, expires_at=? WHERE id=?${privileged ? '' : ' AND author_user_id=?'}`, [...data, id, ...(privileged ? [] : [userId])]); return result.affectedRows > 0; }
   async setCommunityPostStatus(id, userId, role, status, isIndexable = null) { const privileged = ['manager', 'admin'].includes(role); const values = [status]; let sql = 'UPDATE community_posts SET status = ?'; if (isIndexable !== null) { sql += ', is_indexable = ?'; values.push(isIndexable); } sql += ` WHERE id = ?${privileged ? '' : ' AND author_user_id = ?'}`; values.push(id, ...(privileged ? [] : [userId])); const [result] = await this.database.execute(sql, values); return result.affectedRows > 0; }
-  async addCommunityPostResponse(postId, userId, message) { const [result] = await this.database.execute("INSERT INTO community_post_responses (post_id, user_id, message, status) VALUES (?, ?, ?, 'active') ON DUPLICATE KEY UPDATE message = VALUES(message), status = 'active', updated_at = CURRENT_TIMESTAMP", [postId, userId, message]); return result.insertId; }
+  async addCommunityPostResponse(postId, userId, message) { const [result] = await this.database.execute("INSERT INTO community_post_responses (post_id, user_id, message, status) VALUES (?, ?, ?, 'active') ON DUPLICATE KEY UPDATE message = VALUES(message), status = 'active', updated_at = CURRENT_TIMESTAMP", [postId, userId, message]); await this.database.execute('INSERT IGNORE INTO community_post_conversations (post_id, owner_user_id, member_user_id) SELECT id, author_user_id, ? FROM community_posts WHERE id = ?', [userId, postId]); return result.insertId; }
   async communityPostResponse(postId, userId) { const [rows] = await this.database.execute('SELECT id, post_id AS postId, user_id AS userId, message, status, created_at AS createdAt, updated_at AS updatedAt FROM community_post_responses WHERE post_id = ? AND user_id = ?', [postId, userId]); return rows[0] || null; }
   async communityPostResponses(postId) { const [rows] = await this.database.execute('SELECT r.id, r.post_id AS postId, r.user_id AS userId, r.message, r.status, r.created_at AS createdAt, r.updated_at AS updatedAt, u.name, u.profile_picture AS profilePicture FROM community_post_responses r JOIN users u ON u.id = r.user_id WHERE r.post_id = ? AND r.status <> \'removed\' ORDER BY r.created_at DESC', [postId]); return rows; }
   async updateCommunityPostResponse(id, postId, status) { const [result] = await this.database.execute('UPDATE community_post_responses SET status = ? WHERE id = ? AND post_id = ?', [status, id, postId]); return result.affectedRows > 0; }
+  async communityConversations(postId, ownerId) { const [rows] = await this.database.execute(`SELECT c.id, c.post_id AS postId, c.member_user_id AS memberUserId, u.name AS memberName, u.profile_picture AS memberProfilePicture, c.updated_at AS updatedAt, m.body AS lastMessage, m.created_at AS lastMessageAt,
+    (SELECT COUNT(*) FROM community_post_conversation_messages unread WHERE unread.conversation_id = c.id AND unread.sender_user_id <> ? AND unread.id > COALESCE(read_state.last_read_message_id, 0)) AS unreadCount
+    FROM community_post_conversations c JOIN users u ON u.id = c.member_user_id LEFT JOIN community_post_conversation_reads read_state ON read_state.conversation_id = c.id AND read_state.user_id = ? LEFT JOIN community_post_conversation_messages m ON m.id = (SELECT m2.id FROM community_post_conversation_messages m2 WHERE m2.conversation_id = c.id ORDER BY m2.id DESC LIMIT 1)
+    WHERE c.post_id = ? AND c.owner_user_id = ? ORDER BY COALESCE(m.created_at, c.updated_at) DESC`, [ownerId, ownerId, postId, ownerId]); return rows; }
+  async communityConversationsForMember(memberId) { const [rows] = await this.database.execute(`SELECT c.id, c.post_id AS postId, c.owner_user_id AS ownerUserId, p.title AS postTitle, p.slug AS postSlug, u.name AS ownerName, u.profile_picture AS ownerProfilePicture, c.updated_at AS updatedAt, m.body AS lastMessage, m.created_at AS lastMessageAt,
+    (SELECT COUNT(*) FROM community_post_conversation_messages unread WHERE unread.conversation_id = c.id AND unread.sender_user_id <> ? AND unread.id > COALESCE(read_state.last_read_message_id, 0)) AS unreadCount
+    FROM community_post_conversations c JOIN community_posts p ON p.id = c.post_id JOIN users u ON u.id = c.owner_user_id LEFT JOIN community_post_conversation_reads read_state ON read_state.conversation_id = c.id AND read_state.user_id = ? LEFT JOIN community_post_conversation_messages m ON m.id = (SELECT m2.id FROM community_post_conversation_messages m2 WHERE m2.conversation_id = c.id ORDER BY m2.id DESC LIMIT 1)
+    WHERE c.member_user_id = ? ORDER BY COALESCE(m.created_at, c.updated_at) DESC`, [memberId, memberId, memberId]); return rows; }
+  async communityConversation(postId, memberId) { const [rows] = await this.database.execute('SELECT id, post_id AS postId, owner_user_id AS ownerUserId, member_user_id AS memberUserId FROM community_post_conversations WHERE post_id = ? AND member_user_id = ?', [postId, memberId]); return rows[0] || null; }
+  async communityConversationMessages(conversationId) { const [rows] = await this.database.execute('SELECT m.id, m.conversation_id AS conversationId, m.sender_user_id AS senderUserId, m.body, m.created_at AS createdAt, u.name AS senderName, u.profile_picture AS senderProfilePicture FROM community_post_conversation_messages m JOIN users u ON u.id = m.sender_user_id WHERE m.conversation_id = ? ORDER BY m.id ASC', [conversationId]); return rows; }
+  async addCommunityConversationMessage(conversationId, senderUserId, body) { const [result] = await this.database.execute('INSERT INTO community_post_conversation_messages (conversation_id, sender_user_id, body) VALUES (?, ?, ?)', [conversationId, senderUserId, body]); await this.database.execute('UPDATE community_post_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [conversationId]); return result.insertId; }
+  async markCommunityConversationRead(conversationId, userId, lastMessageId) { if (!lastMessageId) return; await this.database.execute('INSERT INTO community_post_conversation_reads (conversation_id, user_id, last_read_message_id) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE last_read_message_id = GREATEST(last_read_message_id, VALUES(last_read_message_id)), read_at = CURRENT_TIMESTAMP', [conversationId, userId, lastMessageId]); }
+  forumTables(scope) { const tables = { community: { threads: 'community_post_forum_threads', messages: 'community_post_forum_messages', owner: 'post_id' }, group: { threads: 'group_forum_threads', messages: 'group_forum_messages', owner: 'group_id' }, event: { threads: 'event_forum_threads', messages: 'event_forum_messages', owner: 'event_id' } }; if (!tables[scope]) throw new Error('Invalid forum scope.'); return tables[scope]; }
+  async forumThreads(scope, ownerId, userId = null) { const table = this.forumTables(scope); const [rows] = await this.database.execute(`SELECT t.id, t.${table.owner} AS ownerId, t.author_user_id AS authorUserId, t.title, t.status, t.created_at AS createdAt, t.updated_at AS updatedAt, u.name AS authorName, u.profile_picture AS authorProfilePicture, COUNT(m.id) AS messageCount,
+    SUM(CASE WHEN m.author_user_id <> ? AND m.id > COALESCE(read_state.last_read_message_id, 0) THEN 1 ELSE 0 END) AS unreadCount
+    FROM ${table.threads} t JOIN users u ON u.id = t.author_user_id LEFT JOIN forum_thread_reads read_state ON read_state.scope = ? AND read_state.thread_id = t.id AND read_state.user_id = ? LEFT JOIN ${table.messages} m ON m.thread_id = t.id WHERE t.${table.owner} = ? AND t.status <> 'removed' GROUP BY t.id, u.name, u.profile_picture, read_state.last_read_message_id ORDER BY t.updated_at DESC`, [userId, scope, userId, ownerId]); return rows; }
+  async forumThread(scope, ownerId, threadId) { const table = this.forumTables(scope); const [rows] = await this.database.execute(`SELECT id, ${table.owner} AS ownerId, author_user_id AS authorUserId, title, status FROM ${table.threads} WHERE id = ? AND ${table.owner} = ?`, [threadId, ownerId]); return rows[0] || null; }
+  async createForumThread(scope, ownerId, authorUserId, title, body) { const table = this.forumTables(scope); const [result] = await this.database.execute(`INSERT INTO ${table.threads} (${table.owner}, author_user_id, title) VALUES (?, ?, ?)`, [ownerId, authorUserId, title]); await this.database.execute(`INSERT INTO ${table.messages} (thread_id, author_user_id, body) VALUES (?, ?, ?)`, [result.insertId, authorUserId, body]); return result.insertId; }
+  async forumMessages(scope, threadId) { const table = this.forumTables(scope); const [rows] = await this.database.execute(`SELECT m.id, m.thread_id AS threadId, m.author_user_id AS authorUserId, m.body, m.created_at AS createdAt, u.name AS authorName, u.profile_picture AS authorProfilePicture FROM ${table.messages} m JOIN users u ON u.id = m.author_user_id WHERE m.thread_id = ? ORDER BY m.id ASC`, [threadId]); return rows; }
+  async addForumMessage(scope, threadId, authorUserId, body) { const table = this.forumTables(scope); const [result] = await this.database.execute(`INSERT INTO ${table.messages} (thread_id, author_user_id, body) VALUES (?, ?, ?)`, [threadId, authorUserId, body]); await this.database.execute(`UPDATE ${table.threads} SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [threadId]); return result.insertId; }
+  async markForumThreadRead(scope, threadId, userId, lastMessageId) { this.forumTables(scope); if (!lastMessageId) return; await this.database.execute('INSERT INTO forum_thread_reads (scope, thread_id, user_id, last_read_message_id) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_read_message_id = GREATEST(last_read_message_id, VALUES(last_read_message_id)), read_at = CURRENT_TIMESTAMP', [scope, threadId, userId, lastMessageId]); }
+  async setForumThreadStatus(scope, threadId, status) { const table = this.forumTables(scope); const [result] = await this.database.execute(`UPDATE ${table.threads} SET status = ? WHERE id = ?`, [status, threadId]); return result.affectedRows > 0; }
+  async groupForumAccess(groupId, userId, role) { const privileged = ['manager', 'admin'].includes(role); const [rows] = await this.database.execute(`SELECT g.id, g.organizer_id AS organizerId, gm.user_id AS memberUserId FROM event_groups g LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ? AND gm.status = 'active' WHERE g.id = ?`, [userId, groupId]); const group = rows[0]; return Boolean(group && (privileged || group.organizerId === userId || group.memberUserId)); }
+  async eventForumAccess(eventId, userId = null, role = null) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.status, e.visibility,
+      EXISTS(SELECT 1 FROM event_registrations r WHERE r.event_id = e.id AND r.user_id = ? AND r.status IN ('Pending', 'Confirmed')) AS isRegistered,
+      EXISTS(SELECT 1 FROM event_participants p WHERE p.event_id = e.id AND p.user_id = ?) AS isParticipant
+      FROM events e WHERE e.id = ? AND e.deleted_at IS NULL`, [userId, userId, eventId]);
+    const event = rows[0];
+    if (!event) return false;
+    return privileged || event.managerId === userId || (event.status === 'Published' && event.visibility === 'Public') || (Boolean(userId) && (Number(event.isRegistered) === 1 || Number(event.isParticipant) === 1));
+  }
+  async canManageEventForum(eventId, userId, role) { const privileged = ['manager', 'admin'].includes(role); const [rows] = await this.database.execute(`SELECT id FROM events WHERE id = ? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]); return rows.length > 0; }
+  async acceptCommunityPostResponse(postId, responseId, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [posts] = await connection.execute(`SELECT id, group_id AS groupId FROM community_posts WHERE id = ?${privileged ? '' : ' AND author_user_id = ?'} FOR UPDATE`, privileged ? [postId] : [postId, userId]);
+      const post = posts[0];
+      if (!post) { await connection.rollback(); return { error: 'POST_NOT_FOUND' }; }
+      if (!post.groupId) { await connection.rollback(); return { error: 'GROUP_REQUIRED' }; }
+      const [responses] = await connection.execute('SELECT id, user_id AS userId FROM community_post_responses WHERE id = ? AND post_id = ? FOR UPDATE', [responseId, postId]);
+      const response = responses[0];
+      if (!response) { await connection.rollback(); return { error: 'RESPONSE_NOT_FOUND' }; }
+      await connection.execute("UPDATE community_post_responses SET status = 'accepted' WHERE id = ?", [responseId]);
+      await connection.execute("INSERT INTO group_memberships (group_id, user_id, role, status) VALUES (?, ?, 'member', 'active') ON DUPLICATE KEY UPDATE status = 'active'", [post.groupId, response.userId]);
+      await connection.commit();
+      return { groupId: post.groupId, userId: response.userId };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
   async reportCommunityPost(postId, userId, reason, details) { await this.database.execute("INSERT INTO community_post_reports (post_id, reporter_user_id, reason, details, status) VALUES (?, ?, ?, ?, 'open') ON DUPLICATE KEY UPDATE reason = VALUES(reason), details = VALUES(details), status = 'open'", [postId, userId, reason, details]); }
   async communityPostReports(status = null) { const [rows] = await this.database.execute(`SELECT r.id, r.post_id AS postId, r.reporter_user_id AS reporterUserId, r.reason, r.details, r.status, r.created_at AS createdAt, p.slug AS postSlug, p.title AS postTitle, reporter.name AS reporterName FROM community_post_reports r JOIN community_posts p ON p.id = r.post_id JOIN users reporter ON reporter.id = r.reporter_user_id${status ? ' WHERE r.status = ?' : ''} ORDER BY r.created_at DESC`, status ? [status] : []); return rows; }
   async updateCommunityPostReport(id, status) { const [result] = await this.database.execute('UPDATE community_post_reports SET status = ? WHERE id = ?', [status, id]); return result.affectedRows > 0; }
@@ -364,6 +461,7 @@ export class Queries {
       if (post.groupId) return { error: 'GROUP_EXISTS', groupId: post.groupId };
       const [result] = await connection.execute("INSERT INTO event_groups (organizer_id, name, slug, description, visibility, city, category_id, source_post_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')", [userId, group.name, group.slug, group.description, group.visibility, post.city, post.categoryId, postId]);
       await connection.execute("INSERT INTO group_memberships (group_id, user_id, role, status) VALUES (?, ?, 'owner', 'active')", [result.insertId, userId]);
+      await connection.execute("INSERT INTO group_memberships (group_id, user_id, role, status) SELECT ?, user_id, 'member', 'active' FROM community_post_responses WHERE post_id = ? AND status = 'accepted' ON DUPLICATE KEY UPDATE status = 'active'", [result.insertId, postId]);
       await connection.execute("UPDATE community_posts SET group_id = ?, status = 'fulfilled' WHERE id = ?", [result.insertId, postId]);
       await connection.commit();
       return { groupId: result.insertId };

@@ -36,6 +36,7 @@ export default {
       managerEvent: process.env.MANAGER_EVENT_URL || `${siteUrl}/manager/events`,
       eventDetails: process.env.EVENT_DETAILS_URL || `${siteUrl}/events`,
       invitationResponse: process.env.INVITATION_RESPONSE_URL || `${siteUrl}/invitation-response`,
+      groupInvitation: process.env.GROUP_INVITATION_URL || `${siteUrl}/group-invitation`,
       login: process.env.LOGIN_URL || `${siteUrl}/login`,
       unsubscribe: process.env.UNSUBSCRIBE_URL || `${siteUrl}/unsubscribe`,
       unsubscribeEndpoint: process.env.UNSUBSCRIBE_ENDPOINT_URL || `${apiUrl}/api/email/unsubscribe`,
