@@ -70,18 +70,18 @@ export class Configuration {
     const articles = ftpValues.articles || values.ftpArticles;
     this.ftp = {
       profilePictures: profile || ftpConfig({
-        host: process.env.FTP_HOST || process.env.FTP_IP,
-        user: process.env.FTP_USERNAME,
-        password: process.env.FTP_PASSWORD,
-        uploadPath: process.env.FTP_UPLOAD_PATH,
-        publicUrl: process.env.FTP_PUBLIC_URL || `${apiUrl}/uploads/profile-pictures`,
-        tlsServername: process.env.FTP_TLS_SERVERNAME,
-        secure: process.env.FTP_SECURE === 'true',
-        timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
+        host: process.env.FTP_PROFILE_HOST || process.env.FTP_PROFILE_IP,
+        user: process.env.FTP_PROFILE_USERNAME,
+        password: process.env.FTP_PROFILE_PASSWORD,
+        uploadPath: process.env.FTP_PROFILE_UPLOAD_PATH,
+        publicUrl: process.env.FTP_PROFILE_PUBLIC_URL || `${apiUrl}/uploads/profile-pictures`,
+        tlsServername: process.env.FTP_PROFILE_TLS_SERVERNAME,
+        secure: process.env.FTP_PROFILE_SECURE === 'true',
+        timeoutMs: Number(process.env.FTP_PROFILE_TIMEOUT_MS || 30000),
       }),
       events: events || ftpConfig({
         host: process.env.FTP_EVENT_HOST || process.env.FTP_HOST || process.env.FTP_IP,
-        user: process.env.FTP_EVENT_USERNAME || 'u767010421.event',
+        user: process.env.FTP_EVENT_USERNAME,
         password: process.env.FTP_EVENT_PASSWORD,
         uploadPath: process.env.FTP_EVENT_UPLOAD_PATH,
         publicUrl: process.env.FTP_EVENT_PUBLIC_URL || `${apiUrl}/uploads/event-covers`,
@@ -91,7 +91,7 @@ export class Configuration {
       }),
       groups: groups || ftpConfig({
         host: process.env.FTP_GROUP_HOST || process.env.FTP_HOST || process.env.FTP_IP,
-        user: process.env.FTP_GROUP_USERNAME || 'u767010421.group',
+        user: process.env.FTP_GROUP_USERNAME,
         password: process.env.FTP_GROUP_PASSWORD,
         uploadPath: process.env.FTP_GROUP_UPLOAD_PATH,
         publicUrl: process.env.FTP_GROUP_PUBLIC_URL || `${apiUrl}/uploads/group-covers`,
@@ -101,7 +101,7 @@ export class Configuration {
       }),
       articles: articles || ftpConfig({
         host: process.env.FTP_ARTICLE_HOST || process.env.FTP_HOST || process.env.FTP_IP,
-        user: process.env.FTP_ARTICLE_USERNAME || 'u767010421.article',
+        user: process.env.FTP_ARTICLE_USERNAME,
         password: process.env.FTP_ARTICLE_PASSWORD,
         uploadPath: process.env.FTP_ARTICLE_UPLOAD_PATH,
         publicUrl: process.env.FTP_ARTICLE_PUBLIC_URL || `${apiUrl}/uploads/article-images`,
@@ -134,7 +134,7 @@ export class Configuration {
       current.secure = current.secure === true || current.secure === 'true';
       return current;
     };
-    overrideFtp(this.ftp.profilePictures, 'FTP', 'FTP');
+    overrideFtp(this.ftp.profilePictures, 'FTP_PROFILE');
     overrideFtp(this.ftp.events, 'FTP_EVENT');
     overrideFtp(this.ftp.groups, 'FTP_GROUP');
     overrideFtp(this.ftp.articles, 'FTP_ARTICLE');

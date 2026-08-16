@@ -47,15 +47,16 @@ export default {
     // already be chrooted to public_html (/uploads/...), while a main account
     // commonly needs /public_html/uploads/.... Set the matching *_UPLOAD_PATH
     // environment variable for the account used in production.
+    // Profile-picture settings use the FTP_PROFILE_* prefix.
     profilePictures: {
-      host: process.env.FTP_HOST || process.env.FTP_HOSTNAME || process.env.FTP_IP,
-      user: process.env.FTP_USERNAME,
-      password: process.env.FTP_PASSWORD,
-      uploadPath: process.env.FTP_UPLOAD_PATH,
-      publicUrl: process.env.FTP_PUBLIC_URL || `${apiUrl}/uploads/profile-pictures`,
-      tlsServername: process.env.FTP_TLS_SERVERNAME,
-      secure: process.env.FTP_SECURE === 'true',
-      timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
+      host: process.env.FTP_PROFILE_HOST || process.env.FTP_PROFILE_IP,
+      user: process.env.FTP_PROFILE_USERNAME,
+      password: process.env.FTP_PROFILE_PASSWORD,
+      uploadPath: process.env.FTP_PROFILE_UPLOAD_PATH,
+      publicUrl: process.env.FTP_PROFILE_PUBLIC_URL || `${apiUrl}/uploads/profile-pictures`,
+      tlsServername: process.env.FTP_PROFILE_TLS_SERVERNAME,
+      secure: process.env.FTP_PROFILE_SECURE === 'true',
+      timeoutMs: Number(process.env.FTP_PROFILE_TIMEOUT_MS || 30000),
     },
     events: {
       host: process.env.FTP_EVENT_HOST || process.env.FTP_HOST || process.env.FTP_HOSTNAME || process.env.FTP_IP,
@@ -69,7 +70,7 @@ export default {
     },
     groups: {
       host: process.env.FTP_GROUP_HOST || process.env.FTP_HOST || process.env.FTP_HOSTNAME || process.env.FTP_IP,
-      user: process.env.FTP_GROUP_USERNAME || 'u767010421.group',
+      user: process.env.FTP_GROUP_USERNAME,
       password: process.env.FTP_GROUP_PASSWORD,
       uploadPath: process.env.FTP_GROUP_UPLOAD_PATH,
       publicUrl: process.env.FTP_GROUP_PUBLIC_URL || `${apiUrl}/uploads/group-covers`,
@@ -79,7 +80,7 @@ export default {
     },
     articles: {
       host: process.env.FTP_ARTICLE_HOST || process.env.FTP_HOST || process.env.FTP_HOSTNAME || process.env.FTP_IP,
-      user: process.env.FTP_ARTICLE_USERNAME || 'u767010421.article',
+      user: process.env.FTP_ARTICLE_USERNAME,
       password: process.env.FTP_ARTICLE_PASSWORD,
       uploadPath: process.env.FTP_ARTICLE_UPLOAD_PATH,
       publicUrl: process.env.FTP_ARTICLE_PUBLIC_URL || `${apiUrl}/uploads/article-images`,
