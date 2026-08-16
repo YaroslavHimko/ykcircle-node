@@ -12,9 +12,11 @@ const ftpConfig = ({ host, user, password, uploadPath, publicUrl, tlsServername,
 export class Configuration {
   constructor(values = {}) {
     const siteValues = values.site || {};
-    const domain = siteValues.domain || values.domain || process.env.DOMAIN || 'ykcircle.com';
-    const siteUrl = (siteValues.siteUrl || values.siteUrl || process.env.SITE_URL || `https://${domain}`).replace(/\/$/, '');
-    const apiUrl = (siteValues.apiUrl || values.apiUrl || process.env.API_URL || `https://api.${domain}`).replace(/\/$/, '');
+    // Environment variables are deployment-specific and must take precedence
+    // over an old ignored config.local.js left on the server.
+    const domain = process.env.DOMAIN || siteValues.domain || values.domain || 'ykcircle.com';
+    const siteUrl = (process.env.SITE_URL || siteValues.siteUrl || values.siteUrl || `https://${domain}`).replace(/\/$/, '');
+    const apiUrl = (process.env.API_URL || siteValues.apiUrl || values.apiUrl || `https://api.${domain}`).replace(/\/$/, '');
 
     this.site = {
       domain,
@@ -44,20 +46,20 @@ export class Configuration {
         invitation: { user: process.env.INVITATION_USER, password: process.env.INVITATION_PASSWORD },
       },
       from: {
-        noReply: emailFrom.noReply || values.noReplyFrom || process.env.NO_REPLY_FROM || `no-reply@${domain}`,
-        applicationNotification: emailFrom.applicationNotification || values.applicationNotificationFrom || process.env.APPLICATION_NOTIFICATION_FROM || `info@${domain}`,
-        invitation: emailFrom.invitation || values.invitationFrom || process.env.INVITATION_FROM || `hello@${domain}`,
+        noReply: process.env.NO_REPLY_FROM || emailFrom.noReply || values.noReplyFrom || `no-reply@${domain}`,
+        applicationNotification: process.env.APPLICATION_NOTIFICATION_FROM || emailFrom.applicationNotification || values.applicationNotificationFrom || `info@${domain}`,
+        invitation: process.env.INVITATION_FROM || emailFrom.invitation || values.invitationFrom || `hello@${domain}`,
       },
       urls: {
-        verification: emailUrls.verification || values.emailVerificationUrl || process.env.EMAIL_VERIFICATION_URL || `${siteUrl}/verify-email`,
-        application: emailUrls.application || values.adminApplicationUrl || process.env.ADMIN_APPLICATION_URL || `${siteUrl}/admin/applications`,
-        managerEvent: emailUrls.managerEvent || values.managerEventUrl || process.env.MANAGER_EVENT_URL || `${siteUrl}/manager/events`,
-        eventDetails: emailUrls.eventDetails || values.eventDetailsUrl || process.env.EVENT_DETAILS_URL || `${siteUrl}/events`,
-        invitationResponse: emailUrls.invitationResponse || values.invitationResponseUrl || process.env.INVITATION_RESPONSE_URL || `${siteUrl}/invitation-response`,
-        groupInvitation: emailUrls.groupInvitation || values.groupInvitationUrl || process.env.GROUP_INVITATION_URL || `${siteUrl}/group-invitation`,
-        login: emailUrls.login || values.loginUrl || process.env.LOGIN_URL || `${siteUrl}/login`,
-        unsubscribe: emailUrls.unsubscribe || values.unsubscribeUrl || process.env.UNSUBSCRIBE_URL || `${siteUrl}/unsubscribe`,
-        unsubscribeEndpoint: emailUrls.unsubscribeEndpoint || values.unsubscribeEndpointUrl || process.env.UNSUBSCRIBE_ENDPOINT_URL || `${apiUrl}/api/email/unsubscribe`,
+        verification: process.env.EMAIL_VERIFICATION_URL || emailUrls.verification || values.emailVerificationUrl || `${siteUrl}/verify-email`,
+        application: process.env.ADMIN_APPLICATION_URL || emailUrls.application || values.adminApplicationUrl || `${siteUrl}/admin/applications`,
+        managerEvent: process.env.MANAGER_EVENT_URL || emailUrls.managerEvent || values.managerEventUrl || `${siteUrl}/manager/events`,
+        eventDetails: process.env.EVENT_DETAILS_URL || emailUrls.eventDetails || values.eventDetailsUrl || `${siteUrl}/events`,
+        invitationResponse: process.env.INVITATION_RESPONSE_URL || emailUrls.invitationResponse || values.invitationResponseUrl || `${siteUrl}/invitation-response`,
+        groupInvitation: process.env.GROUP_INVITATION_URL || emailUrls.groupInvitation || values.groupInvitationUrl || `${siteUrl}/group-invitation`,
+        login: process.env.LOGIN_URL || emailUrls.login || values.loginUrl || `${siteUrl}/login`,
+        unsubscribe: process.env.UNSUBSCRIBE_URL || emailUrls.unsubscribe || values.unsubscribeUrl || `${siteUrl}/unsubscribe`,
+        unsubscribeEndpoint: process.env.UNSUBSCRIBE_ENDPOINT_URL || emailUrls.unsubscribeEndpoint || values.unsubscribeEndpointUrl || `${apiUrl}/api/email/unsubscribe`,
       },
     };
 
