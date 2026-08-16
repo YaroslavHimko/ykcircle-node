@@ -209,6 +209,9 @@ export class Queries {
     const [invitations] = await this.database.execute('SELECT id, email, expires_at AS expiresAt FROM group_invitations WHERE group_id = ? AND email = ?', [groupId, recipientEmail]);
     return { invitation: invitations[0], group, recipient: { id: user?.id || null, name: user?.name || null, email: recipientEmail } };
   }
+  async groupInvitations(groupId) { const [rows] = await this.database.execute(`SELECT i.id, i.group_id AS groupId, i.invited_user_id AS invitedUserId, COALESCE(u.name, i.email) AS recipientName, i.email AS recipientEmail,
+    i.status, i.created_at AS createdAt, i.updated_at AS updatedAt, i.expires_at AS expiresAt, IF(i.expires_at <= NOW() AND i.status = 'pending', TRUE, FALSE) AS isExpired
+    FROM group_invitations i LEFT JOIN users u ON u.id = i.invited_user_id WHERE i.group_id = ? ORDER BY i.created_at DESC`, [groupId]); return rows; }
   async respondToGroupInvitation(token, action) {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
     const connection = await this.database.getConnection();
