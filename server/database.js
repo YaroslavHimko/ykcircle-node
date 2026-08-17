@@ -45,7 +45,7 @@ export class Database {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
       await this.pool.execute(`INSERT IGNORE INTO application_activities (name, sort_order) VALUES
-        ('Become an Event Organizer', 10), ('Travel Collaboration', 20), ('General Enquiry', 30)`);
+        ('Publish an Article', 10), ('Travel Collaboration', 20), ('General Enquiry', 30)`);
       try { await this.pool.execute("ALTER TABLE contact_submissions MODIFY status ENUM('New', 'Approved', 'Contact Again', 'Ordered', 'Declined') NOT NULL DEFAULT 'New'"); } catch (error) { console.error('Application status migration failed:', error.message); throw error; }
       try { await this.pool.execute('ALTER TABLE events ADD COLUMN deleted_at DATETIME NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
       try { await this.pool.execute('ALTER TABLE events ADD COLUMN participation_fee DECIMAL(10,2) NOT NULL DEFAULT 0'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }

@@ -529,7 +529,7 @@ export class Queries {
       const [result] = await connection.execute("INSERT INTO event_groups (organizer_id, name, slug, description, visibility, city, category_id, source_post_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')", [userId, group.name, group.slug, group.description, group.visibility, post.city, post.categoryId, postId]);
       await connection.execute("INSERT INTO group_memberships (group_id, user_id, role, status) VALUES (?, ?, 'owner', 'active')", [result.insertId, userId]);
       await connection.execute("INSERT INTO group_memberships (group_id, user_id, role, status) SELECT ?, user_id, 'member', 'active' FROM community_post_responses WHERE post_id = ? AND status = 'accepted' ON DUPLICATE KEY UPDATE status = 'active'", [result.insertId, postId]);
-      await connection.execute("UPDATE community_posts SET group_id = ?, status = 'fulfilled' WHERE id = ?", [result.insertId, postId]);
+      await connection.execute('UPDATE community_posts SET group_id = ? WHERE id = ?', [result.insertId, postId]);
       await connection.commit();
       return { groupId: result.insertId };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
