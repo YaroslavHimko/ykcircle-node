@@ -7,6 +7,7 @@ import { INVITATION_STATUSES, isInvitationStatus } from './invitation-status.js'
 import { PARTICIPANT_STATUSES, isParticipantStatus } from './participant-status.js';
 import multer from 'multer';
 import { EMAIL_UNSUBSCRIBE_REASONS } from './email-unsubscribe-reasons.js';
+import { legalDocument, legalDocumentIndex } from './legal-documents.js';
 
 export class Api {
   constructor({ config, database, queries, emailService, ftpService, eventFtpService, groupFtpService, articleFtpService }) {
@@ -41,6 +42,14 @@ export class Api {
     app.get('/api/registration-statuses', (_req, res) => res.json(REGISTRATION_STATUSES));
     app.get('/api/invitation-statuses', (_req, res) => res.json(INVITATION_STATUSES));
     app.get('/api/participant-statuses', (_req, res) => res.json(PARTICIPANT_STATUSES));
+    app.get('/api/legal-documents', (_req, res) => res.json(legalDocumentIndex()));
+    app.get('/api/legal-documents/:slug', async (req, res) => {
+      try {
+        const document = await legalDocument(req.params.slug);
+        if (!document) return res.status(404).json({ error: 'Legal document not found.' });
+        return res.json(document);
+      } catch (error) { console.error('Legal document load failed:', error.message); return res.status(500).json({ error: 'Unable to load legal document.' }); }
+    });
     app.get('/api/event-categories', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.eventCategories()); } catch { return res.status(500).json({ error: 'Unable to load event categories.' }); } });
     app.get('/api/event-types', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.eventTypes()); } catch { return res.status(500).json({ error: 'Unable to load event types.' }); } });
     app.get('/api/timezones', (_req, res) => {
@@ -143,6 +152,35 @@ export class Api {
       } catch { /* Treat invalid optional credentials as anonymous. */ }
       return next();
     };
+    const reportRateLimit = new Map();
+    const reportEntityTypes = new Set(['community_post', 'image', 'event', 'group', 'review', 'profile', 'organization']);
+    const reportReasonCodes = new Set(['illegal_content', 'harassment', 'sexual_content', 'child_safety', 'violence', 'hate', 'scam_fraud', 'impersonation', 'privacy', 'intellectual_property', 'spam', 'unsafe_event', 'misleading_business', 'other']);
+    const reportReference = () => `RPT-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
+    app.post('/api/reports', optionalAuthenticate, async (req, res) => {
+      const entityType = String(req.body.entityType || '').trim();
+      const entityId = req.body.entityId == null ? null : String(req.body.entityId).trim() || null;
+      const contentUrl = req.body.contentUrl == null ? null : String(req.body.contentUrl).trim() || null;
+      const reasonCode = String(req.body.reasonCode || '').trim();
+      const description = String(req.body.description || '').trim();
+      const supportingDetails = req.body.supportingDetails == null ? null : String(req.body.supportingDetails).trim() || null;
+      const reporterEmail = req.user?.email || (req.body.reporterEmail == null ? null : String(req.body.reporterEmail).trim().toLowerCase() || null);
+      const allegedIllegal = req.body.allegedIllegal === true;
+      const goodFaithDeclared = req.body.goodFaithDeclared === true;
+      if (!reportEntityTypes.has(entityType) || (!entityId && !contentUrl) || !reportReasonCodes.has(reasonCode) || !description || description.length > 5000 || supportingDetails?.length > 10000 || !goodFaithDeclared) return res.status(422).json({ error: 'Provide a supported content type, content ID or URL, reason, explanation, and good-faith declaration.' });
+      if (!reporterEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(reporterEmail)) return res.status(422).json({ error: 'A valid contact email is required.' });
+      if (contentUrl) { try { const url = new URL(contentUrl); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Unsupported URL'); } catch { return res.status(422).json({ error: 'contentUrl must be a valid HTTP(S) URL.' }); } }
+      const key = `${req.ip}:${req.user?.id || reporterEmail}`;
+      const now = Date.now();
+      const attempts = (reportRateLimit.get(key) || []).filter((time) => now - time < 60 * 60 * 1000);
+      if (attempts.length >= 5) return res.status(429).json({ error: 'Too many reports submitted. Please try again later.' });
+      attempts.push(now); reportRateLimit.set(key, attempts);
+      try {
+        await ensureTable();
+        const reference = reportReference();
+        const id = await this.queries.createContentReport({ reference, reporterUserId: req.user?.id || null, reporterEmail, entityType, entityId, contentUrl, reasonCode, description, supportingDetails, allegedIllegal });
+        return res.status(201).json({ id, reference, status: 'submitted', message: 'Your report has been received.' });
+      } catch (error) { console.error('Content report submission failed:', error.message); return res.status(500).json({ error: 'Unable to submit your report.' }); }
+    });
     app.get(groupUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); if (!await this.queries.groupForCover(req.params.filename, req.user?.id ?? null, req.user?.role ?? null)) return res.status(404).json({ error: 'Group cover not found.' }); if (!await this.groupFtpService.streamGroupCover(req.params.filename, res)) return res.status(404).json({ error: 'Group cover not found.' }); } catch (error) { console.error('Group cover proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load group cover.' }); } });
     app.get(articleUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); if (!this.articleFtpService || !await this.queries.articleImageVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null) || !await this.articleFtpService.streamArticleImage(req.params.filename, res)) return res.status(404).json({ error: 'Article image not found.' }); } catch (error) { console.error('Article image proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load article image.' }); } });
     const requireAdmin = (req, res, next) => req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required.' });

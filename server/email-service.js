@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const eventFee = (event) => Number(event.fee) > 0 ? `\nFee: ${Number(event.fee).toFixed(2)} SEK` : '';
 const eventFeeHtml = (event) => Number(event.fee) > 0 ? `<br><strong>Fee:</strong> ${escapeHtml(Number(event.fee).toFixed(2))} SEK` : '';
+const formatEventDate = (date, timezone = 'UTC') => new Date(date).toLocaleString(undefined, { timeZone: timezone || 'UTC', timeZoneName: 'short' });
 
 export class EmailService {
   constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, applicationUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, loginUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
@@ -104,7 +105,7 @@ export class EmailService {
     const eventUrl = `${this.eventDetailsUrl.replace(/\/$/, '')}/${event.id}`;
     const acceptUrl = `${this.invitationResponseUrl}?token=${encodeURIComponent(event.invitationToken)}&action=accept`;
     const declineUrl = `${this.invitationResponseUrl}?token=${encodeURIComponent(event.invitationToken)}&action=decline`;
-    const start = new Date(event.startsAt).toLocaleString();
+    const start = formatEventDate(event.startsAt, event.timezone);
     return this.invitationMailer.sendMail({ from: this.invitationFrom, to: email, subject: `You are invited to ${event.title}`,
       text: `Hi ${name},\n\nYou have been invited to ${event.title}.\n\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}\n\nConfirm invitation: ${acceptUrl}\nDecline invitation: ${declineUrl}\nView event and register: ${eventUrl}`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>You are invited</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to <strong>${escapeHtml(event.title)}</strong>.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}</div><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Confirm invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p><p style="margin:20px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event and register</a></p>`) });

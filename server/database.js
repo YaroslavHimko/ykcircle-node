@@ -26,6 +26,32 @@ export class Database {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (email),
         CONSTRAINT contact_submissions_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
       )`);
+      // A polymorphic report table intentionally has no foreign key to the reported
+      // object. Reports must remain reviewable even if the reported content is
+      // subsequently removed, and not every supported entity has the same table.
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS content_reports (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        reference VARCHAR(40) NOT NULL UNIQUE,
+        reporter_user_id INT UNSIGNED NULL,
+        reporter_email VARCHAR(255) NULL,
+        entity_type ENUM('community_post','image','event','group','review','profile','organization') NOT NULL,
+        entity_id VARCHAR(128) NULL,
+        content_url VARCHAR(2048) NULL,
+        reason_code ENUM('illegal_content','harassment','sexual_content','child_safety','violence','hate','scam_fraud','impersonation','privacy','intellectual_property','spam','unsafe_event','misleading_business','other') NOT NULL,
+        description TEXT NOT NULL,
+        supporting_details TEXT NULL,
+        alleged_illegal BOOLEAN NOT NULL DEFAULT FALSE,
+        good_faith_declared BOOLEAN NOT NULL,
+        status ENUM('submitted','under_review','resolved','dismissed') NOT NULL DEFAULT 'submitted',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at DATETIME NULL,
+        reviewed_by_user_id INT UNSIGNED NULL,
+        INDEX content_reports_status_created (status, created_at),
+        INDEX content_reports_entity (entity_type, entity_id),
+        INDEX content_reports_reporter (reporter_user_id, created_at),
+        CONSTRAINT content_reports_reporter_fk FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT content_reports_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS events (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, manager_id INT UNSIGNED NOT NULL,
         title VARCHAR(200) NOT NULL, description TEXT NULL, location VARCHAR(255) NULL,
