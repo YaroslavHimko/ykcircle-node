@@ -52,6 +52,7 @@ export class Configuration {
       },
       urls: {
         verification: process.env.EMAIL_VERIFICATION_URL || emailUrls.verification || values.emailVerificationUrl || `${siteUrl}/verify-email`,
+        passwordReset: process.env.PASSWORD_RESET_URL || emailUrls.passwordReset || values.passwordResetUrl || `${siteUrl}/reset-password`,
         application: process.env.ADMIN_APPLICATION_URL || emailUrls.application || values.adminApplicationUrl || `${siteUrl}/admin/applications`,
         managerEvent: process.env.MANAGER_EVENT_URL || emailUrls.managerEvent || values.managerEventUrl || `${siteUrl}/manager/events`,
         eventDetails: process.env.EVENT_DETAILS_URL || emailUrls.eventDetails || values.eventDetailsUrl || `${siteUrl}/events`,
@@ -155,6 +156,7 @@ export class Configuration {
     this.brandName = this.site.brandName;
     this.smtp = this.email.smtp;
     this.emailVerificationUrl = this.email.urls.verification;
+    this.passwordResetUrl = this.email.urls.passwordReset;
     this.adminApplicationUrl = this.email.urls.application;
     this.managerEventUrl = this.email.urls.managerEvent;
     this.eventDetailsUrl = this.email.urls.eventDetails;

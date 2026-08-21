@@ -7,12 +7,13 @@ const eventFeeHtml = (event) => Number(event.fee) > 0 ? `<br><strong>Fee:</stron
 const formatEventDate = (date, timezone = 'UTC') => new Date(date).toLocaleString(undefined, { timeZone: timezone || 'UTC', timeZoneName: 'short' });
 
 export class EmailService {
-  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, applicationUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, loginUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
+  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, passwordResetUrl, applicationUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, loginUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
     this.domain = domain;
     this.brandName = brandName;
     this.noReplyFrom = noReplyFrom;
     this.smtp = smtp;
     this.verificationUrl = verificationUrl;
+    this.passwordResetUrl = passwordResetUrl;
     this.applicationUrl = applicationUrl;
     this.managerEventUrl = managerEventUrl;
     this.eventDetailsUrl = eventDetailsUrl;
@@ -61,6 +62,13 @@ export class EmailService {
     return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Verify your ${this.brandName} email address`,
       text: `Hi ${name},\n\nVerify your email address by opening this link:\n${url}\n\nThis link expires in 24 hours.`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Confirm your email address</h1><p style="font-size:16px;line-height:1.6;color:#526078">Thanks for creating your account. Click the button below to verify your email and finish setting up your profile.</p><p style="margin:28px 0"><a href="${url}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Verify my email</a></p><p style="font-size:13px;line-height:1.5;color:#7b879b">This verification link expires in 24 hours. If you did not create this account, you can safely ignore this email.</p>`) });
+  }
+
+  sendPasswordReset(email, name, token) {
+    const url = `${this.passwordResetUrl}?token=${encodeURIComponent(token)}`;
+    return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Reset your ${this.brandName} password`,
+      text: `Hi ${name},\n\nReset your password by opening this link:\n${url}\n\nThis link expires in one hour. If you did not request a password reset, you can safely ignore this email.`,
+      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Reset your password</h1><p style="font-size:16px;line-height:1.6;color:#526078">We received a request to reset your password. Use the button below to choose a new one.</p><p style="margin:28px 0"><a href="${escapeHtml(url)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Reset password</a></p><p style="font-size:13px;line-height:1.5;color:#7b879b">This link expires in one hour. If you did not request a password reset, you can safely ignore this email.</p>`) });
   }
 
   sendAccountDeleted(email, name) {

@@ -25,6 +25,7 @@ const start = async () => {
     smtp: config.email.smtp,
     domain: config.site.domain,
     verificationUrl: config.email.urls.verification,
+    passwordResetUrl: config.email.urls.passwordReset,
     applicationUrl: config.email.urls.application,
     managerEventUrl: config.email.urls.managerEvent,
     eventDetailsUrl: config.email.urls.eventDetails,

@@ -49,6 +49,32 @@ export class Queries {
   async emailExists(email) { const [rows] = await this.database.execute('SELECT id FROM users WHERE email = ?', [email]); return rows.length > 0; }
   async verifyEmail(tokenHash) { const [result] = await this.database.execute('UPDATE users SET isEmailConfirmed = TRUE, verification_token_hash = NULL, verification_expires_at = NULL WHERE verification_token_hash = ? AND verification_expires_at > NOW()', [tokenHash]); return result.affectedRows > 0; }
   async refreshVerification(email, tokenHash) { const [rows] = await this.database.execute('SELECT name, email, isEmailConfirmed, verification_resend_available_at AS availableAt FROM users WHERE email = ?', [email]); const user = rows[0]; if (!user || user.isEmailConfirmed) return null; if (user.availableAt && new Date(user.availableAt).getTime() > Date.now()) return { cooldownSeconds: Math.ceil((new Date(user.availableAt).getTime() - Date.now()) / 1000) }; const [result] = await this.database.execute('UPDATE users SET verification_token_hash = ?, verification_expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR), verification_resend_available_at = DATE_ADD(NOW(), INTERVAL 30 SECOND) WHERE email = ? AND isEmailConfirmed = FALSE', [tokenHash, email]); return result.affectedRows ? { name: user.name, email: user.email } : null; }
+  async createPasswordReset(email, tokenHash) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [users] = await connection.execute('SELECT id, name, email FROM users WHERE email = ? FOR UPDATE', [email]);
+      const user = users[0];
+      if (!user) { await connection.commit(); return null; }
+      const [tokens] = await connection.execute('SELECT resend_available_at AS availableAt FROM password_reset_tokens WHERE user_id = ? FOR UPDATE', [user.id]);
+      if (tokens[0]?.availableAt && new Date(tokens[0].availableAt).getTime() > Date.now()) { await connection.commit(); return { cooldown: true }; }
+      await connection.execute('INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, resend_available_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 1 HOUR), DATE_ADD(NOW(), INTERVAL 30 SECOND)) ON DUPLICATE KEY UPDATE token_hash = VALUES(token_hash), expires_at = VALUES(expires_at), resend_available_at = VALUES(resend_available_at), created_at = CURRENT_TIMESTAMP', [user.id, tokenHash]);
+      await connection.commit();
+      return user;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async resetPassword(tokenHash, passwordHash) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [tokens] = await connection.execute('SELECT user_id AS userId FROM password_reset_tokens WHERE token_hash = ? AND expires_at > NOW() FOR UPDATE', [tokenHash]);
+      if (!tokens[0]) { await connection.commit(); return false; }
+      await connection.execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, tokens[0].userId]);
+      await connection.execute('DELETE FROM password_reset_tokens WHERE user_id = ?', [tokens[0].userId]);
+      await connection.commit();
+      return true;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
   async profile(id) { const [rows] = await this.database.execute("SELECT u.id, u.profile_picture AS profilePicture, u.name, u.email, u.phone, u.role, u.isEmailConfirmed, u.created_at AS createdAt, NOT EXISTS (SELECT 1 FROM unsubscribed_emails s WHERE LOWER(s.email) = LOWER(u.email)) AS receivesEmailNotifications FROM users u WHERE u.id = ?", [id]); return rows[0]; }
   async setEmailNotifications(email, enabled) { if (enabled) { await this.database.execute('DELETE FROM unsubscribed_emails WHERE LOWER(email) = LOWER(?)', [email]); } else { await this.database.execute("INSERT INTO unsubscribed_emails (email, reason) VALUES (?, 'User disabled email notifications') ON DUPLICATE KEY UPDATE reason = VALUES(reason), unsubscribed_at = CURRENT_TIMESTAMP", [email.toLowerCase()]); } return enabled; }
   async updateProfilePicture(id, profilePicture) { const [result] = await this.database.execute('UPDATE users SET profile_picture = ? WHERE id = ?', [profilePicture, id]); return result.affectedRows > 0; }

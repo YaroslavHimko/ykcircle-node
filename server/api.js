@@ -264,6 +264,31 @@ export class Api {
       } catch (error) { console.error('Registration failed:', error.message); return res.status(500).json({ error: 'Unable to register right now.' }); }
     });
     app.post('/api/auth/resend-verification', async (req, res) => { const email = req.body.email?.trim().toLowerCase(); const message = 'If an unverified account exists for that email, a new verification email has been sent.'; if (!email) return res.status(200).json({ message }); try { await ensureTable(); const token = createVerificationToken(); const user = await this.queries.refreshVerification(email, hashToken(token)); if (user?.cooldownSeconds) return res.status(429).set('Retry-After', String(user.cooldownSeconds)).json({ error: 'Please wait before requesting another verification email.', retryAfter: user.cooldownSeconds }); if (user) { try { await this.emailService.sendVerification(user.email, user.name, token); } catch (emailError) { console.error('Verification resend email failed:', emailError.message); } } return res.json({ message }); } catch (error) { console.error('Verification resend failed:', error.message); return res.status(500).json({ error: 'Unable to resend verification email.' }); } });
+    app.post('/api/auth/forgot-password', async (req, res) => {
+      const email = String(req.body.email || '').trim().toLowerCase();
+      const message = 'If an account exists for that email, a password reset link has been sent.';
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'A valid email address is required.' });
+      try {
+        await ensureTable();
+        const token = createVerificationToken();
+        const user = await this.queries.createPasswordReset(email, hashToken(token));
+        if (user && !user.cooldown) {
+          try { await this.emailService.sendPasswordReset(user.email, user.name, token); }
+          catch (emailError) { console.error('Password reset email failed:', emailError.message); }
+        }
+        return res.json({ message });
+      } catch (error) { console.error('Password reset request failed:', error.message); return res.status(500).json({ error: 'Unable to request a password reset right now.' }); }
+    });
+    app.post('/api/auth/reset-password', async (req, res) => {
+      const token = String(req.body.token || '');
+      const password = typeof req.body.password === 'string' ? req.body.password : '';
+      if (!token || password.length < 8) return res.status(400).json({ error: 'A valid reset token and a password of at least 8 characters are required.' });
+      try {
+        await ensureTable();
+        if (!await this.queries.resetPassword(hashToken(token), await hashPassword(password))) return res.status(400).json({ error: 'Invalid or expired password reset token.' });
+        return res.json({ message: 'Your password has been reset successfully.' });
+      } catch (error) { console.error('Password reset failed:', error.message); return res.status(500).json({ error: 'Unable to reset your password right now.' }); }
+    });
     
     app.get('/api/auth/verify-email', async (req, res) => {
       const { token } = req.query;

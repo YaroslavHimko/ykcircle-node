@@ -32,6 +32,7 @@ export default {
     },
     urls: {
       verification: process.env.EMAIL_VERIFICATION_URL || `${siteUrl}/verify-email`,
+      passwordReset: process.env.PASSWORD_RESET_URL || `${siteUrl}/reset-password`,
       application: process.env.ADMIN_APPLICATION_URL || `${siteUrl}/admin/applications`,
       managerEvent: process.env.MANAGER_EVENT_URL || `${siteUrl}/manager/events`,
       eventDetails: process.env.EVENT_DETAILS_URL || `${siteUrl}/events`,
