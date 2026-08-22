@@ -5,6 +5,15 @@ const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character)
 const eventFee = (event) => Number(event.fee) > 0 ? `\nFee: ${Number(event.fee).toFixed(2)} SEK` : '';
 const eventFeeHtml = (event) => Number(event.fee) > 0 ? `<br><strong>Fee:</strong> ${escapeHtml(Number(event.fee).toFixed(2))} SEK` : '';
 const formatEventDate = (date, timezone = 'UTC') => new Date(date).toLocaleString(undefined, { timeZone: timezone || 'UTC', timeZoneName: 'short' });
+const brandEmailHtml = (html = '') => {
+  const colors = {
+    '#f5f7fb': '#f8f5f1', '#172033': '#251e18', '#e7ebf3': '#dfd2c7',
+    '#b9c5d8': '#e7d9cc', '#8994a8': '#76675e', '#0ea5e9': '#c94b1b', '#526078': '#665a52',
+    '#7b879b': '#76675e', '#f8fafc': '#f2e9e1', '#718096': '#76675e', '#e0f2fe': '#dce9e5',
+    '#0369a1': '#316f68', '#16a34a': '#316f68', '#dc2626': '#c94b1b',
+  };
+  return Object.entries(colors).reduce((result, [from, to]) => result.replaceAll(from, to), String(html)).replace(/#fff(?![0-9a-f])/gi, '#fffdfa');
+};
 
 export class EmailService {
   constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, passwordResetUrl, applicationUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, loginUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
@@ -40,7 +49,7 @@ export class EmailService {
         if (!allowed.length) return { accepted: [], rejected: recipients, suppressed: true };
         const token = this.unsubscribeToken(allowed[0]);
         const unsubscribeLink = `${this.unsubscribeEndpointUrl}?token=${encodeURIComponent(token)}`;
-        return sendMail({ ...message, to: allowed, text: `${message.text || ''}\n\nUnsubscribe from future emails: ${unsubscribeLink}`, html: `${message.html || ''}<p style="font-size:12px;color:#8994a8;text-align:center;margin-top:28px"><a href="${escapeHtml(unsubscribeLink)}">Unsubscribe from future emails</a></p>` });
+        return sendMail({ ...message, to: allowed, text: `${message.text || ''}\n\nUnsubscribe from future emails: ${unsubscribeLink}`, html: `${brandEmailHtml(message.html)}<p style="font-size:12px;color:#76675e;text-align:center;margin-top:28px"><a href="${escapeHtml(unsubscribeLink)}" style="color:#316f68">Unsubscribe from future emails</a></p>` });
       };
     }
   }
@@ -54,7 +63,8 @@ export class EmailService {
 
   layout(content, subtitle = '') {
     const brandName = escapeHtml(this.brandName);
-    return `<div style="margin:0;background:#f5f7fb;padding:40px 16px;font-family:Arial,sans-serif;color:#172033"><div style="max-width:600px;margin:auto;background:#fff;border:1px solid #e7ebf3;border-radius:16px;overflow:hidden"><div style="background:#172033;padding:28px 32px"><div style="font-size:22px;font-weight:700;color:#fff">${brandName}</div>${subtitle ? `<div style="color:#b9c5d8;font-size:13px;margin-top:8px">${subtitle}</div>` : ''}</div><div style="padding:36px 32px">${content}</div><div style="border-top:1px solid #e7ebf3;padding:20px 32px;font-size:12px;color:#8994a8">© ${brandName}</div></div></div>`;
+    const brandUrl = `https://${this.domain}`;
+    return `<div style="margin:0;background:#f8f5f1;padding:40px 16px;font-family:Arial,sans-serif;color:#251e18"><div style="max-width:600px;margin:auto;background:#fffdfa;border:1px solid #dfd2c7;border-radius:4px;overflow:hidden"><div style="height:6px;background:#c94b1b"></div><div style="background:#f8f5f1;border-bottom:1px solid #dfd2c7;padding:28px 32px"><a href="${escapeHtml(brandUrl)}" style="font-family:Georgia,serif;font-size:24px;font-weight:700;letter-spacing:-0.3px;color:#c94b1b;text-decoration:none">${brandName}</a>${subtitle ? `<div style="color:#76675e;font-size:13px;margin-top:8px">${subtitle}</div>` : ''}</div><div style="padding:36px 32px"><style>h1{font-family:Georgia,serif;color:#251e18;font-size:28px;line-height:1.2;margin:0 0 16px}a{color:#316f68}</style>${content}</div><div style="border-top:1px solid #dfd2c7;padding:20px 32px;font-size:12px;color:#76675e">&copy; ${brandName}</div></div></div>`;
   }
 
   sendVerification(email, name, token) {

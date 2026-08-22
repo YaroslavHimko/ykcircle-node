@@ -185,6 +185,11 @@ export class Configuration {
 
   getAllowedOrigins() {
     const configured = process.env.CORS_ORIGIN?.split(',').map((origin) => origin.trim()).filter(Boolean);
-    return [...new Set([`https://${this.site.domain}`, `https://www.${this.site.domain}`, ...(configured || [])])];
+    const localOrigins = process.env.NODE_ENV === 'production' ? [] : [
+      'http://localhost:5173', 'http://127.0.0.1:5173',
+      'http://localhost:4173', 'http://127.0.0.1:4173',
+      'http://localhost:3000', 'http://127.0.0.1:3000',
+    ];
+    return [...new Set([`https://${this.site.domain}`, `https://www.${this.site.domain}`, ...localOrigins, ...(configured || [])])];
   }
 }
