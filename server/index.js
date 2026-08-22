@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import cors from 'cors';
 import { Database } from './database.js';
 import { EmailService } from './email-service.js';
@@ -7,6 +8,42 @@ import { Configuration } from './configuration.js';
 import { Queries } from './queries.js';
 import { Api } from './api.js';
 import { FtpService } from './ftp-service.js';
+
+const createRateLimiter = ({ windowMs, max, key = (req) => req.ip, message = 'Too many requests. Please try again later.' }) => {
+  const attempts = new Map();
+  const maxEntries = 10000;
+  return (req, res, next) => {
+    const now = Date.now();
+    const identity = String(key(req) || req.ip || 'unknown').slice(0, 320);
+    const values = (attempts.get(identity) || []).filter((time) => now - time < windowMs);
+    if (values.length >= max) {
+      const retryAfter = Math.max(1, Math.ceil((values[0] + windowMs - now) / 1000));
+      return res.status(429).set('Retry-After', String(retryAfter)).json({ error: message, retryAfter });
+    }
+    values.push(now);
+    attempts.set(identity, values);
+    if (attempts.size > maxEntries) {
+      for (const [entryKey, entryValues] of attempts) {
+        if (!entryValues.length || now - entryValues.at(-1) >= windowMs || attempts.size > maxEntries) attempts.delete(entryKey);
+        if (attempts.size <= maxEntries) break;
+      }
+    }
+    return next();
+  };
+};
+
+const securityHeaders = (req, res, next) => {
+  req.cspNonce = crypto.randomBytes(16).toString('base64');
+  res.set({
+    'Content-Security-Policy': `default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self' 'nonce-${req.cspNonce}'; style-src 'self' 'unsafe-inline'`,
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Permissions-Policy': 'camera=(), geolocation=(), microphone=()',
+  });
+  next();
+};
 
 const loadConfiguration = async () => {
   try {
@@ -46,8 +83,27 @@ const start = async () => {
   const groupFtpService = new FtpService(config.ftp.groups);
   const articleFtpService = new FtpService(config.ftp.articles);
   const app = express();
-  app.use(cors(config.runtime.allowedOrigins?.length ? { origin: config.runtime.allowedOrigins } : undefined));
+  if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
+  app.disable('x-powered-by');
+  app.use(securityHeaders);
+  app.use(cors({ origin: config.runtime.allowedOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], maxAge: 86400 }));
   app.use(express.json());
+  const byIpAndEmail = (req) => `${req.ip}:${String(req.body?.email || req.body?.reporterEmail || '').trim().toLowerCase()}`;
+  const authIpLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30, message: 'Too many authentication attempts. Please try again later.' });
+  const authIdentityLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10, key: byIpAndEmail, message: 'Too many authentication attempts. Please try again later.' });
+  const emailIpLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20, message: 'Too many email requests. Please try again later.' });
+  const emailIdentityLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5, key: byIpAndEmail, message: 'Too many email requests. Please try again later.' });
+  const publicWriteLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5, message: 'Too many requests from this IP address. Please try again later.' });
+  const reportLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5, key: (req) => req.ip, message: 'Too many reports submitted. Please try again later.' });
+  const apiWriteLimit = createRateLimiter({ windowMs: 60 * 1000, max: 120, message: 'Too many write requests. Please try again shortly.' });
+  app.use('/api', (req, res, next) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ? apiWriteLimit(req, res, next) : next());
+  app.post('/api/auth/login', authIpLimit, authIdentityLimit);
+  app.post('/api/auth/register', publicWriteLimit);
+  app.post('/api/auth/resend-verification', emailIpLimit, emailIdentityLimit);
+  app.post('/api/auth/forgot-password', emailIpLimit, emailIdentityLimit);
+  app.post('/api/contact', publicWriteLimit);
+  app.post('/api/reports', reportLimit);
+  app.post('/api/invitations/respond', publicWriteLimit);
   // Keep this before API routes and any catch-all middleware so uploads are
   // always served as files by the API process.
   app.use('/uploads', express.static(path.resolve(process.cwd(), config.runtime.uploadsDir)));

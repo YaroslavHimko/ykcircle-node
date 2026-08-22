@@ -88,6 +88,6 @@ export default {
   runtime: {
     uploadsDir: process.env.UPLOADS_DIR || 'uploads',
     port: Number(process.env.PORT || 3001),
-    authSecret: process.env.AUTH_SECRET || 'change-this-auth-secret',
+    authSecret: process.env.AUTH_SECRET,
   },
 };

@@ -12,12 +12,13 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, profile_picture VARCHAR(1024),
         name VARCHAR(160) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE,
         password_hash VARCHAR(255) NOT NULL, phone VARCHAR(40) NULL,
-        role ENUM('customer', 'organizer', 'manager', 'admin') NOT NULL DEFAULT 'customer',
+        role ENUM('customer', 'organizer', 'manager', 'admin') NOT NULL DEFAULT 'customer', session_version INT UNSIGNED NOT NULL DEFAULT 0,
         isEmailConfirmed BOOLEAN NOT NULL DEFAULT FALSE,
         verification_token_hash CHAR(64) NULL, verification_expires_at DATETIME NULL,
         verification_resend_available_at DATETIME NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
+      try { await this.pool.execute('ALTER TABLE users ADD COLUMN session_version INT UNSIGNED NOT NULL DEFAULT 0'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS password_reset_tokens (
         user_id INT UNSIGNED NOT NULL PRIMARY KEY,
         token_hash CHAR(64) NOT NULL UNIQUE,

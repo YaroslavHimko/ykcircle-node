@@ -44,8 +44,8 @@ export class Queries {
     };
   }
   async initialize() { return this.database.initialize(); }
-  async findUserById(id) { const [rows] = await this.database.execute('SELECT id, email, role, isEmailConfirmed FROM users WHERE id = ?', [id]); return rows[0]; }
-  async findUserByEmail(email) { const [rows] = await this.database.execute('SELECT id, profile_picture AS profilePicture, name, email, password_hash, phone, role, isEmailConfirmed FROM users WHERE email = ?', [email]); return rows[0]; }
+  async findUserById(id) { const [rows] = await this.database.execute('SELECT id, email, role, isEmailConfirmed, session_version AS sessionVersion FROM users WHERE id = ?', [id]); return rows[0]; }
+  async findUserByEmail(email) { const [rows] = await this.database.execute('SELECT id, profile_picture AS profilePicture, name, email, password_hash, phone, role, isEmailConfirmed, session_version AS sessionVersion FROM users WHERE email = ?', [email]); return rows[0]; }
   async emailExists(email) { const [rows] = await this.database.execute('SELECT id FROM users WHERE email = ?', [email]); return rows.length > 0; }
   async verifyEmail(tokenHash) { const [result] = await this.database.execute('UPDATE users SET isEmailConfirmed = TRUE, verification_token_hash = NULL, verification_expires_at = NULL WHERE verification_token_hash = ? AND verification_expires_at > NOW()', [tokenHash]); return result.affectedRows > 0; }
   async refreshVerification(email, tokenHash) { const [rows] = await this.database.execute('SELECT name, email, isEmailConfirmed, verification_resend_available_at AS availableAt FROM users WHERE email = ?', [email]); const user = rows[0]; if (!user || user.isEmailConfirmed) return null; if (user.availableAt && new Date(user.availableAt).getTime() > Date.now()) return { cooldownSeconds: Math.ceil((new Date(user.availableAt).getTime() - Date.now()) / 1000) }; const [result] = await this.database.execute('UPDATE users SET verification_token_hash = ?, verification_expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR), verification_resend_available_at = DATE_ADD(NOW(), INTERVAL 30 SECOND) WHERE email = ? AND isEmailConfirmed = FALSE', [tokenHash, email]); return result.affectedRows ? { name: user.name, email: user.email } : null; }
@@ -69,7 +69,7 @@ export class Queries {
       await connection.beginTransaction();
       const [tokens] = await connection.execute('SELECT user_id AS userId FROM password_reset_tokens WHERE token_hash = ? AND expires_at > NOW() FOR UPDATE', [tokenHash]);
       if (!tokens[0]) { await connection.commit(); return false; }
-      await connection.execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, tokens[0].userId]);
+      await connection.execute('UPDATE users SET password_hash = ?, session_version = session_version + 1 WHERE id = ?', [passwordHash, tokens[0].userId]);
       await connection.execute('DELETE FROM password_reset_tokens WHERE user_id = ?', [tokens[0].userId]);
       await connection.commit();
       return true;

@@ -144,9 +144,15 @@ export class Configuration {
     this.runtime = {
       uploadsDir: runtimeValues.uploadsDir || values.uploadsDir || process.env.UPLOADS_DIR || 'uploads',
       port: Number(runtimeValues.port ?? values.port ?? process.env.PORT ?? 3001),
-      authSecret: runtimeValues.authSecret || values.authSecret || process.env.AUTH_SECRET || 'change-this-auth-secret',
+      authSecret: runtimeValues.authSecret || values.authSecret || process.env.AUTH_SECRET,
       allowedOrigins: runtimeValues.allowedOrigins || this.getAllowedOrigins(),
     };
+    if (typeof this.runtime.authSecret !== 'string' || this.runtime.authSecret.length < 32) {
+      throw new Error('AUTH_SECRET must be configured with at least 32 random characters.');
+    }
+    if (!Array.isArray(this.runtime.allowedOrigins) || this.runtime.allowedOrigins.some((origin) => origin === '*')) {
+      throw new Error('CORS origins must be an explicit allowlist and cannot include "*".');
+    }
     this.allowedOrigins = this.runtime.allowedOrigins;
 
     // Compatibility aliases for consumers that have not moved to grouped config yet.
@@ -179,6 +185,6 @@ export class Configuration {
 
   getAllowedOrigins() {
     const configured = process.env.CORS_ORIGIN?.split(',').map((origin) => origin.trim()).filter(Boolean);
-    return configured?.length ? [`https://${this.site.domain}`, `https://www.${this.site.domain}`, ...configured] : undefined;
+    return [...new Set([`https://${this.site.domain}`, `https://www.${this.site.domain}`, ...(configured || [])])];
   }
 }
