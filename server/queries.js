@@ -12,8 +12,8 @@ export class Queries {
   }
   async publicEventParticipants(eventId) { const [rows] = await this.database.execute('SELECT p.id, p.user_id AS userId, COALESCE(u.name, p.participant_name) AS name, u.profile_picture AS profilePicture, p.joined_at AS joinedAt FROM event_participants p LEFT JOIN users u ON u.id = p.user_id WHERE p.event_id = ? ORDER BY p.joined_at DESC', [eventId]); return rows; }
   async eventParticipantStatus(eventId, userId) { const [rows] = await this.database.execute('SELECT status FROM event_participants WHERE event_id = ? AND user_id = ?', [eventId, userId]); return rows[0]?.status || null; }
-  async publicEvents(userId = null) { const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.status = 'Published' AND e.visibility = 'Public' ORDER BY e.starts_at ASC, e.created_at DESC`, [userId]); return rows; }
-  async eventsForViewer(userId = null, role = null, { categorySlug = null } = {}) { const privileged = ['manager', 'admin'].includes(role); const access = privileged ? 'TRUE' : `e.manager_id = ? OR (e.status = 'Published' AND e.visibility = 'Private' AND (r.id IS NOT NULL OR EXISTS (SELECT 1 FROM event_invitations i JOIN users invited ON LOWER(invited.email) = LOWER(i.email) WHERE i.event_id = e.id AND invited.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW())))`; const params = privileged ? [userId] : [userId, userId, userId]; const categoryFilter = categorySlug ? ' AND c.slug = ?' : ''; if (categorySlug) params.push(categorySlug); const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, c.id AS categoryId, c.name AS categoryName, c.slug AS categorySlug, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_categories c ON c.id = e.category_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.deleted_at IS NULL AND ((e.status = 'Published' AND e.visibility = 'Public') OR (${access}))${categoryFilter} ORDER BY e.starts_at ASC, e.created_at DESC`, params); return rows; }
+  async publicEvents(userId = null) { const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, v.id AS venueId, v.name AS venueName, v.location AS venueLocation, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id AND vb.status = 'confirmed' LEFT JOIN venues v ON v.id = vb.venue_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.status = 'Published' AND e.visibility = 'Public' ORDER BY e.starts_at ASC, e.created_at DESC`, [userId]); return rows; }
+  async eventsForViewer(userId = null, role = null, { categorySlug = null } = {}) { const privileged = ['manager', 'admin'].includes(role); const access = privileged ? 'TRUE' : `e.manager_id = ? OR (e.status = 'Published' AND e.visibility = 'Private' AND (r.id IS NOT NULL OR EXISTS (SELECT 1 FROM event_invitations i JOIN users invited ON LOWER(invited.email) = LOWER(i.email) WHERE i.event_id = e.id AND invited.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW())))`; const params = privileged ? [userId] : [userId, userId, userId]; const categoryFilter = categorySlug ? ' AND c.slug = ?' : ''; if (categorySlug) params.push(categorySlug); const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, v.id AS venueId, v.name AS venueName, v.location AS venueLocation, c.id AS categoryId, c.name AS categoryName, c.slug AS categorySlug, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_categories c ON c.id = e.category_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id AND vb.status = 'confirmed' LEFT JOIN venues v ON v.id = vb.venue_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.deleted_at IS NULL AND ((e.status = 'Published' AND e.visibility = 'Public') OR (${access}))${categoryFilter} ORDER BY e.starts_at ASC, e.created_at DESC`, params); return rows; }
   async createVisibleEvent(data) { const [result] = await this.database.execute('INSERT INTO events (manager_id, title, description, location, starts_at, ends_at, capacity, participation_fee, visibility, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, \'Draft\')', [data.managerId, data.title, data.description, data.location, data.startsAt, data.endsAt, data.capacity, data.fee, data.visibility]); return result.insertId; }
   async privateInvitationExists(eventId, userId) { const [rows] = await this.database.execute("SELECT i.id FROM event_invitations i JOIN users u ON LOWER(u.email) = LOWER(i.email) WHERE i.event_id = ? AND u.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW()", [eventId, userId]); return rows.length > 0; }
   async eventVisibility(eventId) { const [rows] = await this.database.execute('SELECT visibility FROM events WHERE id = ?', [eventId]); return rows[0]?.visibility; }
@@ -387,9 +387,10 @@ export class Queries {
       e.pricing_type AS pricingType, e.participation_fee AS fee, e.currency, e.registration_type AS registrationType, e.external_registration_url AS externalRegistrationUrl,
       e.visibility, e.status, e.published_at AS publishedAt, e.created_at AS createdAt, e.updated_at AS updatedAt, u.name AS managerName,
       e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber,
+      vb.id AS venueBookingId, vb.status AS venueBookingStatus, v.id AS venueId, v.name AS venueName, v.business_name AS venueBusinessName, v.location AS venueLocation, v.city AS venueCity, v.country AS venueCountry,
       (SELECT ROUND(AVG(rating), 2) FROM event_ratings WHERE event_id = e.id) AS ratingAverage, (SELECT COUNT(*) FROM event_ratings WHERE event_id = e.id) AS ratingCount,
       (SELECT rating FROM event_ratings WHERE event_id = e.id AND user_id = ?) AS myRating
-      FROM events e JOIN users u ON u.id=e.manager_id LEFT JOIN event_categories c ON c.id=e.category_id LEFT JOIN event_types t ON t.id=e.type_id LEFT JOIN event_groups g ON g.id=e.group_id
+      FROM events e JOIN users u ON u.id=e.manager_id LEFT JOIN event_categories c ON c.id=e.category_id LEFT JOIN event_types t ON t.id=e.type_id LEFT JOIN event_groups g ON g.id=e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id LEFT JOIN venues v ON v.id = vb.venue_id
       WHERE e.id=? AND e.deleted_at IS NULL AND (${privileged ? 'TRUE' : "e.visibility = 'Public' AND e.status = 'Published'"}${userId && !privileged ? ' OR e.manager_id = ?' : ''})`, userId && !privileged ? [userId, id, userId] : [userId, id]);
     return rows[0];
   }
@@ -599,6 +600,150 @@ export class Queries {
   async articleImageVisible(filename, userId = null, role = null) { const isAdmin = role === 'admin'; const [rows] = await this.database.execute(`SELECT a.id FROM articles a LEFT JOIN article_media m ON m.article_id = a.id WHERE (a.cover_image = ? OR m.filename = ?) AND (${isAdmin ? 'TRUE' : "(BINARY a.status = BINARY 'published' AND a.is_indexable = TRUE AND a.published_at IS NOT NULL AND a.published_at <= NOW()) OR a.author_user_id = ?"}) LIMIT 1`, isAdmin ? [filename, filename] : [filename, filename, userId]); return rows[0] || null; }
   async deleteArticleMedia(id, articleId) { const [result] = await this.database.execute('DELETE FROM article_media WHERE id = ? AND article_id = ?', [id, articleId]); return result.affectedRows > 0; }
   async syncArticleTags(articleId, tags) { const connection = await this.database.getConnection(); try { await connection.beginTransaction(); await connection.execute('DELETE FROM article_tag_assignments WHERE article_id = ?', [articleId]); for (const tag of tags) { await connection.execute('INSERT INTO article_tags (name, slug) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)', [tag.name, tag.slug]); const [rows] = await connection.execute('SELECT id FROM article_tags WHERE slug = ?', [tag.slug]); await connection.execute('INSERT INTO article_tag_assignments (article_id, tag_id) VALUES (?, ?)', [articleId, rows[0].id]); } await connection.commit(); } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); } }
+  async venueOwnerApplication(userId) {
+    const [rows] = await this.database.execute(`SELECT a.id, a.user_id AS userId, a.business_name AS businessName, a.message, a.status, a.created_at AS createdAt, a.updated_at AS updatedAt, a.reviewed_at AS reviewedAt, reviewer.name AS reviewerName
+      FROM venue_owner_applications a LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by_user_id WHERE a.user_id = ?`, [userId]);
+    return rows[0] || null;
+  }
+  async createVenueOwnerApplication(userId, { businessName, message = null }) {
+    await this.database.execute(`INSERT INTO venue_owner_applications (user_id, business_name, message, status, reviewed_by_user_id, reviewed_at)
+      VALUES (?, ?, ?, 'pending', NULL, NULL)
+      ON DUPLICATE KEY UPDATE business_name = VALUES(business_name), message = VALUES(message), status = 'pending', reviewed_by_user_id = NULL, reviewed_at = NULL`, [userId, businessName, message]);
+    return this.venueOwnerApplication(userId);
+  }
+  async venueOwnerApplications(status = null) {
+    const [rows] = await this.database.execute(`SELECT a.id, a.user_id AS userId, a.business_name AS businessName, a.message, a.status, a.created_at AS createdAt, a.updated_at AS updatedAt, a.reviewed_at AS reviewedAt,
+      u.name AS userName, u.email AS userEmail, u.role AS userRole, reviewer.name AS reviewerName
+      FROM venue_owner_applications a JOIN users u ON u.id = a.user_id LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by_user_id${status ? ' WHERE a.status = ?' : ''} ORDER BY a.created_at DESC`, status ? [status] : []);
+    return rows;
+  }
+  async reviewVenueOwnerApplication(id, status, reviewerId) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [applications] = await connection.execute('SELECT user_id AS userId FROM venue_owner_applications WHERE id = ? FOR UPDATE', [id]);
+      const application = applications[0];
+      if (!application) { await connection.rollback(); return { error: 'NOT_FOUND' }; }
+      if (status === 'approved') {
+        const [users] = await connection.execute('SELECT role FROM users WHERE id = ? FOR UPDATE', [application.userId]);
+        if (!users[0]) { await connection.rollback(); return { error: 'USER_NOT_FOUND' }; }
+        if (!['customer', 'organizer', 'venue_owner'].includes(users[0].role)) { await connection.rollback(); return { error: 'ROLE_NOT_ELIGIBLE' }; }
+        await connection.execute("UPDATE users SET role = 'venue_owner' WHERE id = ?", [application.userId]);
+      }
+      await connection.execute('UPDATE venue_owner_applications SET status = ?, reviewed_by_user_id = ?, reviewed_at = NOW() WHERE id = ?', [status, reviewerId, id]);
+      await connection.commit();
+      return { userId: application.userId, status, role: status === 'approved' ? 'venue_owner' : null };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  venueColumns(prefix = 'v') {
+    return `${prefix}.id, ${prefix}.owner_user_id AS ownerUserId, ${prefix}.name, ${prefix}.business_name AS businessName, ${prefix}.description, ${prefix}.location, ${prefix}.country, ${prefix}.city, ${prefix}.address, ${prefix}.latitude, ${prefix}.longitude, ${prefix}.timezone, ${prefix}.is_active AS isActive, ${prefix}.created_at AS createdAt, ${prefix}.updated_at AS updatedAt`;
+  }
+  async venueAvailability(venueId) {
+    const [rows] = await this.database.execute('SELECT id, venue_id AS venueId, weekday, TIME_FORMAT(start_time, \'%H:%i\') AS startTime, TIME_FORMAT(end_time, \'%H:%i\') AS endTime FROM venue_availability WHERE venue_id = ? ORDER BY weekday, start_time', [venueId]);
+    return rows;
+  }
+  async venue(id, userId = null, role = null) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName FROM venues v JOIN users owner ON owner.id = v.owner_user_id WHERE v.id = ? AND (${privileged ? 'TRUE' : 'v.is_active = TRUE OR v.owner_user_id = ?'})`, privileged ? [id] : [id, userId]);
+    if (!rows[0]) return null;
+    return { ...rows[0], availability: await this.venueAvailability(id) };
+  }
+  async venuesForViewer(userId = null, role = null, { managedOnly = false } = {}) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const filter = managedOnly ? (privileged ? 'TRUE' : 'v.owner_user_id = ?') : (privileged ? 'TRUE' : 'v.is_active = TRUE OR v.owner_user_id = ?');
+    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName FROM venues v JOIN users owner ON owner.id = v.owner_user_id WHERE ${filter} ORDER BY v.created_at DESC`, privileged ? [] : [userId]);
+    return rows;
+  }
+  async createVenue(ownerUserId, data) {
+    const [result] = await this.database.execute(`INSERT INTO venues (owner_user_id, name, business_name, description, location, country, city, address, latitude, longitude, timezone, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [ownerUserId, data.name, data.businessName, data.description, data.location, data.country, data.city, data.address, data.latitude, data.longitude, data.timezone, data.isActive]);
+    return result.insertId;
+  }
+  async updateVenue(id, userId, role, data) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [result] = await this.database.execute(`UPDATE venues SET name=?, business_name=?, description=?, location=?, country=?, city=?, address=?, latitude=?, longitude=?, timezone=?, is_active=? WHERE id=?${privileged ? '' : ' AND owner_user_id=?'}`, [data.name, data.businessName, data.description, data.location, data.country, data.city, data.address, data.latitude, data.longitude, data.timezone, data.isActive, id, ...(privileged ? [] : [userId])]);
+    return result.affectedRows > 0;
+  }
+  async deleteVenue(id, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [result] = await this.database.execute(`DELETE FROM venues WHERE id = ?${privileged ? '' : ' AND owner_user_id = ?'}`, privileged ? [id] : [id, userId]);
+    return result.affectedRows > 0;
+  }
+  async replaceVenueAvailability(venueId, userId, role, slots) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [venues] = await connection.execute(`SELECT id FROM venues WHERE id = ?${privileged ? '' : ' AND owner_user_id = ?'} FOR UPDATE`, privileged ? [venueId] : [venueId, userId]);
+      if (!venues[0]) { await connection.rollback(); return false; }
+      await connection.execute('DELETE FROM venue_availability WHERE venue_id = ?', [venueId]);
+      for (const slot of slots) await connection.execute('INSERT INTO venue_availability (venue_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)', [venueId, slot.weekday, slot.startTime, slot.endTime]);
+      await connection.commit();
+      return true;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async venueBookingContext(eventId, venueId, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [events] = await this.database.execute(`SELECT id, manager_id AS managerId, starts_at AS startsAt, ends_at AS endsAt, timezone FROM events WHERE id = ? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]);
+    if (!events[0]) return { error: 'EVENT_NOT_FOUND' };
+    const [venues] = await this.database.execute('SELECT id, owner_user_id AS ownerUserId, name, timezone, is_active AS isActive FROM venues WHERE id = ?', [venueId]);
+    if (!venues[0] || !venues[0].isActive) return { error: 'VENUE_NOT_FOUND' };
+    return { event: events[0], venue: { ...venues[0], availability: await this.venueAvailability(venueId) } };
+  }
+  async requestVenueBooking(eventId, venueId, organizerUserId) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [events] = await connection.execute('SELECT starts_at AS startsAt, ends_at AS endsAt FROM events WHERE id = ? AND manager_id = ? AND deleted_at IS NULL FOR UPDATE', [eventId, organizerUserId]);
+      const event = events[0];
+      if (!event) { await connection.rollback(); return { error: 'EVENT_NOT_FOUND' }; }
+      const [venues] = await connection.execute('SELECT id FROM venues WHERE id = ? AND is_active = TRUE FOR UPDATE', [venueId]);
+      if (!venues[0]) { await connection.rollback(); return { error: 'VENUE_NOT_FOUND' }; }
+      const [existing] = await connection.execute('SELECT id, status FROM venue_bookings WHERE event_id = ? FOR UPDATE', [eventId]);
+      if (existing[0] && ['pending', 'confirmed'].includes(existing[0].status)) { await connection.rollback(); return { error: 'EVENT_ALREADY_BOOKED' }; }
+      const [conflicts] = await connection.execute(`SELECT b.id FROM venue_bookings b JOIN events e ON e.id = b.event_id
+        WHERE b.venue_id = ? AND b.status IN ('pending', 'confirmed') AND e.deleted_at IS NULL AND e.starts_at < ? AND COALESCE(e.ends_at, e.starts_at) > ? FOR UPDATE`, [venueId, event.endsAt, event.startsAt]);
+      if (conflicts[0]) { await connection.rollback(); return { error: 'VENUE_UNAVAILABLE' }; }
+      let bookingId;
+      if (existing[0]) {
+        await connection.execute("UPDATE venue_bookings SET venue_id = ?, organizer_user_id = ?, status = 'pending', owner_note = NULL WHERE id = ?", [venueId, organizerUserId, existing[0].id]);
+        bookingId = existing[0].id;
+      } else {
+        const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, status) VALUES (?, ?, ?, 'pending')", [venueId, eventId, organizerUserId]);
+        bookingId = result.insertId;
+      }
+      await connection.commit();
+      return { id: bookingId, status: 'pending' };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async eventVenueBooking(eventId, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+      v.name AS venueName, v.location AS venueLocation, v.owner_user_id AS venueOwnerUserId
+      FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id
+      WHERE b.event_id = ? AND (${privileged ? 'TRUE' : 'e.manager_id = ? OR v.owner_user_id = ?'})`, privileged ? [eventId] : [eventId, userId, userId]);
+    return rows[0] || null;
+  }
+  async venueBookings(venueId, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+      e.title AS eventTitle, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone AS eventTimezone, organizer.name AS organizerName
+      FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id JOIN users organizer ON organizer.id = b.organizer_user_id
+      WHERE b.venue_id = ?${privileged ? '' : ' AND v.owner_user_id = ?'} ORDER BY e.starts_at ASC`, privileged ? [venueId] : [venueId, userId]);
+    return rows;
+  }
+  async reviewVenueBooking(bookingId, userId, role, status, ownerNote = null) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [result] = await this.database.execute(`UPDATE venue_bookings b JOIN venues v ON v.id = b.venue_id SET b.status = ?, b.owner_note = ?
+      WHERE b.id = ? AND b.status = 'pending'${privileged ? '' : ' AND v.owner_user_id = ?'}`, privileged ? [status, ownerNote, bookingId] : [status, ownerNote, bookingId, userId]);
+    return result.affectedRows > 0;
+  }
+  async cancelVenueBooking(eventId, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [result] = await this.database.execute(`UPDATE venue_bookings b JOIN events e ON e.id = b.event_id SET b.status = 'cancelled'
+      WHERE b.event_id = ? AND b.status IN ('pending', 'confirmed')${privileged ? '' : ' AND e.manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]);
+    return result.affectedRows > 0;
+  }
   async users() { const [rows] = await this.database.execute('SELECT id, name, email, phone, role, isEmailConfirmed, created_at AS createdAt FROM users ORDER BY created_at DESC'); return rows; }
-  async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }
+  async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'venue_owner', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }
 }

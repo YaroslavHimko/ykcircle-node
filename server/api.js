@@ -180,12 +180,79 @@ export class Api {
     const requireAdmin = (req, res, next) => req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required.' });
     // Any registered role can manage the events it owns.  Managers and admins
     // retain their broader access through the ownership checks in Queries.
-    const requireManager = (req, res, next) => ['customer', 'organizer', 'manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Event-management access required.' });
+    const requireManager = (req, res, next) => ['customer', 'organizer', 'venue_owner', 'manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Event-management access required.' });
     // Events, like groups, can be created by any verified account.  The
     // database ownership checks on the individual operations ensure a user
     // can only administer events they created (unless they are a manager/admin).
     const requireVerifiedUser = (req, res, next) => req.user.isEmailConfirmed ? next() : res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Please verify your email address before creating an event.' });
     const requireRoleManager = (req, res, next) => ['manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Manager access required.' });
+    const requireVenueOwner = (req, res, next) => ['venue_owner', 'manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Venue-owner access required.' });
+    const supportedTimezone = (timezone) => timezone === 'UTC' || (typeof Intl.supportedValuesOf === 'function' && Intl.supportedValuesOf('timeZone').includes(timezone));
+    const venueData = (body, existing = {}) => {
+      const data = {
+        name: String(body.name ?? existing.name ?? '').trim(),
+        businessName: String(body.businessName ?? existing.businessName ?? '').trim() || null,
+        description: String(body.description ?? existing.description ?? '').trim() || null,
+        location: String(body.location ?? existing.location ?? '').trim(),
+        country: String(body.country ?? existing.country ?? '').trim() || null,
+        city: String(body.city ?? existing.city ?? '').trim() || null,
+        address: String(body.address ?? existing.address ?? '').trim() || null,
+        latitude: body.latitude === '' ? null : (body.latitude ?? existing.latitude ?? null),
+        longitude: body.longitude === '' ? null : (body.longitude ?? existing.longitude ?? null),
+        timezone: String(body.timezone ?? existing.timezone ?? 'UTC'),
+        isActive: body.isActive ?? (existing.isActive == null ? true : Boolean(existing.isActive)),
+      };
+      const errors = {};
+      if (data.name.length < 2 || data.name.length > 160) errors.name = 'Venue name must be between 2 and 160 characters.';
+      if (data.location.length < 2 || data.location.length > 255) errors.location = 'A location of up to 255 characters is required.';
+      if (data.businessName?.length > 160) errors.businessName = 'Business name must not exceed 160 characters.';
+      if (data.latitude !== null && (!Number.isFinite(Number(data.latitude)) || Number(data.latitude) < -90 || Number(data.latitude) > 90)) errors.latitude = 'Latitude must be between -90 and 90.';
+      if (data.longitude !== null && (!Number.isFinite(Number(data.longitude)) || Number(data.longitude) < -180 || Number(data.longitude) > 180)) errors.longitude = 'Longitude must be between -180 and 180.';
+      if (!supportedTimezone(data.timezone)) errors.timezone = 'Select a timezone returned by GET /api/timezones.';
+      if (typeof data.isActive !== 'boolean') errors.isActive = 'isActive must be a boolean.';
+      return { data: { ...data, latitude: data.latitude === null ? null : Number(data.latitude), longitude: data.longitude === null ? null : Number(data.longitude) }, errors };
+    };
+    const venueAvailability = (slots) => {
+      if (!Array.isArray(slots)) return { error: 'availability must be an array of weekly time slots.' };
+      const errors = {};
+      const normalized = slots.map((slot, index) => {
+        const weekday = Number(slot?.weekday);
+        const startTime = String(slot?.startTime || '');
+        const endTime = String(slot?.endTime || '');
+        if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) errors[`availability.${index}.weekday`] = 'weekday must be an integer from 0 (Sunday) to 6 (Saturday).';
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime)) errors[`availability.${index}.startTime`] = 'startTime must use HH:mm.';
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime)) errors[`availability.${index}.endTime`] = 'endTime must use HH:mm.';
+        if (startTime && endTime && startTime >= endTime) errors[`availability.${index}.endTime`] = 'endTime must be after startTime; overnight slots are not supported.';
+        return { weekday, startTime, endTime };
+      });
+      for (const weekday of [0, 1, 2, 3, 4, 5, 6]) {
+        const days = normalized.filter((slot) => slot.weekday === weekday).sort((a, b) => a.startTime.localeCompare(b.startTime));
+        for (let index = 1; index < days.length; index += 1) if (days[index].startTime < days[index - 1].endTime) errors.availability = 'Availability slots on the same day must not overlap.';
+      }
+      return Object.keys(errors).length ? { errors } : { slots: normalized };
+    };
+    const asUtcDate = (value) => {
+      if (value instanceof Date) return value;
+      const text = String(value).replace(' ', 'T');
+      return new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : `${text}Z`);
+    };
+    const eventFitsVenueAvailability = (event, venue) => {
+      if (!event.startsAt || !event.endsAt) return { error: 'The event must have both a start and end time before it can be booked.' };
+      const start = asUtcDate(event.startsAt);
+      const end = asUtcDate(event.endsAt);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return { error: 'The event has an invalid booking time.' };
+      const formatter = new Intl.DateTimeFormat('en-US', { timeZone: venue.timezone, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+      const local = (value) => Object.fromEntries(formatter.formatToParts(value).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+      const starts = local(start);
+      const ends = local(end);
+      const dayNumbers = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      if (starts.weekday !== ends.weekday) return { error: 'The event must start and end on the same local day at this venue.' };
+      const startTime = `${starts.hour}:${starts.minute}`;
+      const endTime = `${ends.hour}:${ends.minute}`;
+      const available = venue.availability.some((slot) => slot.weekday === dayNumbers[starts.weekday] && slot.startTime <= startTime && slot.endTime >= endTime);
+      return available ? {} : { error: 'The venue is not available for the full event time.' };
+    };
+    const sendVenueList = (res, venues, emptyMessage) => venues.length ? res.json(venues) : res.status(404).json({ error: emptyMessage });
     const parseEventRecurrence = (body) => {
       if (body.recurrence == null || body.recurrence === false) return { recurrence: { frequency: 'none', interval: 1, count: 1 } };
       if (typeof body.recurrence !== 'object' || Array.isArray(body.recurrence)) return { error: 'recurrence must be an object.' };
@@ -239,6 +306,102 @@ export class Api {
 
     app.get('/api/events', optionalAuthenticate, async (req, res) => { const categorySlug = req.query.category == null ? null : String(req.query.category).trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (req.query.category != null && !categorySlug) return res.status(422).json({ error: 'category must be a valid category slug.' }); try { await ensureTable(); return res.json(await this.queries.eventsForViewer(req.user?.id ?? null, req.user?.role ?? null, { categorySlug })); } catch (error) { console.error('Event lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load events.' }); } });
     app.post('/api/events', authenticate, async (req, res) => { const { title, description = null, location = null, startsAt, endsAt = null, capacity = null, visibility = 'Public', fee = 0 } = req.body; if (!title?.trim() || !startsAt) return res.status(400).json({ error: 'Title and start date are required.' }); if (!['Public', 'Private'].includes(visibility)) return res.status(400).json({ error: 'Visibility must be Public or Private.' }); try { await ensureTable(); const id = await this.queries.createVisibleEvent({ managerId: req.user.id, title: title.trim(), description, location, startsAt, endsAt, capacity: capacity === null ? null : Number(capacity), fee, visibility }); return res.status(201).json({ id, status: 'Draft', visibility, fee, role: req.user.role }); } catch (error) { return res.status(500).json({ error: 'Unable to create event.' }); } });
+    app.get('/api/venues', optionalAuthenticate, async (req, res) => {
+      try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user?.id ?? null, req.user?.role ?? null), 'No venues are available yet.'); }
+      catch (error) { console.error('Venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venues.' }); }
+    });
+    app.get('/api/venues/mine', authenticate, requireVenueOwner, async (req, res) => {
+      try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user.id, req.user.role, { managedOnly: true }), 'You have not added any venues yet.'); }
+      catch (error) { console.error('Managed venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load your venues.' }); }
+    });
+    app.get('/api/manager/venues', authenticate, requireRoleManager, async (req, res) => {
+      try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user.id, req.user.role, { managedOnly: true }), 'No venues have been added yet.'); }
+      catch (error) { console.error('Manager venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venues.' }); }
+    });
+    app.get('/api/admin/venues', authenticate, requireAdmin, async (req, res) => {
+      try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user.id, req.user.role, { managedOnly: true }), 'No venues have been added yet.'); }
+      catch (error) { console.error('Admin venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venues.' }); }
+    });
+    app.post('/api/venues', authenticate, requireVerifiedUser, requireVenueOwner, async (req, res) => {
+      const { data, errors } = venueData(req.body);
+      if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
+      try { await ensureTable(); const id = await this.queries.createVenue(req.user.id, data); return res.status(201).json(await this.queries.venue(id, req.user.id, req.user.role)); }
+      catch (error) { console.error('Venue creation failed:', error.message); return res.status(500).json({ error: 'Unable to create venue.' }); }
+    });
+    app.get('/api/venues/:id/bookings', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id);
+      if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try { await ensureTable(); const bookings = await this.queries.venueBookings(venueId, req.user.id, req.user.role); if (!bookings.length && !await this.queries.venue(venueId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); return res.json(bookings); }
+      catch (error) { console.error('Venue bookings lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue bookings.' }); }
+    });
+    app.put('/api/venues/:id/availability', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id);
+      const validated = venueAvailability(req.body.availability);
+      if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      if (validated.error) return res.status(422).json({ error: validated.error });
+      if (validated.errors) return res.status(422).json({ error: 'Availability is invalid.', fields: validated.errors });
+      try { await ensureTable(); if (!await this.queries.replaceVenueAvailability(venueId, req.user.id, req.user.role, validated.slots)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); return res.json({ venueId, availability: await this.queries.venueAvailability(venueId) }); }
+      catch (error) { console.error('Venue availability update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue availability.' }); }
+    });
+    app.patch('/api/venues/:id', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id);
+      if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try {
+        await ensureTable();
+        const existing = await this.queries.venue(venueId, req.user.id, req.user.role);
+        if (!existing) return res.status(404).json({ error: 'Venue not found or not managed by you.' });
+        const { data, errors } = venueData(req.body, existing);
+        if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
+        if (!await this.queries.updateVenue(venueId, req.user.id, req.user.role, data)) return res.status(404).json({ error: 'Venue not found or not managed by you.' });
+        return res.json(await this.queries.venue(venueId, req.user.id, req.user.role));
+      } catch (error) { console.error('Venue update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue.' }); }
+    });
+    app.delete('/api/venues/:id', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id);
+      if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try { await ensureTable(); if (!await this.queries.deleteVenue(venueId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); return res.status(204).send(); }
+      catch (error) { console.error('Venue deletion failed:', error.message); return res.status(500).json({ error: 'Unable to delete venue.' }); }
+    });
+    app.get('/api/venues/:id', optionalAuthenticate, async (req, res) => {
+      const venueId = Number(req.params.id);
+      if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try { await ensureTable(); const venue = await this.queries.venue(venueId, req.user?.id ?? null, req.user?.role ?? null); return venue ? res.json(venue) : res.status(404).json({ error: 'Venue not found.' }); }
+      catch (error) { console.error('Venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue.' }); }
+    });
+    app.post('/api/events/:id/venue-booking', authenticate, async (req, res) => {
+      const eventId = Number(req.params.id);
+      const venueId = Number(req.body.venueId);
+      if (!Number.isInteger(eventId) || eventId < 1 || !Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'Valid eventId and venueId values are required.' });
+      try {
+        await ensureTable();
+        const context = await this.queries.venueBookingContext(eventId, venueId, req.user.id, req.user.role);
+        if (context.error === 'EVENT_NOT_FOUND') return res.status(404).json({ error: 'Event not found or not managed by you.' });
+        if (context.error === 'VENUE_NOT_FOUND') return res.status(404).json({ error: 'Venue not found or inactive.' });
+        const availability = eventFitsVenueAvailability(context.event, context.venue);
+        if (availability.error) return res.status(422).json({ error: availability.error });
+        const result = await this.queries.requestVenueBooking(eventId, venueId, context.event.managerId);
+        if (result.error === 'EVENT_ALREADY_BOOKED') return res.status(409).json({ error: 'This event already has an active venue booking.' });
+        if (result.error === 'VENUE_UNAVAILABLE') return res.status(409).json({ error: 'The venue is already booked for this time.' });
+        if (result.error) return res.status(404).json({ error: 'Event or venue not found.' });
+        return res.status(201).json(await this.queries.eventVenueBooking(eventId, req.user.id, req.user.role));
+      } catch (error) { console.error('Venue booking request failed:', error.message); return res.status(500).json({ error: 'Unable to request venue booking.' }); }
+    });
+    app.get('/api/events/:id/venue-booking', authenticate, async (req, res) => {
+      try { await ensureTable(); const booking = await this.queries.eventVenueBooking(req.params.id, req.user.id, req.user.role); return booking ? res.json(booking) : res.status(404).json({ error: 'Venue booking not found or not available to you.' }); }
+      catch (error) { console.error('Venue booking lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue booking.' }); }
+    });
+    app.post('/api/events/:id/venue-booking/cancel', authenticate, async (req, res) => {
+      try { await ensureTable(); if (!await this.queries.cancelVenueBooking(req.params.id, req.user.id, req.user.role)) return res.status(404).json({ error: 'Active venue booking not found or not managed by you.' }); return res.json({ message: 'Venue booking cancelled.' }); }
+      catch (error) { console.error('Venue booking cancellation failed:', error.message); return res.status(500).json({ error: 'Unable to cancel venue booking.' }); }
+    });
+    app.patch('/api/venue-bookings/:id', authenticate, requireVenueOwner, async (req, res) => {
+      const bookingId = Number(req.params.id);
+      const status = String(req.body.status || '');
+      const ownerNote = req.body.ownerNote == null ? null : String(req.body.ownerNote).trim() || null;
+      if (!Number.isInteger(bookingId) || bookingId < 1 || !['confirmed', 'declined'].includes(status)) return res.status(422).json({ error: 'A booking id and status of confirmed or declined are required.' });
+      try { await ensureTable(); if (!await this.queries.reviewVenueBooking(bookingId, req.user.id, req.user.role, status, ownerNote)) return res.status(404).json({ error: 'Pending venue booking not found or not managed by you.' }); return res.json({ id: bookingId, status, ownerNote }); }
+      catch (error) { console.error('Venue booking review failed:', error.message); return res.status(500).json({ error: 'Unable to review venue booking.' }); }
+    });
     app.post('/api/events/:id/registrations', authenticate, async (req, res, next) => { try { await ensureTable(); if (await this.queries.eventVisibility(req.params.id) === 'Private' && !await this.queries.privateInvitationExists(req.params.id, req.user.id) && req.user.id !== (await this.queries.eventManagerId(req.params.id))) return res.status(403).json({ code: 'INVITATION_REQUIRED', error: 'A direct invitation is required to register for this private event.' }); return next(); } catch (error) { return res.status(500).json({ error: 'Unable to validate event access.' }); } });
     
     app.post('/api/auth/register', async (req, res) => {
@@ -336,6 +499,17 @@ export class Api {
       return res.json(await this.queries.applicationsForUser(req.user.email));
       } catch (error) { console.error('Application lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load applications.' }); }
     });
+    app.get('/api/venue-owner-applications/me', authenticate, async (req, res) => {
+      try { await ensureTable(); const application = await this.queries.venueOwnerApplication(req.user.id); return application ? res.json(application) : res.status(404).json({ error: 'Venue-owner application not found.' }); }
+      catch (error) { console.error('Venue-owner application lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue-owner application.' }); }
+    });
+    app.post('/api/venue-owner-applications', authenticate, requireVerifiedUser, async (req, res) => {
+      const businessName = String(req.body.businessName || '').trim();
+      const message = req.body.message == null ? null : String(req.body.message).trim() || null;
+      if (businessName.length < 2 || businessName.length > 160 || (message && message.length > 5000)) return res.status(422).json({ error: 'Business name must be 2-160 characters and the message must not exceed 5,000 characters.' });
+      try { await ensureTable(); const application = await this.queries.createVenueOwnerApplication(req.user.id, { businessName, message }); return res.status(201).json(application); }
+      catch (error) { console.error('Venue-owner application failed:', error.message); return res.status(500).json({ error: 'Unable to submit venue-owner application.' }); }
+    });
     
     app.get('/api/admin/applications', authenticate, requireAdmin, async (_req, res) => {
       try {
@@ -351,6 +525,25 @@ export class Api {
         if (!application) return res.status(404).json({ error: 'Application not found.' });
         return res.json(application);
       } catch (error) { console.error('Application lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load application.' }); }
+    });
+    app.get('/api/admin/venue-owner-applications', authenticate, requireAdmin, async (req, res) => {
+      const status = req.query.status == null ? null : String(req.query.status);
+      if (status && !['pending', 'approved', 'declined'].includes(status)) return res.status(422).json({ error: 'Invalid venue-owner application status.' });
+      try { await ensureTable(); return res.json(await this.queries.venueOwnerApplications(status)); }
+      catch (error) { console.error('Venue-owner application lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue-owner applications.' }); }
+    });
+    app.patch('/api/admin/venue-owner-applications/:id/review', authenticate, requireAdmin, async (req, res) => {
+      const applicationId = Number(req.params.id);
+      const status = String(req.body.status || '');
+      if (!Number.isInteger(applicationId) || applicationId < 1 || !['approved', 'declined'].includes(status)) return res.status(422).json({ error: 'A valid application id and status of approved or declined are required.' });
+      try {
+        await ensureTable();
+        const result = await this.queries.reviewVenueOwnerApplication(applicationId, status, req.user.id);
+        if (result.error === 'NOT_FOUND') return res.status(404).json({ error: 'Venue-owner application not found.' });
+        if (result.error === 'USER_NOT_FOUND') return res.status(404).json({ error: 'Applicant user not found.' });
+        if (result.error === 'ROLE_NOT_ELIGIBLE') return res.status(409).json({ error: 'Manager and admin accounts cannot be reassigned as venue owners.' });
+        return res.json({ message: `Venue-owner application ${status}.`, ...result });
+      } catch (error) { console.error('Venue-owner application review failed:', error.message); return res.status(500).json({ error: 'Unable to review venue-owner application.' }); }
     });
     
     app.patch('/api/applications/:id/status', authenticate, requireAdmin, async (req, res) => {
@@ -372,7 +565,7 @@ export class Api {
         return res.json({ message: `Organizer application ${req.body.status.toLowerCase()}.`, status: result.status, role: req.body.status === 'Approved' ? 'organizer' : 'customer' });
       } catch (error) { console.error('Organizer application review failed:', error.message); return res.status(500).json({ error: 'Unable to review organizer application.' }); }
     });
-    app.patch('/api/admin/users/:id/role', authenticate, requireAdmin, async (req, res) => { if (!['customer', 'organizer', 'manager', 'admin'].includes(req.body.role)) return res.status(400).json({ error: 'Invalid user role.' }); try { await ensureTable(); if (!await this.queries.updateUserRole(req.params.id, req.body.role, req.user.role)) return res.status(404).json({ error: 'User not found.' }); return res.json({ message: 'User role updated.', role: req.body.role }); } catch (error) { return res.status(500).json({ error: 'Unable to update user role.' }); } });
+    app.patch('/api/admin/users/:id/role', authenticate, requireAdmin, async (req, res) => { if (!['customer', 'organizer', 'venue_owner', 'manager', 'admin'].includes(req.body.role)) return res.status(400).json({ error: 'Invalid user role.' }); try { await ensureTable(); if (!await this.queries.updateUserRole(req.params.id, req.body.role, req.user.role)) return res.status(404).json({ error: 'User not found.' }); return res.json({ message: 'User role updated.', role: req.body.role }); } catch (error) { return res.status(500).json({ error: 'Unable to update user role.' }); } });
     app.get('/api/admin/users', authenticate, requireAdmin, async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.users()); } catch (error) { return res.status(500).json({ error: 'Unable to load users.' }); } });
     app.get('/api/manager/users', authenticate, requireRoleManager, async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.users()); } catch (error) { return res.status(500).json({ error: 'Unable to load users.' }); } });
     app.patch('/api/manager/users/:id/role', authenticate, requireRoleManager, async (req, res) => { if (req.body.role !== 'organizer') return res.status(400).json({ error: 'Managers can only assign the organizer role.' }); try { await ensureTable(); if (!await this.queries.updateUserRole(req.params.id, 'organizer', req.user.role)) return res.status(404).json({ error: 'Customer not found.' }); return res.json({ message: 'User role updated.', role: 'organizer' }); } catch (error) { return res.status(500).json({ error: 'Unable to update user role.' }); } });
@@ -507,10 +700,10 @@ export class Api {
     app.get('/api/events/:id/invitations', authenticate, requireManager, async (req, res) => { try { await ensureTable(); return res.json(await this.queries.invitations(req.params.id, req.user.id)); } catch (error) { return res.status(500).json({ error: 'Unable to load event invitations.' }); } });
     app.patch('/api/events/:eventId/invitations/:invitationId/status', authenticate, requireManager, async (req, res) => { if (!isInvitationStatus(req.body.status)) return res.status(400).json({ error: 'Invalid invitation status.' }); try { await ensureTable(); if (!await this.queries.updateInvitationStatus(req.params.invitationId, req.params.eventId, req.user.id, req.body.status)) return res.status(404).json({ error: 'Invitation not found.' }); return res.json({ message: 'Invitation status updated.', status: req.body.status }); } catch (error) { return res.status(500).json({ error: 'Unable to update invitation status.' }); } });
     app.patch('/api/events/:id/status', authenticate, requireManager, async (req, res) => { if (!isEventStatus(req.body.status)) return res.status(400).json({ error: 'Invalid event status.' }); try { await ensureTable(); const event = req.body.status === 'Published' ? await this.queries.richEvent(req.params.id, req.user.id, req.user.role) : null; if (!await this.queries.updateEventStatus(req.params.id, req.user.id, req.body.status, req.user.role)) return res.status(404).json({ error: 'Event not found or not managed by you.' }); if (event?.groupId && event.status !== 'Published') await notifyGroupEventMembers(req.params.id); return res.json({ message: 'Event status updated.', status: req.body.status }); } catch (error) { return res.status(500).json({ error: 'Unable to update event status.' }); } });
-    app.post('/api/events/:id/registrations', authenticate, async (req, res) => { if (!['customer', 'organizer', 'manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Your account is not permitted to register for events.' }); if (!req.user.isEmailConfirmed) return res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Please verify your email address before registering for an event.' }); try { await ensureTable(); const result = await this.queries.registerForEvent(req.params.id, req.user.id, req.user.email); if (result.error === 'EVENT_UNAVAILABLE') return res.status(409).json({ error: 'Event is not available for registration.' }); if (result.error === 'EVENT_FULL') return res.status(409).json({ error: 'Event is full.' }); if (result.error === 'ALREADY_REGISTERED') return res.status(409).json({ error: 'You are already registered for this event.' }); const user = await this.queries.profile(req.user.id); try { await this.emailService.sendRegistrationConfirmation(user.email, user.name, result); } catch (emailError) { console.error('Registration confirmation email failed:', emailError.message); } try { await this.emailService.sendManagerRegistrationNotification(result.managerEmail, result.managerName, user.name, user.email, result.title, result.eventId, result.id); } catch (emailError) { console.error('Manager registration notification failed:', emailError.message); } return res.status(201).json({ id: result.id, status: 'Pending' }); } catch (error) { console.error('Event registration failed:', error.message); return res.status(500).json({ error: 'Unable to register for event.' }); } });
+    app.post('/api/events/:id/registrations', authenticate, async (req, res) => { if (!['customer', 'organizer', 'venue_owner', 'manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Your account is not permitted to register for events.' }); if (!req.user.isEmailConfirmed) return res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Please verify your email address before registering for an event.' }); try { await ensureTable(); const result = await this.queries.registerForEvent(req.params.id, req.user.id, req.user.email); if (result.error === 'EVENT_UNAVAILABLE') return res.status(409).json({ error: 'Event is not available for registration.' }); if (result.error === 'EVENT_FULL') return res.status(409).json({ error: 'Event is full.' }); if (result.error === 'ALREADY_REGISTERED') return res.status(409).json({ error: 'You are already registered for this event.' }); const user = await this.queries.profile(req.user.id); try { await this.emailService.sendRegistrationConfirmation(user.email, user.name, result); } catch (emailError) { console.error('Registration confirmation email failed:', emailError.message); } try { await this.emailService.sendManagerRegistrationNotification(result.managerEmail, result.managerName, user.name, user.email, result.title, result.eventId, result.id); } catch (emailError) { console.error('Manager registration notification failed:', emailError.message); } return res.status(201).json({ id: result.id, status: 'Pending' }); } catch (error) { console.error('Event registration failed:', error.message); return res.status(500).json({ error: 'Unable to register for event.' }); } });
     app.get('/api/my/registrations', authenticate, async (req, res) => { try { await ensureTable(); return res.json(await this.queries.userRegistrations(req.user.id)); } catch (error) { return res.status(500).json({ error: 'Unable to load registrations.' }); } });
     app.patch('/api/events/:eventId/withdraw', authenticate, async (req, res) => { const eventId = Number(req.params.eventId); if (!Number.isInteger(eventId) || eventId < 1) return res.status(404).json({ error: 'Active registration not found.' }); try { await ensureTable(); const registration = await this.queries.findActiveRegistrationForUser(eventId, req.user.id); if (!registration || !await this.queries.markRegistrationWithdrawn(registration)) return res.status(404).json({ error: 'Active registration not found.' }); return res.json({ status: 'Withdrawn', registrationId: registration.id }); } catch (error) { console.error('Event withdrawal failed:', error.message); return res.status(500).json({ error: 'Unable to withdraw from this event.' }); } });
-    app.patch('/api/registrations/:id/withdraw', authenticate, async (req, res) => { if (!['customer', 'organizer', 'manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Your account is not permitted to withdraw registrations.' }); try { await ensureTable(); const registration = await this.queries.customerRegistration(req.params.id, req.user.id); if (!registration || !await this.queries.withdrawRegistration(req.params.id, req.user.id)) return res.status(404).json({ error: 'Registration not found or cannot be withdrawn.' }); try { await this.emailService.sendRegistrationWithdrawal(registration.email, registration.name, registration); } catch (emailError) { console.error('Registration withdrawal email failed:', emailError.message); } return res.json({ message: 'Registration withdrawn.', status: 'Withdrawn' }); } catch (error) { console.error('Registration withdrawal failed:', error.message); return res.status(500).json({ error: 'Unable to withdraw registration.' }); } });
+    app.patch('/api/registrations/:id/withdraw', authenticate, async (req, res) => { if (!['customer', 'organizer', 'venue_owner', 'manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Your account is not permitted to withdraw registrations.' }); try { await ensureTable(); const registration = await this.queries.customerRegistration(req.params.id, req.user.id); if (!registration || !await this.queries.withdrawRegistration(req.params.id, req.user.id)) return res.status(404).json({ error: 'Registration not found or cannot be withdrawn.' }); try { await this.emailService.sendRegistrationWithdrawal(registration.email, registration.name, registration); } catch (emailError) { console.error('Registration withdrawal email failed:', emailError.message); } return res.json({ message: 'Registration withdrawn.', status: 'Withdrawn' }); } catch (error) { console.error('Registration withdrawal failed:', error.message); return res.status(500).json({ error: 'Unable to withdraw registration.' }); } });
     app.get('/api/events/:id/participants', authenticate, requireManager, async (req, res) => { try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event || (!['manager', 'admin'].includes(req.user.role) && event.managerId !== req.user.id)) return res.status(404).json({ error: 'Event not found or not managed by you.' }); return res.json(await this.queries.eventParticipants(req.params.id, true)); } catch (error) { return res.status(500).json({ error: 'Unable to load event participants.' }); } });
     app.get('/api/events/:id/registrations', authenticate, requireManager, async (req, res) => { try { await ensureTable(); return res.json(await this.queries.registrations(req.params.id, req.user.id, req.user.role === 'admin')); } catch (error) { return res.status(500).json({ error: 'Unable to load event registrations.' }); } });
     app.patch('/api/participants/:id/status', authenticate, requireManager, async (req, res) => { if (!isParticipantStatus(req.body.status) || req.body.status === 'Pending') return res.status(400).json({ error: 'Participant status must be Attended or No Show.' }); try { await ensureTable(); if (!await this.queries.updateParticipantStatus(req.params.id, req.user.id, req.body.status, req.user.role === 'admin')) return res.status(404).json({ error: 'Participant not found.' }); return res.json({ message: 'Participant status updated.', status: req.body.status }); } catch (error) { return res.status(500).json({ error: 'Unable to update participant status.' }); } });

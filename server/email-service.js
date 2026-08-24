@@ -149,7 +149,7 @@ export class EmailService {
 
   async sendManagerRegistrationNotification(email, managerName, customerName, customerEmail, eventTitle, eventId, registrationId) {
     const [owners] = await this.database.execute('SELECT role FROM users WHERE LOWER(email) = LOWER(?)', [email]);
-    if (owners[0]?.role !== 'organizer') return;
+    if (!['organizer', 'venue_owner'].includes(owners[0]?.role)) return;
     const [events] = await this.database.execute('SELECT participation_fee AS fee FROM events WHERE id = ?', [eventId]);
     const fee = Number(events[0]?.fee) > 0 ? ` Fee: ${Number(events[0].fee).toFixed(2)} SEK.` : '';
     const registrationUrl = `${this.managerEventUrl.replace(/\/$/, '')}/${eventId}/registrations/${registrationId}`;

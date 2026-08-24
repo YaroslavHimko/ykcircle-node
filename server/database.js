@@ -12,13 +12,14 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, profile_picture VARCHAR(1024),
         name VARCHAR(160) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE,
         password_hash VARCHAR(255) NOT NULL, phone VARCHAR(40) NULL,
-        role ENUM('customer', 'organizer', 'manager', 'admin') NOT NULL DEFAULT 'customer', session_version INT UNSIGNED NOT NULL DEFAULT 0,
+        role ENUM('customer', 'organizer', 'venue_owner', 'manager', 'admin') NOT NULL DEFAULT 'customer', session_version INT UNSIGNED NOT NULL DEFAULT 0,
         isEmailConfirmed BOOLEAN NOT NULL DEFAULT FALSE,
         verification_token_hash CHAR(64) NULL, verification_expires_at DATETIME NULL,
         verification_resend_available_at DATETIME NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
       try { await this.pool.execute('ALTER TABLE users ADD COLUMN session_version INT UNSIGNED NOT NULL DEFAULT 0'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
+      try { await this.pool.execute("ALTER TABLE users MODIFY role ENUM('customer', 'organizer', 'venue_owner', 'manager', 'admin') NOT NULL DEFAULT 'customer'"); } catch (error) { console.error('User role migration failed:', error.message); throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS password_reset_tokens (
         user_id INT UNSIGNED NOT NULL PRIMARY KEY,
         token_hash CHAR(64) NOT NULL UNIQUE,
@@ -384,6 +385,67 @@ export class Database {
         alt_text VARCHAR(200) NOT NULL, caption VARCHAR(500) NULL, sort_order INT NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (article_id, sort_order),
         CONSTRAINT article_media_article_fk FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_owner_applications (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        user_id INT UNSIGNED NOT NULL UNIQUE,
+        business_name VARCHAR(160) NOT NULL,
+        message TEXT NULL,
+        status ENUM('pending','approved','declined') NOT NULL DEFAULT 'pending',
+        reviewed_by_user_id INT UNSIGNED NULL,
+        reviewed_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX venue_owner_application_status (status, created_at),
+        CONSTRAINT venue_owner_application_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT venue_owner_application_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venues (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        owner_user_id INT UNSIGNED NOT NULL,
+        name VARCHAR(160) NOT NULL,
+        business_name VARCHAR(160) NULL,
+        description TEXT NULL,
+        location VARCHAR(255) NOT NULL,
+        country VARCHAR(120) NULL,
+        city VARCHAR(120) NULL,
+        address VARCHAR(255) NULL,
+        latitude DECIMAL(10,7) NULL,
+        longitude DECIMAL(10,7) NULL,
+        timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX venues_owner_index (owner_user_id, is_active),
+        INDEX venues_location_index (city, country),
+        CONSTRAINT venues_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_availability (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        venue_id INT UNSIGNED NOT NULL,
+        weekday TINYINT UNSIGNED NOT NULL COMMENT '0 is Sunday and 6 is Saturday',
+        start_time TIME NOT NULL,
+        end_time TIME NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY venue_availability_slot (venue_id, weekday, start_time, end_time),
+        INDEX venue_availability_venue_day (venue_id, weekday),
+        CONSTRAINT venue_availability_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_bookings (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        venue_id INT UNSIGNED NOT NULL,
+        event_id INT UNSIGNED NOT NULL,
+        organizer_user_id INT UNSIGNED NOT NULL,
+        status ENUM('pending','confirmed','declined','cancelled') NOT NULL DEFAULT 'pending',
+        owner_note TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY venue_booking_event (event_id),
+        INDEX venue_booking_schedule (venue_id, status),
+        CONSTRAINT venue_booking_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE,
+        CONSTRAINT venue_booking_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+        CONSTRAINT venue_booking_organizer_fk FOREIGN KEY (organizer_user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
     })();
     return this.initialized;
