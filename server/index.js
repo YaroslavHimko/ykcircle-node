@@ -41,6 +41,7 @@ const securityHeaders = (req, res, next) => {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Permissions-Policy': 'camera=(), geolocation=(), microphone=()',
+    ...(process.env.NODE_ENV === 'production' ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}),
   });
   next();
 };
@@ -85,6 +86,12 @@ const start = async () => {
   const app = express();
   if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
   app.disable('x-powered-by');
+  if (process.env.NODE_ENV === 'production' && process.env.REQUIRE_HTTPS !== 'false') {
+    app.use((req, res, next) => {
+      if (req.secure || req.get('x-forwarded-proto') === 'https') return next();
+      return res.status(400).json({ error: 'HTTPS is required.' });
+    });
+  }
   app.use(securityHeaders);
   app.use(cors({ origin: config.runtime.allowedOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], maxAge: 86400 }));
   app.use(express.json());
@@ -95,6 +102,9 @@ const start = async () => {
   const emailIdentityLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5, key: byIpAndEmail, message: 'Too many email requests. Please try again later.' });
   const publicWriteLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5, message: 'Too many requests from this IP address. Please try again later.' });
   const reportLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5, key: (req) => req.ip, message: 'Too many reports submitted. Please try again later.' });
+  const uploadLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20, message: 'Too many uploads. Please try again later.' });
+  const messageLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 60, message: 'Too many messages. Please try again later.' });
+  const communityPostLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10, message: 'Too many community posts. Please try again later.' });
   const apiWriteLimit = createRateLimiter({ windowMs: 60 * 1000, max: 120, message: 'Too many write requests. Please try again shortly.' });
   app.use('/api', (req, res, next) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ? apiWriteLimit(req, res, next) : next());
   app.post('/api/auth/login', authIpLimit, authIdentityLimit);
@@ -104,10 +114,26 @@ const start = async () => {
   app.post('/api/contact', publicWriteLimit);
   app.post('/api/reports', reportLimit);
   app.post('/api/invitations/respond', publicWriteLimit);
+  app.post('/api/auth/profile/picture', uploadLimit);
+  app.post('/api/events/:id/cover', uploadLimit);
+  app.post('/api/groups/:id/cover', uploadLimit);
+  app.post('/api/articles/:id/cover', uploadLimit);
+  app.post('/api/articles/:id/media', uploadLimit);
+  app.post('/api/community/posts', communityPostLimit);
+  app.post('/api/community/posts/:id/responses', messageLimit);
+  app.post('/api/community/conversations/:id/messages', messageLimit);
+  app.post('/api/groups/:groupId/threads/:threadId/messages', messageLimit);
+  app.post('/api/events/:eventId/threads/:threadId/messages', messageLimit);
   // Keep this before API routes and any catch-all middleware so uploads are
   // always served as files by the API process.
   app.use('/uploads', express.static(path.resolve(process.cwd(), config.runtime.uploadsDir)));
   new Api({ config, database, queries, emailService, ftpService, eventFtpService, groupFtpService, articleFtpService }).register(app);
+  await queries.initialize();
+  await queries.configureRetentionPolicies(config.runtime.retention);
+  const runRetention = async () => { try { await queries.applyRetentionPolicies(config.runtime.retention); } catch (error) { console.error('Retention cleanup failed:', error.message); } };
+  await runRetention();
+  const retentionTimer = setInterval(runRetention, 24 * 60 * 60 * 1000);
+  retentionTimer.unref();
 
   const server = app.listen(config.runtime.port, () => console.log(`API listening on port ${config.runtime.port}`));
   const shutdown = () => server.close(async () => { await database.close(); process.exit(0); });

@@ -10,6 +10,25 @@ export class Queries {
     );
     return result.insertId;
   }
+  async contentReports(status = null) {
+    const [rows] = await this.database.execute(`SELECT r.id, r.reference, r.reporter_user_id AS reporterUserId, r.reporter_email AS reporterEmail, r.entity_type AS entityType, r.entity_id AS entityId, r.content_url AS contentUrl, r.reason_code AS reasonCode, r.description, r.alleged_illegal AS allegedIllegal, r.status, r.created_at AS createdAt, r.reviewed_at AS reviewedAt, r.reviewed_by_user_id AS reviewedByUserId
+      FROM content_reports r${status ? ' WHERE r.status = ?' : ''} ORDER BY r.created_at DESC`, status ? [status] : []);
+    return rows;
+  }
+  async reviewContentReport(id, status, reviewerUserId) {
+    const [result] = await this.database.execute('UPDATE content_reports SET status = ?, reviewed_at = NOW(), reviewed_by_user_id = ? WHERE id = ?', [status, reviewerUserId, id]);
+    return result.affectedRows > 0;
+  }
+  async ensureLegalDocumentVersion(document) {
+    await this.database.execute('UPDATE legal_document_versions SET is_current = FALSE WHERE document_type = ? AND version <> ?', [document.slug, document.version]);
+    await this.database.execute(`INSERT INTO legal_document_versions (document_type, version, published_at, content_hash, requires_reacceptance, is_current)
+      VALUES (?, ?, ?, ?, ?, TRUE)
+      ON DUPLICATE KEY UPDATE published_at = VALUES(published_at), content_hash = VALUES(content_hash), requires_reacceptance = VALUES(requires_reacceptance), is_current = TRUE`,
+    [document.slug, document.version, document.lastUpdated ? new Date(document.lastUpdated) : new Date(), document.contentHash, document.slug === 'terms']);
+  }
+  async audit(actorUserId, eventType, entityType = null, entityId = null, metadata = null) {
+    await this.database.execute('INSERT INTO audit_log (actor_user_id, event_type, entity_type, entity_id, metadata) VALUES (?, ?, ?, ?, ?)', [actorUserId, eventType, entityType, entityId == null ? null : String(entityId), metadata]);
+  }
   async publicEventParticipants(eventId) { const [rows] = await this.database.execute('SELECT p.id, p.user_id AS userId, COALESCE(u.name, p.participant_name) AS name, u.profile_picture AS profilePicture, p.joined_at AS joinedAt FROM event_participants p LEFT JOIN users u ON u.id = p.user_id WHERE p.event_id = ? ORDER BY p.joined_at DESC', [eventId]); return rows; }
   async eventParticipantStatus(eventId, userId) { const [rows] = await this.database.execute('SELECT status FROM event_participants WHERE event_id = ? AND user_id = ?', [eventId, userId]); return rows[0]?.status || null; }
   async publicEvents(userId = null) { const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, v.id AS venueId, v.name AS venueName, v.location AS venueLocation, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id AND vb.status = 'confirmed' LEFT JOIN venues v ON v.id = vb.venue_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.status = 'Published' AND e.visibility = 'Public' ORDER BY e.starts_at ASC, e.created_at DESC`, [userId]); return rows; }
@@ -44,9 +63,9 @@ export class Queries {
     };
   }
   async initialize() { return this.database.initialize(); }
-  async findUserById(id) { const [rows] = await this.database.execute('SELECT id, email, role, isEmailConfirmed, session_version AS sessionVersion FROM users WHERE id = ?', [id]); return rows[0]; }
-  async findUserByEmail(email) { const [rows] = await this.database.execute('SELECT id, profile_picture AS profilePicture, name, email, password_hash, phone, role, isEmailConfirmed, session_version AS sessionVersion FROM users WHERE email = ?', [email]); return rows[0]; }
-  async emailExists(email) { const [rows] = await this.database.execute('SELECT id FROM users WHERE email = ?', [email]); return rows.length > 0; }
+  async findUserById(id) { const [rows] = await this.database.execute('SELECT id, email, role, isEmailConfirmed, session_version AS sessionVersion FROM users WHERE id = ? AND deleted_at IS NULL', [id]); return rows[0]; }
+  async findUserByEmail(email) { const [rows] = await this.database.execute('SELECT id, profile_picture AS profilePicture, name, email, password_hash, phone, role, isEmailConfirmed, session_version AS sessionVersion FROM users WHERE email = ? AND deleted_at IS NULL', [email]); return rows[0]; }
+  async emailExists(email) { const [rows] = await this.database.execute('SELECT id FROM users WHERE email = ? AND deleted_at IS NULL', [email]); return rows.length > 0; }
   async verifyEmail(tokenHash) { const [result] = await this.database.execute('UPDATE users SET isEmailConfirmed = TRUE, verification_token_hash = NULL, verification_expires_at = NULL WHERE verification_token_hash = ? AND verification_expires_at > NOW()', [tokenHash]); return result.affectedRows > 0; }
   async refreshVerification(email, tokenHash) { const [rows] = await this.database.execute('SELECT name, email, isEmailConfirmed, verification_resend_available_at AS availableAt FROM users WHERE email = ?', [email]); const user = rows[0]; if (!user || user.isEmailConfirmed) return null; if (user.availableAt && new Date(user.availableAt).getTime() > Date.now()) return { cooldownSeconds: Math.ceil((new Date(user.availableAt).getTime() - Date.now()) / 1000) }; const [result] = await this.database.execute('UPDATE users SET verification_token_hash = ?, verification_expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR), verification_resend_available_at = DATE_ADD(NOW(), INTERVAL 30 SECOND) WHERE email = ? AND isEmailConfirmed = FALSE', [tokenHash, email]); return result.affectedRows ? { name: user.name, email: user.email } : null; }
   async createPasswordReset(email, tokenHash) {
@@ -75,10 +94,37 @@ export class Queries {
       return true;
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
-  async profile(id) { const [rows] = await this.database.execute("SELECT u.id, u.profile_picture AS profilePicture, u.name, u.email, u.phone, u.role, u.isEmailConfirmed, u.created_at AS createdAt, NOT EXISTS (SELECT 1 FROM unsubscribed_emails s WHERE LOWER(s.email) = LOWER(u.email)) AS receivesEmailNotifications FROM users u WHERE u.id = ?", [id]); return rows[0]; }
-  async setEmailNotifications(email, enabled) { if (enabled) { await this.database.execute('DELETE FROM unsubscribed_emails WHERE LOWER(email) = LOWER(?)', [email]); } else { await this.database.execute("INSERT INTO unsubscribed_emails (email, reason) VALUES (?, 'User disabled email notifications') ON DUPLICATE KEY UPDATE reason = VALUES(reason), unsubscribed_at = CURRENT_TIMESTAMP", [email.toLowerCase()]); } return enabled; }
+  async profile(id) { const [rows] = await this.database.execute("SELECT u.id, u.profile_picture AS profilePicture, u.name, u.email, u.phone, u.role, u.isEmailConfirmed, u.created_at AS createdAt, COALESCE((SELECT marketing_opt_in FROM marketing_email_preferences p WHERE LOWER(p.email) = LOWER(u.email)), FALSE) AS marketingConsent FROM users u WHERE u.id = ? AND u.deleted_at IS NULL", [id]); return rows[0]; }
+  async setMarketingEmailPreference(email, enabled, policyVersion = null, source = 'settings') {
+    await this.database.execute('INSERT INTO marketing_email_preferences (email, marketing_opt_in, policy_version, source) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE marketing_opt_in = VALUES(marketing_opt_in), policy_version = VALUES(policy_version), source = VALUES(source), changed_at = CURRENT_TIMESTAMP', [email.toLowerCase(), enabled, policyVersion, source]);
+    return enabled;
+  }
+  async marketingEmailPreference(email) { const [rows] = await this.database.execute('SELECT marketing_opt_in AS marketingOptIn FROM marketing_email_preferences WHERE LOWER(email) = LOWER(?)', [email]); return Boolean(rows[0]?.marketingOptIn); }
   async updateProfilePicture(id, profilePicture) { const [result] = await this.database.execute('UPDATE users SET profile_picture = ? WHERE id = ?', [profilePicture, id]); return result.affectedRows > 0; }
-  async deleteUser(id) { const [rows] = await this.database.execute('SELECT email, name FROM users WHERE id = ?', [id]); if (!rows[0]) return null; const [result] = await this.database.execute('DELETE FROM users WHERE id = ?', [id]); return result.affectedRows ? rows[0] : null; }
+  async deleteUser(id) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [rows] = await connection.execute('SELECT id, email, name, profile_picture AS profilePicture FROM users WHERE id = ? AND deleted_at IS NULL FOR UPDATE', [id]);
+      const user = rows[0];
+      if (!user) { await connection.rollback(); return null; }
+      const deletedEmail = `deleted-${user.id}-${Date.now()}@deleted.invalid`;
+      await connection.execute("UPDATE users SET name = 'Deleted user', email = ?, phone = NULL, profile_picture = NULL, password_hash = ?, isEmailConfirmed = FALSE, session_version = session_version + 1, deleted_at = NOW() WHERE id = ?", [deletedEmail, `deleted:${Date.now()}`, id]);
+      await connection.execute("UPDATE community_posts SET status = 'removed', visibility = 'private', is_indexable = FALSE WHERE author_user_id = ?", [id]);
+      await connection.execute("UPDATE events SET deleted_at = NOW(), status = 'Archived' WHERE manager_id = ? AND deleted_at IS NULL", [id]);
+      await connection.execute("UPDATE event_groups SET visibility = 'Private', status = 'archived' WHERE organizer_id = ?", [id]);
+      await connection.execute('UPDATE venues SET is_active = FALSE WHERE owner_user_id = ?', [id]);
+      await connection.execute("UPDATE articles SET status = 'removed', is_indexable = FALSE WHERE author_user_id = ?", [id]);
+      for (const table of ['community_post_conversation_messages', 'community_post_forum_messages', 'group_forum_messages', 'event_forum_messages']) {
+        const authorColumn = table === 'community_post_conversation_messages' ? 'sender_user_id' : 'author_user_id';
+        await connection.execute(`UPDATE ${table} SET body = '[Deleted]' WHERE ${authorColumn} = ?`, [id]);
+      }
+      await connection.execute('INSERT INTO account_deletion_jobs (user_id, requested_by_user_id, status, details, completed_at) VALUES (?, ?, \'completed\', ?, NOW())', [id, id, JSON.stringify({ profilePicture: user.profilePicture, contentAnonymised: true })]);
+      await connection.execute('INSERT INTO audit_log (actor_user_id, event_type, entity_type, entity_id, metadata) VALUES (?, \'account_deleted\', \'user\', ?, ?)', [id, String(id), JSON.stringify({ contentAnonymised: true })]);
+      await connection.commit();
+      return user;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
   async applicationsForUser(email) { const [rows] = await this.database.execute('SELECT id, name, email, contact, activity, additional_information AS additionalInformation, status, created_at AS createdAt FROM contact_submissions WHERE email = ? ORDER BY created_at DESC', [email]); return rows; }
   async applicationActivities() { const [rows] = await this.database.execute('SELECT id, name FROM application_activities WHERE is_active = TRUE ORDER BY sort_order ASC, name ASC'); return rows; }
   async applications() { const [rows] = await this.database.execute('SELECT id, name, email, contact, activity, additional_information AS additionalInformation, status, created_at AS createdAt FROM contact_submissions ORDER BY created_at DESC'); return rows; }
@@ -105,7 +151,7 @@ export class Queries {
   async createApplication(data) { const [result] = await this.database.execute('INSERT INTO contact_submissions (name, email, contact, activity, additional_information) VALUES (?, ?, ?, ?, ?)', [data.name, data.email, data.contact, data.activity, data.additionalInformation]); return result.insertId; }
   async createUser(data, sendVerification) {
     const connection = await this.database.getConnection();
-    try { await connection.beginTransaction(); const [result] = await connection.execute('INSERT INTO users (profile_picture, name, email, password_hash, phone, role, isEmailConfirmed, verification_token_hash, verification_expires_at, verification_resend_available_at) VALUES (?, ?, ?, ?, ?, ?, FALSE, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR), DATE_ADD(NOW(), INTERVAL 30 SECOND))', [data.profilePicture, data.name, data.email, data.passwordHash, data.phone, data.role || 'customer', data.tokenHash]); await sendVerification(); await connection.commit(); return result.insertId; }
+    try { await connection.beginTransaction(); const [result] = await connection.execute('INSERT INTO users (profile_picture, name, email, password_hash, phone, role, isEmailConfirmed, verification_token_hash, verification_expires_at, verification_resend_available_at) VALUES (?, ?, ?, ?, ?, ?, FALSE, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR), DATE_ADD(NOW(), INTERVAL 30 SECOND))', [data.profilePicture, data.name, data.email, data.passwordHash, data.phone, data.role || 'customer', data.tokenHash]); if (data.termsVersion) await connection.execute("INSERT INTO user_legal_acceptances (user_id, document_type, version, source) VALUES (?, 'terms', ?, 'registration')", [result.insertId, data.termsVersion]); await connection.execute('INSERT INTO marketing_email_preferences (email, marketing_opt_in, policy_version, source) VALUES (?, ?, ?, \'registration\')', [data.email, Boolean(data.marketingConsent), data.marketingPolicyVersion || null]); await connection.execute('INSERT INTO audit_log (actor_user_id, event_type, entity_type, entity_id, metadata) VALUES (?, \'registration\', \'user\', ?, ?)', [result.insertId, String(result.insertId), JSON.stringify({ termsVersion: data.termsVersion, marketingConsent: Boolean(data.marketingConsent) })]); await sendVerification(); await connection.commit(); return result.insertId; }
     catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
 
@@ -377,6 +423,7 @@ export class Queries {
     const [result] = await this.database.execute('UPDATE events SET cover_image = ? WHERE id = ? OR series_id = ?', [coverImage, events[0].seriesId, events[0].seriesId]);
     return result.affectedRows > 0;
   }
+  async publicEventCover(filename) { const [rows] = await this.database.execute("SELECT id FROM events WHERE (cover_image = ? OR cover_image LIKE CONCAT('%/', ?)) AND deleted_at IS NULL AND status = 'Published' AND visibility = 'Public' LIMIT 1", [filename, filename]); return rows[0] || null; }
   async richEvent(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
     const [rows] = await this.database.query(`SELECT e.id, e.manager_id AS managerId, e.title, e.short_description AS shortDescription, e.description, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl,
@@ -743,6 +790,53 @@ export class Queries {
     const [result] = await this.database.execute(`UPDATE venue_bookings b JOIN events e ON e.id = b.event_id SET b.status = 'cancelled'
       WHERE b.event_id = ? AND b.status IN ('pending', 'confirmed')${privileged ? '' : ' AND e.manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]);
     return result.affectedRows > 0;
+  }
+  async createPrivacyRequest(request) {
+    const [result] = await this.database.execute('INSERT INTO privacy_requests (reference, user_id, name, email, category, message) VALUES (?, ?, ?, ?, ?, ?)', [request.reference, request.userId, request.name, request.email, request.category, request.message]);
+    return result.insertId;
+  }
+  async createModerationDecision(decision) {
+    const [result] = await this.database.execute(`INSERT INTO moderation_decisions
+      (entity_type, entity_id, subject_user_id, action, reason_code, explanation_internal, explanation_user, automated_detection, decided_by_user_id, appeal_available)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [decision.entityType, String(decision.entityId), decision.subjectUserId, decision.action, decision.reasonCode, decision.explanationInternal, decision.explanationUser, Boolean(decision.automatedDetection), decision.decidedByUserId, Boolean(decision.appealAvailable)]);
+    return result.insertId;
+  }
+  async moderationDecision(id) { const [rows] = await this.database.execute('SELECT id, entity_type AS entityType, entity_id AS entityId, subject_user_id AS subjectUserId, action, reason_code AS reasonCode, explanation_user AS explanationUser, appeal_available AS appealAvailable, created_at AS createdAt FROM moderation_decisions WHERE id = ?', [id]); return rows[0] || null; }
+  async createModerationAppeal(appeal) {
+    const [result] = await this.database.execute('INSERT INTO moderation_appeals (moderation_decision_id, appellant_user_id, explanation) VALUES (?, ?, ?)', [appeal.decisionId, appeal.userId, appeal.explanation]);
+    return result.insertId;
+  }
+  async resolveModerationAppeal(id, resolverUserId, status, outcome, outcomeReason) {
+    const [result] = await this.database.execute("UPDATE moderation_appeals SET status = ?, resolved_at = NOW(), resolved_by_user_id = ?, outcome = ?, outcome_reason = ? WHERE id = ? AND status IN ('submitted', 'under_review')", [status, resolverUserId, outcome, outcomeReason, id]);
+    return result.affectedRows > 0;
+  }
+  async configureRetentionPolicies(retention) {
+    for (const [key, days] of Object.entries(retention)) await this.database.execute('INSERT INTO retention_policies (policy_key, retention_days) VALUES (?, ?) ON DUPLICATE KEY UPDATE retention_days = VALUES(retention_days)', [key, days]);
+  }
+  async applyRetentionPolicies(retention) {
+    const [reset] = await this.database.execute('DELETE FROM password_reset_tokens WHERE expires_at < DATE_SUB(NOW(), INTERVAL ? DAY)', [retention.passwordResetDays]);
+    const [verification] = await this.database.execute('UPDATE users SET verification_token_hash = NULL, verification_expires_at = NULL WHERE verification_expires_at < DATE_SUB(NOW(), INTERVAL ? DAY)', [retention.verificationTokenDays]);
+    const [invitations] = await this.database.execute("DELETE FROM event_invitations WHERE token_expires_at < DATE_SUB(NOW(), INTERVAL ? DAY) AND status IN ('Pending', 'Declined')", [retention.invitationDays]);
+    const [groupInvitations] = await this.database.execute("DELETE FROM group_invitations WHERE expires_at < DATE_SUB(NOW(), INTERVAL ? DAY) AND status IN ('pending', 'declined', 'revoked')", [retention.invitationDays]);
+    const [posts] = await this.database.execute("UPDATE community_posts SET status = 'expired', is_indexable = FALSE WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= NOW()");
+    const result = { passwordResetTokens: reset.affectedRows, verificationTokens: verification.affectedRows, eventInvitations: invitations.affectedRows, groupInvitations: groupInvitations.affectedRows, expiredPosts: posts.affectedRows };
+    await this.audit(null, 'retention_cleanup', 'retention', null, result);
+    return result;
+  }
+  async dataExport(userId) {
+    const [user] = await this.database.execute('SELECT id, name, email, phone, role, isEmailConfirmed, created_at AS createdAt FROM users WHERE id = ? AND deleted_at IS NULL', [userId]);
+    if (!user[0]) return null;
+    const [legalAcceptances] = await this.database.execute('SELECT document_type AS documentType, version, accepted_at AS acceptedAt FROM user_legal_acceptances WHERE user_id = ? ORDER BY accepted_at', [userId]);
+    const [marketingPreferences] = await this.database.execute('SELECT marketing_opt_in AS marketingOptIn, policy_version AS policyVersion, source, changed_at AS changedAt FROM marketing_email_preferences WHERE LOWER(email) = LOWER(?)', [user[0].email]);
+    const [posts] = await this.database.execute('SELECT id, slug, title, short_description AS shortDescription, body, visibility, status, expires_at AS expiresAt, created_at AS createdAt, updated_at AS updatedAt FROM community_posts WHERE author_user_id = ?', [userId]);
+    const [registrations] = await this.database.execute('SELECT event_id AS eventId, status, payment_status AS paymentStatus, created_at AS createdAt FROM event_registrations WHERE user_id = ?', [userId]);
+    const [memberships] = await this.database.execute('SELECT group_id AS groupId, role, status, joined_at AS joinedAt FROM group_memberships WHERE user_id = ?', [userId]);
+    const [reports] = await this.database.execute('SELECT reference, entity_type AS entityType, entity_id AS entityId, reason_code AS reasonCode, description, status, created_at AS createdAt FROM content_reports WHERE reporter_user_id = ?', [userId]);
+    const [directMessages] = await this.database.execute('SELECT id, conversation_id AS conversationId, body, created_at AS createdAt FROM community_post_conversation_messages WHERE sender_user_id = ?', [userId]);
+    const [communityForumMessages] = await this.database.execute('SELECT id, thread_id AS threadId, body, created_at AS createdAt FROM community_post_forum_messages WHERE author_user_id = ?', [userId]);
+    const [groupForumMessages] = await this.database.execute('SELECT id, thread_id AS threadId, body, created_at AS createdAt FROM group_forum_messages WHERE author_user_id = ?', [userId]);
+    const [eventForumMessages] = await this.database.execute('SELECT id, thread_id AS threadId, body, created_at AS createdAt FROM event_forum_messages WHERE author_user_id = ?', [userId]);
+    return { generatedAt: new Date().toISOString(), user: user[0], legalAcceptances, marketingPreferences, communityPosts: posts, eventRegistrations: registrations, groupMemberships: memberships, reports, directMessages, forumMessages: { community: communityForumMessages, group: groupForumMessages, event: eventForumMessages } };
   }
   async users() { const [rows] = await this.database.execute('SELECT id, name, email, phone, role, isEmailConfirmed, created_at AS createdAt FROM users ORDER BY created_at DESC'); return rows; }
   async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'venue_owner', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }

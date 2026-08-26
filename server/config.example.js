@@ -9,6 +9,18 @@ export default {
     apiUrl,
     brandName: process.env.BRAND_NAME || domain,
   },
+  operator: {
+    // The pre-incorporation controller is the founder personally. Do not put a
+    // future company name here until the company migration has been approved.
+    name: process.env.PLATFORM_OPERATOR_NAME,
+    email: process.env.PLATFORM_OPERATOR_EMAIL,
+    privacyEmail: process.env.PRIVACY_EMAIL,
+    supportEmail: process.env.SUPPORT_EMAIL,
+    moderationEmail: process.env.MODERATION_EMAIL,
+    country: process.env.PLATFORM_COUNTRY || 'Sweden',
+    organisationNumber: process.env.PLATFORM_ORGANISATION_NUMBER || null,
+    registeredAddress: process.env.PLATFORM_REGISTERED_ADDRESS || null,
+  },
   database: {
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -95,5 +107,13 @@ export default {
     uploadsDir: process.env.UPLOADS_DIR || 'uploads',
     port: Number(process.env.PORT || 3001),
     authSecret: process.env.AUTH_SECRET || 'change-this-auth-secret',
+    minimumUserAge: Number(process.env.MINIMUM_USER_AGE || 18),
+    paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true',
+    retention: {
+      passwordResetDays: Number(process.env.RETENTION_PASSWORD_RESET_DAYS || 7),
+      verificationTokenDays: Number(process.env.RETENTION_VERIFICATION_TOKEN_DAYS || 30),
+      invitationDays: Number(process.env.RETENTION_INVITATION_DAYS || 30),
+      securityLogDays: Number(process.env.RETENTION_SECURITY_LOG_DAYS || 180),
+    },
   },
 };

@@ -38,23 +38,21 @@ export class EmailService {
     this.mailer = this.createMailer(smtp.verification);
     this.notificationMailer = this.createMailer(smtp.applicationNotification);
     this.invitationMailer = this.createMailer(smtp.invitation);
-    for (const transport of [this.mailer, this.notificationMailer, this.invitationMailer]) {
-      const sendMail = transport.sendMail.bind(transport);
-      transport.sendMail = async (message) => {
-        const recipients = (Array.isArray(message.to) ? message.to : [message.to]).map((value) => typeof value === 'string' ? value : value?.address).filter(Boolean);
-        if (!recipients.length) return { accepted: [], rejected: [] };
-        const [blocked] = await this.database.execute(`SELECT email FROM unsubscribed_emails WHERE LOWER(email) IN (${recipients.map(() => '?').join(',')})`, recipients.map((email) => email.toLowerCase()));
-        const blockedSet = new Set(blocked.map(({ email }) => email.toLowerCase()));
-        const allowed = recipients.filter((email) => !blockedSet.has(email.toLowerCase()));
-        if (!allowed.length) return { accepted: [], rejected: recipients, suppressed: true };
-        const token = this.unsubscribeToken(allowed[0]);
-        const unsubscribeLink = `${this.unsubscribeEndpointUrl}?token=${encodeURIComponent(token)}`;
-        return sendMail({ ...message, to: allowed, text: `${message.text || ''}\n\nUnsubscribe from future emails: ${unsubscribeLink}`, html: `${brandEmailHtml(message.html)}<p style="font-size:12px;color:#76675e;text-align:center;margin-top:28px"><a href="${escapeHtml(unsubscribeLink)}" style="color:#316f68">Unsubscribe from future emails</a></p>` });
-      };
-    }
   }
 
   unsubscribeToken(email) { const payload = Buffer.from(email.trim().toLowerCase()).toString('base64url'); const signature = crypto.createHmac('sha256', this.unsubscribeSecret).update(payload).digest('base64url'); return `${payload}.${signature}`; }
+
+  async sendMarketing(message) {
+    const recipients = (Array.isArray(message.to) ? message.to : [message.to]).map((value) => typeof value === 'string' ? value : value?.address).filter(Boolean);
+    const allowed = [];
+    for (const email of recipients) {
+      const [rows] = await this.database.execute('SELECT marketing_opt_in AS marketingOptIn FROM marketing_email_preferences WHERE LOWER(email) = LOWER(?)', [email]);
+      if (rows[0]?.marketingOptIn) allowed.push(email);
+    }
+    if (!allowed.length) return { accepted: [], rejected: recipients, suppressed: true };
+    const unsubscribeLink = `${this.unsubscribeEndpointUrl}?token=${encodeURIComponent(this.unsubscribeToken(allowed[0]))}`;
+    return this.notificationMailer.sendMail({ ...message, to: allowed, text: `${message.text || ''}\n\nUnsubscribe from marketing emails: ${unsubscribeLink}`, html: `${brandEmailHtml(message.html)}<p><a href="${escapeHtml(unsubscribeLink)}">Unsubscribe from marketing emails</a></p>` });
+  }
 
   createMailer(credentials) {
     return nodemailer.createTransport({ host: this.smtp.host, port: this.smtp.port, secure: this.smtp.secure,

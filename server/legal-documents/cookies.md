@@ -1,6 +1,5 @@
 # YKCircle Cookie Policy
 
-> **Draft template — update after auditing actual cookies/SDKs.**  
 > Last updated: [DATE]
 
 ## 1. Categories
@@ -12,14 +11,10 @@ Authentication, session security, CSRF protection, load balancing, and cookie pr
 Optional settings such as language, UI preferences, or selected city.
 
 ### Analytics
-Used to understand Platform usage: [ANALYTICS PROVIDER].
-
-Where consent is required, analytics must remain disabled until consent.
+No analytics provider is enabled by this API. Any analytics added to the website must remain disabled until the user has given the required consent.
 
 ### Marketing
-Advertising, retargeting, or marketing attribution: [MARKETING PROVIDERS].
-
-Where consent is required, marketing technologies must remain disabled until consent.
+No marketing or retargeting provider is enabled by this API. Any future marketing technology must remain disabled until the user has given the required consent.
 
 ## 2. Consent
 Users should be able to:
@@ -31,11 +26,11 @@ Users should be able to:
 Rejecting should be as easy as accepting. Do not pre-tick optional categories.
 
 ## 3. Cookie inventory
-Do not invent a list. Generate it from an actual implementation audit.
+The API uses bearer-token authentication and does not set an authentication cookie. The public website and deployed infrastructure must be audited before each release; any cookies or similar technologies found there will be listed here before use.
 
 | Name | Provider | Purpose | Category | Duration |
 |---|---|---|---|---|
-| [COOKIE] | [PROVIDER] | [PURPOSE] | [CATEGORY] | [DURATION] |
+| None identified in this API | YKCircle API | No API cookie is set | Strictly necessary | N/A |
 
 ## 4. Change settings
 Cookie settings: [COOKIE SETTINGS LINK]

@@ -24,6 +24,17 @@ export class Configuration {
       apiUrl,
       brandName: siteValues.brandName || values.brandName || process.env.BRAND_NAME || domain,
     };
+    const operatorValues = values.operator || {};
+    this.operator = {
+      name: process.env.PLATFORM_OPERATOR_NAME || operatorValues.name || values.platformOperatorName || null,
+      email: process.env.PLATFORM_OPERATOR_EMAIL || operatorValues.email || values.platformOperatorEmail || null,
+      privacyEmail: process.env.PRIVACY_EMAIL || operatorValues.privacyEmail || values.privacyEmail || null,
+      supportEmail: process.env.SUPPORT_EMAIL || operatorValues.supportEmail || values.supportEmail || null,
+      moderationEmail: process.env.MODERATION_EMAIL || operatorValues.moderationEmail || values.moderationEmail || null,
+      country: process.env.PLATFORM_COUNTRY || operatorValues.country || values.platformCountry || 'Sweden',
+      organisationNumber: process.env.PLATFORM_ORGANISATION_NUMBER || operatorValues.organisationNumber || null,
+      registeredAddress: process.env.PLATFORM_REGISTERED_ADDRESS || operatorValues.registeredAddress || null,
+    };
     const databaseValues = values.database && typeof values.database === 'object' ? values.database : null;
     this.database = databaseValues || {
       host: values.host ?? process.env.DB_HOST,
@@ -141,17 +152,35 @@ export class Configuration {
     overrideFtp(this.ftp.articles, 'FTP_ARTICLE');
 
     const runtimeValues = values.runtime || {};
+    const retentionValues = runtimeValues.retention || values.retention || {};
     this.runtime = {
       uploadsDir: runtimeValues.uploadsDir || values.uploadsDir || process.env.UPLOADS_DIR || 'uploads',
       port: Number(runtimeValues.port ?? values.port ?? process.env.PORT ?? 3001),
       authSecret: runtimeValues.authSecret || values.authSecret || process.env.AUTH_SECRET,
       allowedOrigins: runtimeValues.allowedOrigins || this.getAllowedOrigins(),
+      minimumUserAge: Number(process.env.MINIMUM_USER_AGE || runtimeValues.minimumUserAge || values.minimumUserAge || 18),
+      paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true' || runtimeValues.paidEventsEnabled === true || values.paidEventsEnabled === true,
+      retention: {
+        passwordResetDays: Number(process.env.RETENTION_PASSWORD_RESET_DAYS || retentionValues.passwordResetDays || 7),
+        verificationTokenDays: Number(process.env.RETENTION_VERIFICATION_TOKEN_DAYS || retentionValues.verificationTokenDays || 30),
+        invitationDays: Number(process.env.RETENTION_INVITATION_DAYS || retentionValues.invitationDays || 30),
+        securityLogDays: Number(process.env.RETENTION_SECURITY_LOG_DAYS || retentionValues.securityLogDays || 180),
+      },
     };
-    if (typeof this.runtime.authSecret !== 'string' || this.runtime.authSecret.length < 32) {
+    if (typeof this.runtime.authSecret !== 'string' || this.runtime.authSecret.length < 32 || /^(?:change-this-auth-secret|password|secret|test)$/i.test(this.runtime.authSecret.trim()) || /^(.)\1+$/.test(this.runtime.authSecret.trim())) {
       throw new Error('AUTH_SECRET must be configured with at least 32 random characters.');
     }
     if (!Array.isArray(this.runtime.allowedOrigins) || this.runtime.allowedOrigins.some((origin) => origin === '*')) {
       throw new Error('CORS origins must be an explicit allowlist and cannot include "*".');
+    }
+    if (!Number.isInteger(this.runtime.minimumUserAge) || this.runtime.minimumUserAge < 18 || this.runtime.minimumUserAge > 120) {
+      throw new Error('MINIMUM_USER_AGE must be a whole number from 18 to 120 while minors are unsupported.');
+    }
+    if (process.env.NODE_ENV === 'production' && ['name', 'email', 'privacyEmail', 'supportEmail', 'moderationEmail'].some((key) => !this.operator[key])) {
+      throw new Error('Production requires PLATFORM_OPERATOR_NAME, PLATFORM_OPERATOR_EMAIL, PRIVACY_EMAIL, SUPPORT_EMAIL and MODERATION_EMAIL.');
+    }
+    for (const [name, days] of Object.entries(this.runtime.retention)) {
+      if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error(`Retention setting ${name} must be a whole number from 1 to 3650.`);
     }
     this.allowedOrigins = this.runtime.allowedOrigins;
 
@@ -175,6 +204,8 @@ export class Configuration {
     this.applicationNotificationFrom = this.email.from.applicationNotification;
     this.invitationFrom = this.email.from.invitation;
     this.authSecret = this.runtime.authSecret;
+    this.minimumUserAge = this.runtime.minimumUserAge;
+    this.paidEventsEnabled = this.runtime.paidEventsEnabled;
     this.uploadsDir = this.runtime.uploadsDir;
     this.port = this.runtime.port;
     this.ftpProfilePictures = this.ftp.profilePictures;

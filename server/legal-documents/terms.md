@@ -1,11 +1,10 @@
 # YKCircle Terms of Service
 
-> **Draft template — legal review required before production launch.**  
 > Last updated: [DATE]
 
 These Terms govern access to and use of YKCircle, including the website, mobile applications, community features, event tools, organizer tools, business listings, and related services.
 
-**Operator:** [LEGAL COMPANY NAME]  
+**Operator:** [LEGAL COMPANY NAME], acting personally until a future company migration is announced.
 **Organisation number:** [ORG NUMBER]  
 **Address:** [ADDRESS]  
 **Email:** [SUPPORT EMAIL]  
@@ -47,14 +46,10 @@ YKCircle does not guarantee that an event will occur or that a venue, supplier, 
 Joining groups/events may involve meeting people in real life. Users are responsible for exercising reasonable personal judgment and care.
 
 ## 9. Payments
-Payment methods may include direct organizer Swish, external checkout, or integrated payment providers.
-
-Before purchase, checkout must identify the seller, organizer, total price, fees, payment method, and refund/cancellation terms.
-
-If payment goes directly to an organizer, YKCircle does not hold those funds.
+The pre-company beta supports free events only. YKCircle does not receive, hold, settle, or pay out funds for third-party organizers. Any later paid feature will be subject to separate terms and a confirmed legal/payment model before launch.
 
 ## 10. Fees
-YKCircle may charge organizer subscriptions, ticketing/platform fees, transaction fees, premium-listing fees, promotional fees, or other clearly disclosed fees.
+No organizer subscriptions, ticketing/platform fees, transaction fees, premium-listing fees, or other charges are active in the pre-company beta.
 
 ## 11. Refunds and cancellations
 Refund rights depend on the seller, event type, applicable law, and the disclosed cancellation terms. Organizer policies cannot remove mandatory consumer rights.
