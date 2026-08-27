@@ -697,8 +697,26 @@ export class Queries {
   }
   async venuesForViewer(userId = null, role = null, { managedOnly = false } = {}) {
     const privileged = ['manager', 'admin'].includes(role);
-    const filter = managedOnly ? (privileged ? 'TRUE' : 'v.owner_user_id = ?') : (privileged ? 'TRUE' : 'v.is_active = TRUE OR v.owner_user_id = ?');
-    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName FROM venues v JOIN users owner ON owner.id = v.owner_user_id WHERE ${filter} ORDER BY v.created_at DESC`, privileged ? [] : [userId]);
+    // Do not add an owner predicate for an anonymous visitor.  Besides making
+    // the public intent unambiguous, this avoids relying on a NULL-bound
+    // placeholder in the public listing query.  COALESCE keeps venues made
+    // before the NOT NULL default was introduced visible until their row is
+    // next edited or migrated.
+    let filter = 'TRUE';
+    let parameters = [];
+    if (managedOnly) {
+      if (!privileged) {
+        filter = 'v.owner_user_id = ?';
+        parameters = [userId];
+      }
+    } else if (!privileged) {
+      filter = 'COALESCE(v.is_active, TRUE) = TRUE';
+      if (userId !== null) {
+        filter = `(${filter} OR v.owner_user_id = ?)`;
+        parameters = [userId];
+      }
+    }
+    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName FROM venues v JOIN users owner ON owner.id = v.owner_user_id WHERE ${filter} ORDER BY v.created_at DESC`, parameters);
     return rows;
   }
   async createVenue(ownerUserId, data) {
