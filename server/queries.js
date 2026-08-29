@@ -683,7 +683,54 @@ export class Queries {
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   venueColumns(prefix = 'v') {
-    return `${prefix}.id, ${prefix}.owner_user_id AS ownerUserId, ${prefix}.name, ${prefix}.business_name AS businessName, ${prefix}.description, ${prefix}.location, ${prefix}.country, ${prefix}.city, ${prefix}.address, ${prefix}.latitude, ${prefix}.longitude, ${prefix}.timezone, ${prefix}.is_active AS isActive, ${prefix}.created_at AS createdAt, ${prefix}.updated_at AS updatedAt`;
+    return `${prefix}.id, ${prefix}.organization_id AS organizationId, ${prefix}.owner_user_id AS ownerUserId, ${prefix}.name, ${prefix}.slug, ${prefix}.business_name AS businessName, ${prefix}.short_description AS shortDescription, ${prefix}.description, ${prefix}.location, ${prefix}.address_line_1 AS addressLine1, ${prefix}.address_line_2 AS addressLine2, ${prefix}.postal_code AS postalCode, ${prefix}.country, ${prefix}.city, ${prefix}.municipality, ${prefix}.region, ${prefix}.address, ${prefix}.latitude, ${prefix}.longitude, ${prefix}.location_visibility AS locationVisibility, ${prefix}.timezone, ${prefix}.capacity_min AS capacityMin, ${prefix}.capacity_max AS capacityMax, ${prefix}.standing_capacity AS standingCapacity, ${prefix}.seated_capacity AS seatedCapacity, ${prefix}.dining_capacity AS diningCapacity, ${prefix}.classroom_capacity AS classroomCapacity, ${prefix}.size_sqm AS sizeSqm, ${prefix}.price_from AS priceFrom, ${prefix}.price_unit AS priceUnit, ${prefix}.currency, ${prefix}.pricing_description AS pricingDescription, ${prefix}.minimum_booking_hours AS minimumBookingHours, ${prefix}.website_url AS websiteUrl, ${prefix}.phone, ${prefix}.contact_email AS contactEmail, ${prefix}.availability_type AS availabilityType, ${prefix}.house_rules_text AS houseRulesText, ${prefix}.is_active AS isActive, ${prefix}.is_verified AS isVerified, ${prefix}.is_featured AS isFeatured, ${prefix}.verification_status AS verificationStatus, ${prefix}.moderation_status AS moderationStatus, ${prefix}.published_at AS publishedAt, ${prefix}.created_at AS createdAt, ${prefix}.updated_at AS updatedAt`;
+  }
+  normalizeVenue(venue, { publicView = false } = {}) {
+    if (!venue) return null;
+    const normalized = { ...venue, isActive: Boolean(venue.isActive), isVerified: Boolean(venue.isVerified), isFeatured: Boolean(venue.isFeatured), sponsored: Boolean(venue.sponsored) };
+    for (const key of ['latitude', 'longitude', 'sizeSqm', 'priceFrom', 'minimumBookingHours']) if (normalized[key] != null) normalized[key] = Number(normalized[key]);
+    for (const key of ['capacityMin', 'capacityMax', 'standingCapacity', 'seatedCapacity', 'diningCapacity', 'classroomCapacity']) if (normalized[key] != null) normalized[key] = Number(normalized[key]);
+    normalized.location = { locality: normalized.city || null, municipality: normalized.municipality || null, region: normalized.region || null, country: normalized.country || null, latitude: normalized.latitude ?? null, longitude: normalized.longitude ?? null };
+    normalized.capacity = { min: normalized.capacityMin ?? null, max: normalized.capacityMax ?? null, standing: normalized.standingCapacity ?? null, seated: normalized.seatedCapacity ?? null, dining: normalized.diningCapacity ?? null, classroom: normalized.classroomCapacity ?? null };
+    normalized.pricing = { from: normalized.priceFrom ?? null, unit: normalized.priceUnit, currency: normalized.currency, description: normalized.pricingDescription || null };
+    if (publicView && normalized.locationVisibility !== 'exact') {
+      normalized.addressLine1 = null; normalized.addressLine2 = null; normalized.address = null; normalized.postalCode = null;
+      if (normalized.locationVisibility === 'private_until_booking') { normalized.latitude = null; normalized.longitude = null; normalized.location.latitude = null; normalized.location.longitude = null; }
+    }
+    return normalized;
+  }
+  async venueRelations(venueId) {
+    const [amenities] = await this.database.execute('SELECT a.id, a.slug, a.name, a.category FROM venue_amenity_assignments va JOIN venue_amenities a ON a.id = va.amenity_id WHERE va.venue_id = ? AND a.is_active = TRUE ORDER BY a.category, a.sort_order, a.name', [venueId]);
+    const [eventTypes] = await this.database.execute('SELECT t.id, t.slug, t.name FROM venue_event_type_assignments va JOIN venue_event_types t ON t.id = va.event_type_id WHERE va.venue_id = ? AND t.is_active = TRUE ORDER BY t.sort_order, t.name', [venueId]);
+    return { amenities, suitableEventTypes: eventTypes };
+  }
+  async decorateVenue(venue, options) { return { ...this.normalizeVenue(venue, options), ...await this.venueRelations(venue.id) }; }
+  async venueTypes() { const [rows] = await this.database.execute('SELECT id, slug, name FROM venue_types WHERE is_active = TRUE ORDER BY sort_order, name'); return rows; }
+  async venueEventTypes() { const [rows] = await this.database.execute('SELECT id, slug, name FROM venue_event_types WHERE is_active = TRUE ORDER BY sort_order, name'); return rows; }
+  async venueAmenities() { const [rows] = await this.database.execute('SELECT id, slug, name, category FROM venue_amenities WHERE is_active = TRUE ORDER BY category, sort_order, name'); return rows; }
+  async organization(id, userId = null, role = null) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await this.database.execute(`SELECT o.id, o.name, o.slug, o.description, o.website_url AS websiteUrl, o.phone, o.contact_email AS contactEmail, o.is_active AS isActive, om.role AS membershipRole FROM organizations o LEFT JOIN organization_members om ON om.organization_id = o.id AND om.user_id = ? WHERE o.id = ? AND (${privileged ? 'TRUE' : 'o.is_active = TRUE OR om.user_id IS NOT NULL'})`, [userId, id]);
+    return rows[0] ? { ...rows[0], isActive: Boolean(rows[0].isActive) } : null;
+  }
+  async createOrganization(ownerUserId, data) {
+    const connection = await this.database.getConnection();
+    try { await connection.beginTransaction(); const [result] = await connection.execute('INSERT INTO organizations (name, slug, description, website_url, phone, contact_email) VALUES (?, ?, ?, ?, ?, ?)', [data.name, data.slug, data.description, data.websiteUrl, data.phone, data.contactEmail]); await connection.execute("INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, 'owner')", [result.insertId, ownerUserId]); await connection.commit(); return result.insertId; }
+    catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async organizationMember(organizationId, userId) { const [rows] = await this.database.execute('SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?', [organizationId, userId]); return rows[0] || null; }
+  async setOrganizationMember(organizationId, actorUserId, actorRole, userId, membershipRole) {
+    if (!['manager', 'admin'].includes(actorRole)) {
+      const actor = await this.organizationMember(organizationId, actorUserId);
+      if (!actor || !['owner', 'admin'].includes(actor.role)) return false;
+    }
+    const [result] = await this.database.execute('INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE role = VALUES(role)', [organizationId, userId, membershipRole]);
+    return result.affectedRows > 0;
+  }
+  async canManageVenue(id, userId, role) {
+    if (['manager', 'admin'].includes(role)) return true;
+    const [rows] = await this.database.execute(`SELECT v.id FROM venues v LEFT JOIN organization_members om ON om.organization_id = v.organization_id AND om.user_id = ? WHERE v.id = ? AND (v.owner_user_id = ? OR om.role IN ('owner','admin','manager'))`, [userId, id, userId]);
+    return Boolean(rows[0]);
   }
   async venueAvailability(venueId) {
     const [rows] = await this.database.execute('SELECT id, venue_id AS venueId, weekday, TIME_FORMAT(start_time, \'%H:%i\') AS startTime, TIME_FORMAT(end_time, \'%H:%i\') AS endTime FROM venue_availability WHERE venue_id = ? ORDER BY weekday, start_time', [venueId]);
@@ -691,11 +738,13 @@ export class Queries {
   }
   async venue(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName FROM venues v JOIN users owner ON owner.id = v.owner_user_id WHERE v.id = ? AND (${privileged ? 'TRUE' : 'v.is_active = TRUE OR v.owner_user_id = ?'})`, privileged ? [id] : [id, userId]);
+    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, member.role AS membershipRole, type.slug AS venueType, type.name AS venueTypeName FROM venues v JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN organization_members member ON member.organization_id = v.organization_id AND member.user_id = ? LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE v.id = ? AND (${privileged ? 'TRUE' : "(v.is_active = TRUE AND v.moderation_status = 'approved') OR v.owner_user_id = ? OR member.user_id IS NOT NULL"})`, privileged ? [userId, id] : [userId, id, userId]);
     if (!rows[0]) return null;
-    return { ...rows[0], availability: await this.venueAvailability(id) };
+    const managed = privileged || rows[0].ownerUserId === userId || Boolean(rows[0].membershipRole);
+    return { ...await this.decorateVenue(rows[0], { publicView: !managed }), availability: await this.venueAvailability(id) };
   }
-  async venuesForViewer(userId = null, role = null, { managedOnly = false } = {}) {
+  async venueBySlug(slug, userId = null, role = null) { const [rows] = await this.database.execute('SELECT id FROM venues WHERE slug = ?', [slug]); return rows[0] ? this.venue(rows[0].id, userId, role) : null; }
+  async venuesForViewer(userId = null, role = null, { managedOnly = false, city = null, venueType = null, eventType = null, amenities = [], minCapacity = null, maxCapacity = null, maxPrice = null, verifiedOnly = false } = {}) {
     const privileged = ['manager', 'admin'].includes(role);
     // Do not add an owner predicate for an anonymous visitor.  Besides making
     // the public intent unambiguous, this avoids relying on a NULL-bound
@@ -706,40 +755,94 @@ export class Queries {
     let parameters = [];
     if (managedOnly) {
       if (!privileged) {
-        filter = 'v.owner_user_id = ?';
-        parameters = [userId];
+        filter = "(v.owner_user_id = ? OR EXISTS (SELECT 1 FROM organization_members managed_member WHERE managed_member.organization_id = v.organization_id AND managed_member.user_id = ? AND managed_member.role IN ('owner','admin','manager')))";
+        parameters = [userId, userId];
       }
     } else if (!privileged) {
-      filter = 'COALESCE(v.is_active, TRUE) = TRUE';
+      filter = "COALESCE(v.is_active, TRUE) = TRUE AND v.moderation_status = 'approved'";
       if (userId !== null) {
         filter = `(${filter} OR v.owner_user_id = ?)`;
         parameters = [userId];
       }
     }
-    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName FROM venues v JOIN users owner ON owner.id = v.owner_user_id WHERE ${filter} ORDER BY v.created_at DESC`, parameters);
-    return rows;
+    if (city) { filter += ' AND (v.city = ? OR v.municipality = ?)'; parameters.push(city, city); }
+    if (venueType) { filter += ' AND EXISTS (SELECT 1 FROM venue_types type WHERE type.id = v.venue_type_id AND type.slug = ?)'; parameters.push(venueType); }
+    if (eventType) { filter += ' AND EXISTS (SELECT 1 FROM venue_event_type_assignments veta JOIN venue_event_types vet ON vet.id = veta.event_type_id WHERE veta.venue_id = v.id AND vet.slug = ?)'; parameters.push(eventType); }
+    for (const amenity of amenities) { filter += ' AND EXISTS (SELECT 1 FROM venue_amenity_assignments va JOIN venue_amenities a ON a.id = va.amenity_id WHERE va.venue_id = v.id AND a.slug = ?)'; parameters.push(amenity); }
+    if (minCapacity != null) { filter += ' AND COALESCE(v.capacity_max, v.standing_capacity, v.seated_capacity, 0) >= ?'; parameters.push(minCapacity); }
+    if (maxCapacity != null) { filter += ' AND COALESCE(v.capacity_min, 0) <= ?'; parameters.push(maxCapacity); }
+    if (maxPrice != null) { filter += " AND (v.price_unit = 'contact' OR v.price_from IS NULL OR v.price_from <= ?)"; parameters.push(maxPrice); }
+    if (verifiedOnly) filter += " AND v.verification_status = 'verified'";
+    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, type.slug AS venueType, type.name AS venueTypeName, EXISTS (SELECT 1 FROM venue_promotions p WHERE p.venue_id = v.id AND p.status = 'active' AND p.starts_at <= NOW() AND p.ends_at > NOW()) AS sponsored FROM venues v JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE ${filter} ORDER BY sponsored DESC, v.is_featured DESC, v.created_at DESC`, parameters);
+    return Promise.all(rows.map((venue) => this.decorateVenue(venue, { publicView: !managedOnly && !privileged })));
   }
   async createVenue(ownerUserId, data) {
-    const [result] = await this.database.execute(`INSERT INTO venues (owner_user_id, name, business_name, description, location, country, city, address, latitude, longitude, timezone, is_active)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [ownerUserId, data.name, data.businessName, data.description, data.location, data.country, data.city, data.address, data.latitude, data.longitude, data.timezone, data.isActive]);
+    const [result] = await this.database.execute(`INSERT INTO venues (organization_id, owner_user_id, name, slug, business_name, short_description, description, location, address_line_1, address_line_2, postal_code, country, city, municipality, region, address, latitude, longitude, location_visibility, timezone, venue_type_id, capacity_min, capacity_max, standing_capacity, seated_capacity, dining_capacity, classroom_capacity, size_sqm, price_from, price_unit, currency, pricing_description, minimum_booking_hours, website_url, phone, contact_email, availability_type, house_rules_text, is_active, moderation_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT id FROM venue_types WHERE slug = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`, [data.organizationId, ownerUserId, data.name, data.slug, data.businessName, data.shortDescription, data.description, data.location, data.addressLine1, data.addressLine2, data.postalCode, data.country, data.city, data.municipality, data.region, data.address, data.latitude, data.longitude, data.locationVisibility, data.timezone, data.venueType, data.capacityMin, data.capacityMax, data.standingCapacity, data.seatedCapacity, data.diningCapacity, data.classroomCapacity, data.sizeSqm, data.priceFrom, data.priceUnit, data.currency, data.pricingDescription, data.minimumBookingHours, data.websiteUrl, data.phone, data.contactEmail, data.availabilityType, data.houseRulesText, data.isActive]);
+    await this.replaceVenueRelations(result.insertId, data.amenitySlugs, data.suitableEventTypeSlugs);
     return result.insertId;
   }
+  async replaceVenueRelations(venueId, amenitySlugs = [], eventTypeSlugs = []) {
+    await this.database.execute('DELETE FROM venue_amenity_assignments WHERE venue_id = ?', [venueId]);
+    await this.database.execute('DELETE FROM venue_event_type_assignments WHERE venue_id = ?', [venueId]);
+    for (const slug of amenitySlugs) await this.database.execute('INSERT INTO venue_amenity_assignments (venue_id, amenity_id) SELECT ?, id FROM venue_amenities WHERE slug = ?', [venueId, slug]);
+    for (const slug of eventTypeSlugs) await this.database.execute('INSERT INTO venue_event_type_assignments (venue_id, event_type_id) SELECT ?, id FROM venue_event_types WHERE slug = ?', [venueId, slug]);
+  }
   async updateVenue(id, userId, role, data) {
-    const privileged = ['manager', 'admin'].includes(role);
-    const [result] = await this.database.execute(`UPDATE venues SET name=?, business_name=?, description=?, location=?, country=?, city=?, address=?, latitude=?, longitude=?, timezone=?, is_active=? WHERE id=?${privileged ? '' : ' AND owner_user_id=?'}`, [data.name, data.businessName, data.description, data.location, data.country, data.city, data.address, data.latitude, data.longitude, data.timezone, data.isActive, id, ...(privileged ? [] : [userId])]);
+    if (!await this.canManageVenue(id, userId, role)) return false;
+    const [result] = await this.database.execute('UPDATE venues SET name=?, slug=?, business_name=?, short_description=?, description=?, location=?, address_line_1=?, address_line_2=?, postal_code=?, country=?, city=?, municipality=?, region=?, address=?, latitude=?, longitude=?, location_visibility=?, timezone=?, venue_type_id=(SELECT id FROM venue_types WHERE slug=?), capacity_min=?, capacity_max=?, standing_capacity=?, seated_capacity=?, dining_capacity=?, classroom_capacity=?, size_sqm=?, price_from=?, price_unit=?, currency=?, pricing_description=?, minimum_booking_hours=?, website_url=?, phone=?, contact_email=?, availability_type=?, house_rules_text=?, is_active=? WHERE id=?', [data.name, data.slug, data.businessName, data.shortDescription, data.description, data.location, data.addressLine1, data.addressLine2, data.postalCode, data.country, data.city, data.municipality, data.region, data.address, data.latitude, data.longitude, data.locationVisibility, data.timezone, data.venueType, data.capacityMin, data.capacityMax, data.standingCapacity, data.seatedCapacity, data.diningCapacity, data.classroomCapacity, data.sizeSqm, data.priceFrom, data.priceUnit, data.currency, data.pricingDescription, data.minimumBookingHours, data.websiteUrl, data.phone, data.contactEmail, data.availabilityType, data.houseRulesText, data.isActive, id]);
+    await this.replaceVenueRelations(id, data.amenitySlugs, data.suitableEventTypeSlugs);
     return result.affectedRows > 0;
   }
   async deleteVenue(id, userId, role) {
-    const privileged = ['manager', 'admin'].includes(role);
-    const [result] = await this.database.execute(`DELETE FROM venues WHERE id = ?${privileged ? '' : ' AND owner_user_id = ?'}`, privileged ? [id] : [id, userId]);
+    if (!await this.canManageVenue(id, userId, role)) return false;
+    const [result] = await this.database.execute('DELETE FROM venues WHERE id = ?', [id]);
     return result.affectedRows > 0;
   }
-  async replaceVenueAvailability(venueId, userId, role, slots) {
+  async createVenueInquiry(venueId, organizerUserId, data) {
+    const [result] = await this.database.execute(`INSERT INTO venue_inquiries (venue_id, organizer_user_id, event_id, event_name, event_type, requested_date, start_time, end_time, expected_guests, budget, message)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [venueId, organizerUserId, data.eventId, data.eventName, data.eventType, data.requestedDate, data.startTime, data.endTime, data.expectedGuests, data.budget, data.message]);
+    return result.insertId;
+  }
+  async eventForVenueInquiry(eventId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await this.database.execute(`SELECT id, title, starts_at AS startsAt, ends_at AS endsAt, capacity FROM events WHERE id = ? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]);
+    return rows[0] || null;
+  }
+  async venueInquiries(venueId, userId, role) {
+    if (!await this.canManageVenue(venueId, userId, role)) return null;
+    const [rows] = await this.database.execute(`SELECT i.id, i.venue_id AS venueId, i.organizer_user_id AS organizerUserId, i.event_id AS eventId, i.event_name AS eventName, i.event_type AS eventType, i.requested_date AS requestedDate, TIME_FORMAT(i.start_time, '%H:%i') AS startTime, TIME_FORMAT(i.end_time, '%H:%i') AS endTime, i.expected_guests AS expectedGuests, i.budget, i.message, i.status, i.created_at AS createdAt, i.updated_at AS updatedAt, u.name AS organizerName FROM venue_inquiries i JOIN users u ON u.id = i.organizer_user_id WHERE i.venue_id = ? ORDER BY i.created_at DESC`, [venueId]);
+    return rows;
+  }
+  async updateVenueInquiryStatus(inquiryId, venueId, userId, role, status) {
+    if (!await this.canManageVenue(venueId, userId, role)) return false;
+    const [result] = await this.database.execute('UPDATE venue_inquiries SET status = ? WHERE id = ? AND venue_id = ?', [status, inquiryId, venueId]);
+    return result.affectedRows > 0;
+  }
+  async moderateVenue(venueId, moderationStatus, verificationStatus = null, isActive = null) {
+    const [result] = await this.database.execute(`UPDATE venues SET moderation_status = ?, verification_status = COALESCE(?, verification_status), is_verified = CASE WHEN COALESCE(?, verification_status) = 'verified' THEN TRUE ELSE FALSE END, is_active = COALESCE(?, is_active), published_at = CASE WHEN ? = 'approved' AND published_at IS NULL THEN NOW() ELSE published_at END WHERE id = ?`, [moderationStatus, verificationStatus, verificationStatus, isActive, moderationStatus, venueId]);
+    return result.affectedRows > 0;
+  }
+  async saveVenue(venueId, userId) {
+    const [result] = await this.database.execute('INSERT IGNORE INTO saved_venues (user_id, venue_id) SELECT ?, id FROM venues WHERE id = ? AND is_active = TRUE AND moderation_status = \'approved\'', [userId, venueId]);
+    return result.affectedRows > 0;
+  }
+  async unsaveVenue(venueId, userId) { const [result] = await this.database.execute('DELETE FROM saved_venues WHERE venue_id = ? AND user_id = ?', [venueId, userId]); return result.affectedRows > 0; }
+  async savedVenues(userId) {
+    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, type.slug AS venueType, type.name AS venueTypeName, FALSE AS sponsored FROM saved_venues saved JOIN venues v ON v.id = saved.venue_id JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE saved.user_id = ? AND v.is_active = TRUE AND v.moderation_status = 'approved' ORDER BY saved.created_at DESC`, [userId]);
+    return Promise.all(rows.map((venue) => this.decorateVenue(venue, { publicView: true })));
+  }
+  async similarVenues(venueId, userId = null, role = null) {
+    const venue = await this.venue(venueId, userId, role);
+    if (!venue) return null;
+    return this.venuesForViewer(userId, role, { city: venue.city, venueType: venue.venueType }).then((venues) => venues.filter((item) => item.id !== venueId).slice(0, 6));
+  }
+  async replaceVenueAvailability(venueId, userId, role, slots) {
+    if (!await this.canManageVenue(venueId, userId, role)) return false;
     const connection = await this.database.getConnection();
     try {
       await connection.beginTransaction();
-      const [venues] = await connection.execute(`SELECT id FROM venues WHERE id = ?${privileged ? '' : ' AND owner_user_id = ?'} FOR UPDATE`, privileged ? [venueId] : [venueId, userId]);
+      const [venues] = await connection.execute('SELECT id FROM venues WHERE id = ? FOR UPDATE', [venueId]);
       if (!venues[0]) { await connection.rollback(); return false; }
       await connection.execute('DELETE FROM venue_availability WHERE venue_id = ?', [venueId]);
       for (const slot of slots) await connection.execute('INSERT INTO venue_availability (venue_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)', [venueId, slot.weekday, slot.startTime, slot.endTime]);

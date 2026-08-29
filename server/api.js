@@ -203,31 +203,73 @@ export class Api {
     // can only administer events they created (unless they are a manager/admin).
     const requireVerifiedUser = (req, res, next) => req.user.isEmailConfirmed ? next() : res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Please verify your email address before creating an event.' });
     const requireRoleManager = (req, res, next) => ['manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Manager access required.' });
-    const requireVenueOwner = (req, res, next) => ['venue_owner', 'manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Venue-owner access required.' });
+    // Venue access is governed by organization membership.  The legacy
+    // venue_owner role remains accepted for existing accounts, but is not a
+    // separate authentication system for new venue organizations.
+    const requireVenueOwner = (req, res, next) => req.user.isEmailConfirmed ? next() : res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Verify your email before managing venues.' });
     const supportedTimezone = (timezone) => timezone === 'UTC' || (typeof Intl.supportedValuesOf === 'function' && Intl.supportedValuesOf('timeZone').includes(timezone));
+    const venueSlug = (value) => String(value || '').trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     const venueData = (body, existing = {}) => {
+      const nullableNumber = (value, fallback = null) => value === '' || value === null ? null : (value === undefined ? fallback : Number(value));
+      const list = (value, fallback = []) => value === undefined ? fallback : (Array.isArray(value) ? [...new Set(value.map(venueSlug).filter(Boolean))] : null);
+      const structuredLocation = [body.city ?? existing.city, body.municipality ?? existing.municipality, body.region ?? existing.region, body.country ?? existing.country].map((value) => String(value || '').trim()).filter(Boolean).join(', ');
       const data = {
+        organizationId: body.organizationId === undefined ? existing.organizationId ?? null : Number(body.organizationId),
         name: String(body.name ?? existing.name ?? '').trim(),
+        slug: venueSlug(body.slug ?? existing.slug ?? body.name ?? existing.name),
         businessName: String(body.businessName ?? existing.businessName ?? '').trim() || null,
+        shortDescription: String(body.shortDescription ?? existing.shortDescription ?? '').trim() || null,
         description: String(body.description ?? existing.description ?? '').trim() || null,
-        location: String(body.location ?? existing.location ?? '').trim(),
+        // `location` is retained for compatibility with existing event and
+        // booking responses. New clients supply the structured fields below.
+        location: String(body.location ?? existing.location ?? structuredLocation).trim(),
         country: String(body.country ?? existing.country ?? '').trim() || null,
         city: String(body.city ?? existing.city ?? '').trim() || null,
+        municipality: String(body.municipality ?? existing.municipality ?? '').trim() || null,
+        region: String(body.region ?? existing.region ?? '').trim() || null,
         address: String(body.address ?? existing.address ?? '').trim() || null,
-        latitude: body.latitude === '' ? null : (body.latitude ?? existing.latitude ?? null),
-        longitude: body.longitude === '' ? null : (body.longitude ?? existing.longitude ?? null),
+        addressLine1: String(body.addressLine1 ?? existing.addressLine1 ?? '').trim() || null,
+        addressLine2: String(body.addressLine2 ?? existing.addressLine2 ?? '').trim() || null,
+        postalCode: String(body.postalCode ?? existing.postalCode ?? '').trim() || null,
+        latitude: nullableNumber(body.latitude, existing.latitude ?? null),
+        longitude: nullableNumber(body.longitude, existing.longitude ?? null),
+        locationVisibility: String(body.locationVisibility ?? existing.locationVisibility ?? 'exact'),
         timezone: String(body.timezone ?? existing.timezone ?? 'UTC'),
+        venueType: venueSlug(body.venueType ?? existing.venueType),
+        capacityMin: nullableNumber(body.capacityMin, existing.capacityMin ?? null), capacityMax: nullableNumber(body.capacityMax, existing.capacityMax ?? null),
+        standingCapacity: nullableNumber(body.standingCapacity, existing.standingCapacity ?? null), seatedCapacity: nullableNumber(body.seatedCapacity, existing.seatedCapacity ?? null), diningCapacity: nullableNumber(body.diningCapacity, existing.diningCapacity ?? null), classroomCapacity: nullableNumber(body.classroomCapacity, existing.classroomCapacity ?? null), sizeSqm: nullableNumber(body.sizeSqm, existing.sizeSqm ?? null),
+        priceFrom: nullableNumber(body.priceFrom, existing.priceFrom ?? null), priceUnit: String(body.priceUnit ?? existing.priceUnit ?? 'contact'), currency: String(body.currency ?? existing.currency ?? 'SEK').trim().toUpperCase(), pricingDescription: String(body.pricingDescription ?? existing.pricingDescription ?? '').trim() || null, minimumBookingHours: nullableNumber(body.minimumBookingHours, existing.minimumBookingHours ?? null),
+        websiteUrl: String(body.websiteUrl ?? existing.websiteUrl ?? '').trim() || null, phone: String(body.phone ?? existing.phone ?? '').trim() || null, contactEmail: String(body.contactEmail ?? existing.contactEmail ?? '').trim().toLowerCase() || null,
+        availabilityType: String(body.availabilityType ?? existing.availabilityType ?? 'contact'), houseRulesText: String(body.houseRulesText ?? existing.houseRulesText ?? '').trim() || null,
+        amenitySlugs: list(body.amenities, (existing.amenities || []).map((item) => item.slug)), suitableEventTypeSlugs: list(body.suitableEventTypes, (existing.suitableEventTypes || []).map((item) => item.slug)),
         isActive: body.isActive ?? (existing.isActive == null ? true : Boolean(existing.isActive)),
       };
       const errors = {};
+      if (!existing.id && (!Number.isInteger(data.organizationId) || data.organizationId < 1)) errors.organizationId = 'A valid organizationId is required.';
       if (data.name.length < 2 || data.name.length > 160) errors.name = 'Venue name must be between 2 and 160 characters.';
+      if (!data.slug || data.slug.length > 180) errors.slug = 'Venue slug must contain letters or numbers and be at most 180 characters.';
       if (data.location.length < 2 || data.location.length > 255) errors.location = 'A location of up to 255 characters is required.';
       if (data.businessName?.length > 160) errors.businessName = 'Business name must not exceed 160 characters.';
+      if (data.shortDescription?.length > 400) errors.shortDescription = 'Short description must not exceed 400 characters.';
       if (data.latitude !== null && (!Number.isFinite(Number(data.latitude)) || Number(data.latitude) < -90 || Number(data.latitude) > 90)) errors.latitude = 'Latitude must be between -90 and 90.';
       if (data.longitude !== null && (!Number.isFinite(Number(data.longitude)) || Number(data.longitude) < -180 || Number(data.longitude) > 180)) errors.longitude = 'Longitude must be between -180 and 180.';
+      if (!['exact', 'approximate', 'private_until_booking'].includes(data.locationVisibility)) errors.locationVisibility = 'Invalid location visibility.';
+      if (!data.venueType) errors.venueType = 'A venue type is required.';
+      for (const key of ['capacityMin', 'capacityMax', 'standingCapacity', 'seatedCapacity', 'diningCapacity', 'classroomCapacity']) if (data[key] !== null && (!Number.isInteger(data[key]) || data[key] < 1)) errors[key] = 'Capacity must be a positive whole number.';
+      if (data.capacityMin !== null && data.capacityMax !== null && data.capacityMin > data.capacityMax) errors.capacityMax = 'Maximum capacity must be at least the minimum capacity.';
+      if (data.sizeSqm !== null && (!Number.isFinite(data.sizeSqm) || data.sizeSqm <= 0)) errors.sizeSqm = 'Size must be positive.';
+      if (data.priceFrom !== null && (!Number.isFinite(data.priceFrom) || data.priceFrom < 0)) errors.priceFrom = 'Price must be zero or positive.';
+      if (!['hour', 'half_day', 'day', 'evening', 'person', 'event', 'contact'].includes(data.priceUnit)) errors.priceUnit = 'Invalid price unit.';
+      if (!/^[A-Z]{3}$/.test(data.currency)) errors.currency = 'Currency must be a three-letter ISO code.';
+      if (data.minimumBookingHours !== null && (!Number.isFinite(data.minimumBookingHours) || data.minimumBookingHours <= 0)) errors.minimumBookingHours = 'Minimum booking hours must be positive.';
+      if (data.websiteUrl && !/^https:\/\//i.test(data.websiteUrl)) errors.websiteUrl = 'Website URL must use HTTPS.';
+      if (data.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.contactEmail)) errors.contactEmail = 'A valid contact email is required.';
+      if (!['contact', 'calendar', 'always_open'].includes(data.availabilityType)) errors.availabilityType = 'Invalid availability type.';
+      if (!Array.isArray(data.amenitySlugs)) errors.amenities = 'amenities must be an array of amenity slugs.';
+      if (!Array.isArray(data.suitableEventTypeSlugs)) errors.suitableEventTypes = 'suitableEventTypes must be an array of event-type slugs.';
       if (!supportedTimezone(data.timezone)) errors.timezone = 'Select a timezone returned by GET /api/timezones.';
       if (typeof data.isActive !== 'boolean') errors.isActive = 'isActive must be a boolean.';
-      return { data: { ...data, latitude: data.latitude === null ? null : Number(data.latitude), longitude: data.longitude === null ? null : Number(data.longitude) }, errors };
+      return { data, errors };
     };
     const venueAvailability = (slots) => {
       if (!Array.isArray(slots)) return { error: 'availability must be an array of weekly time slots.' };
@@ -325,8 +367,23 @@ export class Api {
 
     app.get('/api/events', optionalAuthenticate, async (req, res) => { const categorySlug = req.query.category == null ? null : String(req.query.category).trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (req.query.category != null && !categorySlug) return res.status(422).json({ error: 'category must be a valid category slug.' }); try { await ensureTable(); return res.json(await this.queries.eventsForViewer(req.user?.id ?? null, req.user?.role ?? null, { categorySlug })); } catch (error) { console.error('Event lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load events.' }); } });
     app.post('/api/events', authenticate, async (req, res) => { const { title, description = null, location = null, startsAt, endsAt = null, capacity = null, visibility = 'Public', fee = 0 } = req.body; if (!title?.trim() || !startsAt) return res.status(400).json({ error: 'Title and start date are required.' }); if (!['Public', 'Private'].includes(visibility)) return res.status(400).json({ error: 'Visibility must be Public or Private.' }); try { await ensureTable(); const id = await this.queries.createVisibleEvent({ managerId: req.user.id, title: title.trim(), description, location, startsAt, endsAt, capacity: capacity === null ? null : Number(capacity), fee, visibility }); return res.status(201).json({ id, status: 'Draft', visibility, fee, role: req.user.role }); } catch (error) { return res.status(500).json({ error: 'Unable to create event.' }); } });
+    app.get('/api/venue-types', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.venueTypes()); } catch (error) { console.error('Venue type lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue types.' }); } });
+    app.get('/api/venue-event-types', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.venueEventTypes()); } catch (error) { console.error('Venue event-type lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue event types.' }); } });
+    app.get('/api/venue-amenities', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.venueAmenities()); } catch (error) { console.error('Venue amenity lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue amenities.' }); } });
+    app.post('/api/organizations', authenticate, requireVerifiedUser, async (req, res) => {
+      const name = String(req.body.name || '').trim(); const slug = venueSlug(req.body.slug || name); const websiteUrl = String(req.body.websiteUrl || '').trim() || null; const contactEmail = String(req.body.contactEmail || '').trim().toLowerCase() || null;
+      if (name.length < 2 || name.length > 160 || !slug || slug.length > 180 || (websiteUrl && !/^https:\/\//i.test(websiteUrl)) || (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail))) return res.status(422).json({ error: 'Organization is invalid.' });
+      try { await ensureTable(); const id = await this.queries.createOrganization(req.user.id, { name, slug, description: String(req.body.description || '').trim() || null, websiteUrl, phone: String(req.body.phone || '').trim() || null, contactEmail }); return res.status(201).json(await this.queries.organization(id, req.user.id, req.user.role)); }
+      catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That organization slug is already in use.' }); console.error('Organization creation failed:', error.message); return res.status(500).json({ error: 'Unable to create organization.' }); }
+    });
+    app.get('/api/organizations/:id', optionalAuthenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid organization id is required.' }); try { await ensureTable(); const organization = await this.queries.organization(id, req.user?.id ?? null, req.user?.role ?? null); return organization ? res.json(organization) : res.status(404).json({ error: 'Organization not found.' }); } catch (error) { console.error('Organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load organization.' }); } });
+    app.put('/api/organizations/:id/members/:userId', authenticate, requireVerifiedUser, async (req, res) => { const organizationId = Number(req.params.id); const userId = Number(req.params.userId); const role = String(req.body.role || ''); if (!Number.isInteger(organizationId) || !Number.isInteger(userId) || !['owner', 'admin', 'manager', 'staff'].includes(role)) return res.status(422).json({ error: 'A valid organization member and role are required.' }); try { await ensureTable(); if (!await this.queries.setOrganizationMember(organizationId, req.user.id, req.user.role, userId, role)) return res.status(403).json({ error: 'Organization owner or admin access is required.' }); return res.json({ organizationId, userId, role }); } catch (error) { console.error('Organization member update failed:', error.message); return res.status(500).json({ error: 'Unable to update organization member.' }); } });
     app.get('/api/venues', optionalAuthenticate, async (req, res) => {
-      try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user?.id ?? null, req.user?.role ?? null)); }
+      const number = (value, name) => value == null || value === '' ? null : (Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : name);
+      const minCapacity = number(req.query.minCapacity, 'minCapacity'); const maxCapacity = number(req.query.maxCapacity, 'maxCapacity'); const maxPrice = number(req.query.maxPrice, 'maxPrice');
+      if ([minCapacity, maxCapacity, maxPrice].some((value) => typeof value === 'string') || (minCapacity !== null && !Number.isInteger(minCapacity)) || (maxCapacity !== null && !Number.isInteger(maxCapacity))) return res.status(422).json({ error: 'Capacity filters must be whole non-negative numbers and maxPrice must be non-negative.' });
+      const amenities = req.query.amenity == null ? [] : String(req.query.amenity).split(',').map(venueSlug).filter(Boolean);
+      try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user?.id ?? null, req.user?.role ?? null, { city: req.query.city ? String(req.query.city).trim() : null, venueType: req.query.venueType ? venueSlug(req.query.venueType) : null, eventType: req.query.eventType ? venueSlug(req.query.eventType) : null, amenities, minCapacity, maxCapacity, maxPrice, verifiedOnly: req.query.verified === 'true' })); }
       catch (error) { console.error('Venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venues.' }); }
     });
     app.get('/api/venues/mine', authenticate, requireVenueOwner, async (req, res) => {
@@ -341,11 +398,17 @@ export class Api {
       try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user.id, req.user.role, { managedOnly: true })); }
       catch (error) { console.error('Admin venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venues.' }); }
     });
+    app.patch('/api/admin/venues/:id/moderation', authenticate, requireAdmin, async (req, res) => {
+      const venueId = Number(req.params.id); const moderationStatus = String(req.body.moderationStatus || ''); const verificationStatus = req.body.verificationStatus == null ? null : String(req.body.verificationStatus); const isActive = req.body.isActive == null ? null : req.body.isActive;
+      if (!Number.isInteger(venueId) || venueId < 1 || !['draft', 'pending', 'approved', 'rejected', 'removed'].includes(moderationStatus) || (verificationStatus !== null && !['unverified', 'pending', 'verified', 'rejected'].includes(verificationStatus)) || (isActive !== null && typeof isActive !== 'boolean')) return res.status(422).json({ error: 'Venue moderation update is invalid.' });
+      try { await ensureTable(); if (!await this.queries.moderateVenue(venueId, moderationStatus, verificationStatus, isActive)) return res.status(404).json({ error: 'Venue not found.' }); return res.json(await this.queries.venue(venueId, req.user.id, req.user.role)); }
+      catch (error) { console.error('Venue moderation update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue moderation.' }); }
+    });
     app.post('/api/venues', authenticate, requireVerifiedUser, requireVenueOwner, async (req, res) => {
       const { data, errors } = venueData(req.body);
       if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
-      try { await ensureTable(); const id = await this.queries.createVenue(req.user.id, data); return res.status(201).json(await this.queries.venue(id, req.user.id, req.user.role)); }
-      catch (error) { console.error('Venue creation failed:', error.message); return res.status(500).json({ error: 'Unable to create venue.' }); }
+      try { await ensureTable(); const membership = await this.queries.organizationMember(data.organizationId, req.user.id); if (!['owner', 'admin', 'manager'].includes(membership?.role) && !['manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Organization manager access is required to create a venue.' }); const id = await this.queries.createVenue(req.user.id, data); return res.status(201).json(await this.queries.venue(id, req.user.id, req.user.role)); }
+      catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That venue slug is already in use.' }); console.error('Venue creation failed:', error.message); return res.status(500).json({ error: 'Unable to create venue.' }); }
     });
     app.get('/api/venues/:id/bookings', authenticate, requireVenueOwner, async (req, res) => {
       const venueId = Number(req.params.id);
@@ -381,6 +444,26 @@ export class Api {
       try { await ensureTable(); if (!await this.queries.deleteVenue(venueId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); return res.status(204).send(); }
       catch (error) { console.error('Venue deletion failed:', error.message); return res.status(500).json({ error: 'Unable to delete venue.' }); }
     });
+    app.post('/api/venues/:id/inquiries', authenticate, requireVerifiedUser, async (req, res) => {
+      const venueId = Number(req.params.id); const body = req.body;
+      const data = { eventId: body.eventId == null || body.eventId === '' ? null : Number(body.eventId), eventName: String(body.eventName || '').trim(), eventType: body.eventType == null ? null : venueSlug(body.eventType), requestedDate: body.requestedDate || null, startTime: body.startTime || null, endTime: body.endTime || null, expectedGuests: body.expectedGuests == null || body.expectedGuests === '' ? null : Number(body.expectedGuests), budget: body.budget == null || body.budget === '' ? null : Number(body.budget), message: String(body.message || '').trim() };
+      if (!Number.isInteger(venueId) || venueId < 1 || data.eventName.length < 2 || data.eventName.length > 200 || !data.message || data.message.length > 5000 || (data.eventId !== null && (!Number.isInteger(data.eventId) || data.eventId < 1)) || (data.expectedGuests !== null && (!Number.isInteger(data.expectedGuests) || data.expectedGuests < 1)) || (data.budget !== null && (!Number.isFinite(data.budget) || data.budget < 0)) || (data.requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(data.requestedDate)) || (data.startTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(data.startTime)) || (data.endTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(data.endTime)) || (data.startTime && data.endTime && data.endTime <= data.startTime)) return res.status(422).json({ error: 'Venue inquiry is invalid.' });
+      try { await ensureTable(); const venue = await this.queries.venue(venueId); if (!venue) return res.status(404).json({ error: 'Venue not found.' }); if (data.eventId && !await this.queries.eventForVenueInquiry(data.eventId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Event not found or not managed by you.' }); const id = await this.queries.createVenueInquiry(venueId, req.user.id, data); return res.status(201).json({ id, venueId, status: 'new' }); }
+      catch (error) { console.error('Venue inquiry creation failed:', error.message); return res.status(500).json({ error: 'Unable to send venue request.' }); }
+    });
+    app.get('/api/venues/:id/inquiries', authenticate, requireVenueOwner, async (req, res) => { const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' }); try { await ensureTable(); const inquiries = await this.queries.venueInquiries(venueId, req.user.id, req.user.role); return inquiries === null ? res.status(403).json({ error: 'Venue manager access is required.' }) : res.json(inquiries); } catch (error) { console.error('Venue inquiry lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue requests.' }); } });
+    app.patch('/api/venues/:venueId/inquiries/:id', authenticate, requireVenueOwner, async (req, res) => { const venueId = Number(req.params.venueId); const inquiryId = Number(req.params.id); const status = String(req.body.status || ''); if (!Number.isInteger(venueId) || !Number.isInteger(inquiryId) || !['new', 'viewed', 'responded', 'accepted', 'declined', 'cancelled'].includes(status)) return res.status(422).json({ error: 'A valid inquiry id and status are required.' }); try { await ensureTable(); if (!await this.queries.updateVenueInquiryStatus(inquiryId, venueId, req.user.id, req.user.role, status)) return res.status(404).json({ error: 'Venue request not found or not managed by you.' }); return res.json({ id: inquiryId, venueId, status }); } catch (error) { console.error('Venue inquiry update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue request.' }); } });
+    app.post('/api/venues/:id/save', authenticate, async (req, res) => { const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' }); try { await ensureTable(); const saved = await this.queries.saveVenue(venueId, req.user.id); return saved ? res.status(201).json({ venueId, saved: true }) : res.status(404).json({ error: 'Venue not found or unavailable.' }); } catch (error) { console.error('Venue save failed:', error.message); return res.status(500).json({ error: 'Unable to save venue.' }); } });
+    app.delete('/api/venues/:id/save', authenticate, async (req, res) => { const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' }); try { await ensureTable(); await this.queries.unsaveVenue(venueId, req.user.id); return res.status(204).send(); } catch (error) { console.error('Venue unsave failed:', error.message); return res.status(500).json({ error: 'Unable to remove saved venue.' }); } });
+    app.post('/api/venues/:id/reports', optionalAuthenticate, async (req, res) => {
+      const venueId = Number(req.params.id); const reason = String(req.body.reason || '').trim(); const description = String(req.body.description || '').trim(); const reporterEmail = req.user?.email || (req.body.reporterEmail == null ? null : String(req.body.reporterEmail).trim().toLowerCase() || null);
+      if (!Number.isInteger(venueId) || venueId < 1 || !['fake_listing', 'incorrect_information', 'scam_fraud', 'illegal_activity', 'unsafe_venue', 'inappropriate_content', 'privacy', 'intellectual_property', 'other'].includes(reason) || !description || description.length > 5000 || !reporterEmail) return res.status(422).json({ error: 'A valid report reason, explanation, and email are required.' });
+      try { await ensureTable(); if (!await this.queries.venue(venueId)) return res.status(404).json({ error: 'Venue not found.' }); const reference = reportReference(); const id = await this.queries.createContentReport({ reference, reporterUserId: req.user?.id || null, reporterEmail, entityType: 'venue', entityId: String(venueId), contentUrl: null, reasonCode: reason === 'scam_fraud' ? 'scam_fraud' : reason === 'privacy' ? 'privacy' : reason === 'intellectual_property' ? 'intellectual_property' : 'other', description, supportingDetails: `Venue report reason: ${reason}`, allegedIllegal: reason === 'illegal_activity' || reason === 'scam_fraud' }); return res.status(201).json({ id, reference, status: 'submitted' }); }
+      catch (error) { console.error('Venue report submission failed:', error.message); return res.status(500).json({ error: 'Unable to submit venue report.' }); }
+    });
+    app.get('/api/my/saved-venues', authenticate, async (req, res) => { try { await ensureTable(); return sendVenueList(res, await this.queries.savedVenues(req.user.id)); } catch (error) { console.error('Saved venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load saved venues.' }); } });
+    app.get('/api/venues/:id/similar', optionalAuthenticate, async (req, res) => { const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' }); try { await ensureTable(); const venues = await this.queries.similarVenues(venueId, req.user?.id ?? null, req.user?.role ?? null); return venues === null ? res.status(404).json({ error: 'Venue not found.' }) : sendVenueList(res, venues); } catch (error) { console.error('Similar venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load similar venues.' }); } });
+    app.get('/api/venues/slug/:slug', optionalAuthenticate, async (req, res) => { const slug = venueSlug(req.params.slug); if (!slug) return res.status(422).json({ error: 'A valid venue slug is required.' }); try { await ensureTable(); const venue = await this.queries.venueBySlug(slug, req.user?.id ?? null, req.user?.role ?? null); return venue ? res.json(venue) : res.status(404).json({ error: 'Venue not found.' }); } catch (error) { console.error('Venue slug lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue.' }); } });
     app.get('/api/venues/:id', optionalAuthenticate, async (req, res) => {
       const venueId = Number(req.params.id);
       if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
