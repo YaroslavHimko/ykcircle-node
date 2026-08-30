@@ -164,7 +164,26 @@ export class Api {
       } catch { /* Treat invalid optional credentials as anonymous. */ }
       return next();
     };
-    app.get(venueUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); res.set('Vary', 'Authorization'); const visible = await this.queries.venueImageVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null); if (!visible || !await this.venueFtpService.streamVenueImage(req.params.filename, res, visible.publiclyVisible ? undefined : 'private, no-store')) return res.status(404).json({ error: 'Image not found.' }); } catch (error) { console.error('Venue image proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load image.' }); } });
+    // A browser cannot send an Authorization header when loading <img src>, so
+    // an image that is not publicly visible is addressed with a short-lived
+    // token bound to one filename. The signed string is namespaced so these
+    // tokens are never interchangeable with session or unsubscribe tokens.
+    const venueImageTokenTtlMs = 15 * 60 * 1000;
+    const signVenueImagePayload = (payload) => crypto.createHmac('sha256', this.authSecret).update(`venue-image:${payload}`).digest('base64url');
+    const venueImageToken = (filename) => {
+      const payload = Buffer.from(JSON.stringify({ filename, exp: Date.now() + venueImageTokenTtlMs })).toString('base64url');
+      return `${payload}.${signVenueImagePayload(payload)}`;
+    };
+    const venueImageTokenAllows = (token, filename) => {
+      const [payload, signature] = String(token || '').split('.');
+      if (!payload || !signature) return false;
+      const expected = signVenueImagePayload(payload);
+      // timingSafeEqual throws on a length mismatch, so compare lengths first.
+      if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
+      try { const data = JSON.parse(Buffer.from(payload, 'base64url').toString()); return data.filename === filename && data.exp > Date.now(); }
+      catch { return false; }
+    };
+    app.get(venueUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); res.set('Vary', 'Authorization'); const visible = venueImageTokenAllows(req.query.token, req.params.filename) ? { publiclyVisible: false } : await this.queries.venueImageVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null); if (!visible || !await this.venueFtpService.streamVenueImage(req.params.filename, res, visible.publiclyVisible ? undefined : 'private, no-store')) return res.status(404).json({ error: 'Image not found.' }); } catch (error) { console.error('Venue image proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load image.' }); } });
     const anonymisedIp = (req) => crypto.createHash('sha256').update(`${this.authSecret}:${req.ip || 'unknown'}`).digest('hex').slice(0, 16);
     const writeLimitLog = (scope) => (req, { retryAfter, max, windowMs }) => console.warn('Venue/event write rate limit reached.', {
       scope,
@@ -428,7 +447,21 @@ export class Api {
     };
     // Collection endpoints always return an array. An empty collection is a
     // successful lookup, not a missing resource.
-    const sendVenueList = (res, venues) => res.json(venues);
+    // Venue image URLs are resolved server-side so no caller has to rebuild the
+    // upload path. A venue awaiting moderation is only readable by the people
+    // who manage it, so their URLs carry a signed token instead.
+    const venueImageUrl = (filename, token = null) => `${this.venueFtpService.publicPath()}/${encodeURIComponent(filename)}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const decorateVenueImages = (venue) => {
+      if (!venue) return venue;
+      const tokenFor = venue.canManage && !(venue.isActive && venue.moderationStatus === 'approved') ? venueImageToken : () => null;
+      return {
+        ...venue,
+        coverImageUrl: venue.coverImage ? venueImageUrl(venue.coverImage, tokenFor(venue.coverImage)) : null,
+        ...(venue.images ? { images: venue.images.map((image) => ({ ...image, url: venueImageUrl(image.filename, tokenFor(image.filename)) })) } : {}),
+      };
+    };
+    const sendVenue = (res, venue, status = 200) => res.status(status).json(decorateVenueImages(venue));
+    const sendVenueList = (res, venues) => res.json(venues.map(decorateVenueImages));
     app.get('/api/maps/config', (_req, res) => {
       const maps = this.config.runtime.maps || {};
       // Browser keys are designed to be visible to clients and must be
@@ -558,19 +591,19 @@ export class Api {
     app.patch('/api/admin/venues/:id/moderation', authenticate, requireAdmin, async (req, res) => {
       const venueId = Number(req.params.id); const moderationStatus = String(req.body.moderationStatus || ''); const verificationStatus = req.body.verificationStatus == null ? null : String(req.body.verificationStatus); const isActive = req.body.isActive == null ? null : req.body.isActive;
       if (!Number.isInteger(venueId) || venueId < 1 || !['draft', 'pending', 'approved', 'rejected', 'removed'].includes(moderationStatus) || (verificationStatus !== null && !['unverified', 'pending', 'verified', 'rejected'].includes(verificationStatus)) || (isActive !== null && typeof isActive !== 'boolean')) return res.status(422).json({ error: 'Venue moderation update is invalid.' });
-      try { await ensureTable(); if (!await this.queries.moderateVenue(venueId, moderationStatus, verificationStatus, isActive)) return res.status(404).json({ error: 'Venue not found.' }); return res.json(await this.queries.venue(venueId, req.user.id, req.user.role)); }
+      try { await ensureTable(); if (!await this.queries.moderateVenue(venueId, moderationStatus, verificationStatus, isActive)) return res.status(404).json({ error: 'Venue not found.' }); return sendVenue(res, await this.queries.venue(venueId, req.user.id, req.user.role)); }
       catch (error) { console.error('Venue moderation update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue moderation.' }); }
     });
     app.post('/api/venues', authenticate, requireVerifiedUser, requireVenueOwner, ...creationGuards, async (req, res) => {
       const { data, errors } = venueData(req.body);
       if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
-      try { await ensureTable(); const membership = await this.queries.organizationMember(data.organizationId, req.user.id); if (!['owner', 'admin', 'manager'].includes(membership?.role) && !['manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Organization manager access is required to create a venue.' }); const id = await this.queries.createVenue(req.user.id, data); return res.status(201).json(await this.queries.venue(id, req.user.id, req.user.role)); }
+      try { await ensureTable(); const membership = await this.queries.organizationMember(data.organizationId, req.user.id); if (!['owner', 'admin', 'manager'].includes(membership?.role) && !['manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Organization manager access is required to create a venue.' }); const id = await this.queries.createVenue(req.user.id, data); return sendVenue(res, await this.queries.venue(id, req.user.id, req.user.role), 201); }
       catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That venue slug is already in use.' }); console.error('Venue creation failed:', error.message); return res.status(500).json({ error: 'Unable to create venue.' }); }
     });
     app.post('/api/venues/:id/media', authenticate, requireVenueOwner, parseVenueImage, async (req, res) => {
       const venueId = Number(req.params.id); const altText = String(req.body.altText || '').trim(); const caption = req.body.caption == null ? null : String(req.body.caption).trim() || null; const isCover = req.body.kind === 'cover';
       if (!Number.isInteger(venueId) || venueId < 1 || !req.file || altText.length < 3 || altText.length > 200 || caption?.length > 500 || !['cover', 'gallery'].includes(req.body.kind)) return res.status(422).json({ error: 'Venue image is invalid.' });
-      try { await ensureTable(); if (!await this.queries.canManageVenue(venueId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); const filename = await this.venueFtpService.uploadVenueImage(venueId, req.file); const id = await this.queries.addVenueMedia(venueId, filename, altText, caption, isCover); return res.status(201).json({ id, filename, url: `${this.venueFtpService.publicPath()}/${encodeURIComponent(filename)}`, altText, caption, isCover }); }
+      try { await ensureTable(); if (!await this.queries.canManageVenue(venueId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); const filename = await this.venueFtpService.uploadVenueImage(venueId, req.file); const id = await this.queries.addVenueMedia(venueId, filename, altText, caption, isCover); return res.status(201).json({ id, filename, url: venueImageUrl(filename, venueImageToken(filename)), altText, caption, isCover }); }
       catch (error) { if (error.code === 'INVALID_IMAGE') return res.status(422).json({ error: error.message }); if (error.code === 'FTP_NOT_CONFIGURED') return res.status(503).json({ error: 'Venue image storage is not configured.' }); console.error('Venue image upload failed:', error.message); return res.status(502).json({ error: 'Unable to upload venue image.' }); }
     });
     app.get('/api/venues/:id/bookings', authenticate, requireVenueOwner, async (req, res) => {
@@ -610,7 +643,7 @@ export class Api {
         const { data, errors } = venueData(req.body, existing);
         if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
         if (!await this.queries.updateVenue(venueId, req.user.id, req.user.role, data)) return res.status(404).json({ error: 'Venue not found or not managed by you.' });
-        return res.json(await this.queries.venue(venueId, req.user.id, req.user.role));
+        return sendVenue(res, await this.queries.venue(venueId, req.user.id, req.user.role));
       } catch (error) { console.error('Venue update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue.' }); }
     });
     app.delete('/api/venues/:id', authenticate, requireVenueOwner, async (req, res) => {
@@ -638,11 +671,11 @@ export class Api {
     });
     app.get('/api/my/saved-venues', authenticate, async (req, res) => { try { await ensureTable(); return sendVenueList(res, await this.queries.savedVenues(req.user.id)); } catch (error) { console.error('Saved venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load saved venues.' }); } });
     app.get('/api/venues/:id/similar', optionalAuthenticate, async (req, res) => { const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' }); try { await ensureTable(); const venues = await this.queries.similarVenues(venueId, req.user?.id ?? null, req.user?.role ?? null); return venues === null ? res.status(404).json({ error: 'Venue not found.' }) : sendVenueList(res, venues); } catch (error) { console.error('Similar venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load similar venues.' }); } });
-    app.get('/api/venues/slug/:slug', optionalAuthenticate, async (req, res) => { const slug = venueSlug(req.params.slug); if (!slug) return res.status(422).json({ error: 'A valid venue slug is required.' }); try { await ensureTable(); const venue = await this.queries.venueBySlug(slug, req.user?.id ?? null, req.user?.role ?? null); return venue ? res.json(venue) : res.status(404).json({ error: 'Venue not found.' }); } catch (error) { console.error('Venue slug lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue.' }); } });
+    app.get('/api/venues/slug/:slug', optionalAuthenticate, async (req, res) => { const slug = venueSlug(req.params.slug); if (!slug) return res.status(422).json({ error: 'A valid venue slug is required.' }); try { await ensureTable(); const venue = await this.queries.venueBySlug(slug, req.user?.id ?? null, req.user?.role ?? null); return venue ? sendVenue(res, venue) : res.status(404).json({ error: 'Venue not found.' }); } catch (error) { console.error('Venue slug lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue.' }); } });
     app.get('/api/venues/:id', optionalAuthenticate, async (req, res) => {
       const venueId = Number(req.params.id);
       if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
-      try { await ensureTable(); const venue = await this.queries.venue(venueId, req.user?.id ?? null, req.user?.role ?? null); return venue ? res.json(venue) : res.status(404).json({ error: 'Venue not found.' }); }
+      try { await ensureTable(); const venue = await this.queries.venue(venueId, req.user?.id ?? null, req.user?.role ?? null); return venue ? sendVenue(res, venue) : res.status(404).json({ error: 'Venue not found.' }); }
       catch (error) { console.error('Venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue.' }); }
     });
     app.post('/api/events/:id/venue-booking', authenticate, async (req, res) => {

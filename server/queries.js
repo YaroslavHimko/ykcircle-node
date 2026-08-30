@@ -832,7 +832,9 @@ export class Queries {
     const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, member.role AS membershipRole, type.slug AS venueType, type.name AS venueTypeName FROM venues v JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN organization_members member ON member.organization_id = v.organization_id AND member.user_id = ? LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE v.id = ? AND (${privileged ? 'TRUE' : "COALESCE(v.is_active, TRUE) = TRUE OR v.owner_user_id = ? OR member.user_id IS NOT NULL"})`, privileged ? [userId, id] : [userId, id, userId]);
     if (!rows[0]) return null;
     const managed = privileged || rows[0].ownerUserId === userId || Boolean(rows[0].membershipRole);
-    return { ...await this.decorateVenue(rows[0], { publicView: !managed }), availability: await this.venueAvailability(id), images: await this.venueMedia(id) };
+    // canManage travels with the payload so the API can decide whether image
+    // URLs need a signed token, without repeating the membership lookup.
+    return { ...await this.decorateVenue(rows[0], { publicView: !managed }), canManage: managed, availability: await this.venueAvailability(id), images: await this.venueMedia(id) };
   }
   async venueBySlug(slug, userId = null, role = null) { const [rows] = await this.database.execute('SELECT id FROM venues WHERE slug = ?', [slug]); return rows[0] ? this.venue(rows[0].id, userId, role) : null; }
   async venuesForViewer(userId = null, role = null, { managedOnly = false, city = null, venueType = null, eventType = null, amenities = [], minCapacity = null, maxCapacity = null, maxPrice = null, verifiedOnly = false } = {}) {
@@ -865,7 +867,13 @@ export class Queries {
     if (maxPrice != null) { filter += " AND (v.price_unit = 'contact' OR v.price_from IS NULL OR v.price_from <= ?)"; parameters.push(maxPrice); }
     if (verifiedOnly) filter += " AND v.verification_status = 'verified'";
     const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, type.slug AS venueType, type.name AS venueTypeName, EXISTS (SELECT 1 FROM venue_promotions p WHERE p.venue_id = v.id AND p.status = 'active' AND p.starts_at <= NOW() AND p.ends_at > NOW()) AS sponsored FROM venues v JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE ${filter} ORDER BY sponsored DESC, v.is_featured DESC, v.created_at DESC`, parameters);
-    return Promise.all(rows.map((venue) => this.decorateVenue(venue, { publicView: !managedOnly && !privileged })));
+    // A managedOnly listing is already filtered to venues the viewer manages.
+    // The public listing only surfaces an inactive venue through the owner
+    // predicate above, so an owner check is sufficient to flag it there.
+    return Promise.all(rows.map(async (venue) => ({
+      ...await this.decorateVenue(venue, { publicView: !managedOnly && !privileged }),
+      canManage: managedOnly || privileged || (userId !== null && venue.ownerUserId === userId),
+    })));
   }
   async createVenue(ownerUserId, data) {
     const [result] = await this.database.execute(`INSERT INTO venues (organization_id, owner_user_id, name, slug, business_name, short_description, description, location, address_line_1, address_line_2, postal_code, country, country_code, city, municipality, region, address, latitude, longitude, google_place_id, formatted_address, location_visibility, timezone, venue_type_id, capacity_min, capacity_max, standing_capacity, seated_capacity, dining_capacity, classroom_capacity, size_sqm, price_from, price_unit, currency, pricing_description, minimum_booking_hours, website_url, phone, contact_email, availability_type, house_rules_text, is_active, moderation_status)
