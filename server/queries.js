@@ -816,7 +816,15 @@ export class Queries {
     const [result] = await this.database.execute('INSERT INTO venue_media (venue_id, filename, alt_text, caption, is_cover, sort_order) VALUES (?, ?, ?, ?, ?, ?)', [venueId, filename, altText, caption, isCover, order[0].nextOrder]);
     return result.insertId;
   }
-  async venueImageVisible(filename) { const [rows] = await this.database.execute("SELECT m.id FROM venue_media m JOIN venues v ON v.id = m.venue_id WHERE m.filename = ? AND v.is_active = TRUE AND v.moderation_status = 'approved'", [filename]); return rows[0] || null; }
+  async venueImageVisible(filename, userId = null, role = null) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const visibility = privileged ? 'TRUE' : "(v.is_active = TRUE AND v.moderation_status = 'approved') OR v.owner_user_id = ? OR om.role IN ('owner','admin','manager')";
+    const [rows] = await this.database.execute(
+      `SELECT m.id FROM venue_media m JOIN venues v ON v.id = m.venue_id LEFT JOIN organization_members om ON om.organization_id = v.organization_id AND om.user_id = ? WHERE m.filename = ? AND (${visibility})`,
+      privileged ? [userId, filename] : [userId, filename, userId],
+    );
+    return rows[0] || null;
+  }
   async venue(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
     const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, member.role AS membershipRole, type.slug AS venueType, type.name AS venueTypeName FROM venues v JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN organization_members member ON member.organization_id = v.organization_id AND member.user_id = ? LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE v.id = ? AND (${privileged ? 'TRUE' : "COALESCE(v.is_active, TRUE) = TRUE OR v.owner_user_id = ? OR member.user_id IS NOT NULL"})`, privileged ? [userId, id] : [userId, id, userId]);
