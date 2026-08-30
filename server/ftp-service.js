@@ -111,6 +111,12 @@ export class FtpService {
     return `${this.publicPath()}/${filename}`;
   }
 
+  async uploadVenueImage(venueId, file) {
+    const extension = this.validateImage(file);
+    const remoteName = `venue-${venueId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
+    return this.upload(file, remoteName);
+  }
+
   async uploadGroupCover(groupId, file) {
     const type = IMAGE_TYPES.get(file.mimetype);
     if (!type || !['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype) || !type.signature(file.buffer)) {

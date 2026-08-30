@@ -540,6 +540,18 @@ export class Database {
         INDEX venue_availability_venue_day (venue_id, weekday),
         CONSTRAINT venue_availability_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_media (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        venue_id INT UNSIGNED NOT NULL,
+        filename VARCHAR(255) NOT NULL UNIQUE,
+        alt_text VARCHAR(200) NOT NULL,
+        caption VARCHAR(500) NULL,
+        is_cover BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX venue_media_venue_order (venue_id, is_cover, sort_order),
+        CONSTRAINT venue_media_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
+      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_bookings (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         venue_id INT UNSIGNED NOT NULL,

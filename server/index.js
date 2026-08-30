@@ -102,6 +102,7 @@ const start = async () => {
   app.post('/api/invitations/respond', publicWriteLimit);
   app.post('/api/auth/profile/picture', uploadLimit);
   app.post('/api/events/:id/cover', uploadLimit);
+  app.post('/api/venues/:id/media', uploadLimit);
   app.post('/api/groups/:id/cover', uploadLimit);
   app.post('/api/articles/:id/cover', uploadLimit);
   app.post('/api/articles/:id/media', uploadLimit);

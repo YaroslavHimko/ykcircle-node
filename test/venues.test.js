@@ -127,3 +127,23 @@ test('creates an expanded venue with matching columns, values, and parameters', 
   assert.equal(calls[0].parameters.length, 42);
   assert.equal((calls[0].sql.match(/\?/g) || []).length, 42);
 });
+
+test('returns only the recurring venue hours for one requested date', async () => {
+  const calls = [];
+  const queries = new Queries({
+    execute: async (sql, parameters) => {
+      calls.push({ sql, parameters });
+      return calls.length === 1
+        ? [[{ id: 7, timezone: 'Europe/Stockholm' }]]
+        : [[{ startTime: '09:00', endTime: '17:00' }]];
+    },
+  });
+
+  const result = await queries.venueAvailabilityForDate(7, '2026-08-31');
+
+  assert.deepEqual(result, { venueId: 7, date: '2026-08-31', timezone: 'Europe/Stockholm', slots: [{ startTime: '09:00', endTime: '17:00' }] });
+  assert.match(calls[0].sql, /is_active = TRUE/);
+  assert.match(calls[0].sql, /moderation_status = 'approved'/);
+  assert.match(calls[1].sql, /weekday = \?/);
+  assert.deepEqual(calls[1].parameters, [7, 1]);
+});

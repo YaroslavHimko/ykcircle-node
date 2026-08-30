@@ -38,6 +38,7 @@ export class Api {
     const parseProfilePicture = (req, res, next) => uploadProfilePicture.single('profilePicture')(req, res, (error) => { if (!error) return next(); if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Profile picture must not exceed 5 MB.' }); return res.status(400).json({ error: 'Only one JPEG, PNG, GIF, or WebP image is allowed.' }); });
     const uploadEventCover = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) });
     const parseEventCover = (req, res, next) => uploadEventCover.single('coverImage')(req, res, (error) => { if (!error) return next(); if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Event cover must not exceed 10 MB.' }); return res.status(400).json({ error: 'Only one JPEG, PNG, or WebP event cover is allowed.' }); });
+    const parseVenueImage = (req, res, next) => uploadEventCover.single('image')(req, res, (error) => { if (!error) return next(); if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Venue images must not exceed 10 MB.' }); return res.status(400).json({ error: 'Only one JPEG, PNG, or WebP venue image is allowed.' }); });
     const uploadGroupCover = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
     const parseGroupCover = (req, res, next) => uploadGroupCover.single('coverImage')(req, res, (error) => { if (!error) return next(); const message = error.code === 'LIMIT_FILE_SIZE' ? 'Group cover must not exceed 10 MB.' : 'Upload one JPEG, PNG, or WebP image using the coverImage field.'; return res.status(422).json({ error: 'Group cover is invalid.', fields: { coverImage: message } }); });
     const uploadArticleImage = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.mimetype)) });
@@ -77,7 +78,7 @@ export class Api {
     app.get('/api/email/unsubscribe', (req, res) => { const token = String(req.query.token || ''); const options = EMAIL_UNSUBSCRIBE_REASONS.map((reason) => `<option value="${reason.replace(/"/g, '&quot;')}">${reason}</option>`).join(''); return res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title><style>body{font-family:Arial,sans-serif;background:#f5f7fb;color:#172033;padding:32px}main{max-width:520px;margin:40px auto;background:#fff;padding:32px;border-radius:14px;box-shadow:0 4px 24px #17203318}label,select,button{display:block;width:100%;margin-top:12px}select,button{padding:12px;border-radius:8px;border:1px solid #d8deea}button{background:#0ea5e9;color:#fff;border:0;font-weight:700;cursor:pointer}</style></head><body><main><h1>Email preferences</h1><p>Why would you like to stop receiving emails?</p><form id="unsubscribe"><input type="hidden" name="token" value="${token.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"/><label for="reason">Reason</label><select id="reason" name="reason" required>${options}</select><button type="submit">Unsubscribe</button></form><p id="result"></p><script nonce="${req.cspNonce}">document.getElementById('unsubscribe').addEventListener('submit',async(e)=>{e.preventDefault();const result=document.getElementById('result');const response=await fetch('/api/email/unsubscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});const data=await response.json();result.textContent=data.message||data.error||'Unable to update your preference.';});</script></main></body></html>`); });
     app.post('/api/email/unsubscribe', async (req, res) => { const { token, reason } = req.body; if (!token || !EMAIL_UNSUBSCRIBE_REASONS.includes(reason)) return res.status(400).json({ error: 'A valid token and unsubscribe reason are required.' }); try { const [payload, signature] = token.split('.'); const expected = crypto.createHmac('sha256', this.authSecret).update(payload || '').digest('base64url'); if (!signature || signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return res.status(400).json({ error: 'Invalid unsubscribe link.' }); const email = Buffer.from(payload, 'base64url').toString(); if (!email.includes('@')) return res.status(400).json({ error: 'Invalid unsubscribe link.' }); await ensureTable(); await this.queries.setMarketingEmailPreference(email, false, null, `unsubscribe:${reason}`); return res.json({ message: 'You have been unsubscribed from marketing emails. Transactional and security messages will still be sent when necessary.' }); } catch (error) { return res.status(400).json({ error: 'Invalid unsubscribe link.' }); } });
     app.get(profileUploadRoute, async (req, res) => { try { if (!await this.ftpService.streamProfilePicture(req.params.filename, res)) return res.status(404).json({ error: 'Profile picture not found.' }); } catch (error) { console.error('Profile picture proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load profile picture.' }); } });
-    app.get(eventUploadRoute, async (req, res) => { try { await ensureTable(); if (!await this.queries.eventCover(req.params.filename) || !await this.eventFtpService.streamEventCover(req.params.filename, res)) return res.status(404).json({ error: 'Event cover not found.' }); } catch (error) { console.error('Event cover proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load event cover.' }); } });
+    app.get(eventUploadRoute, async (req, res) => { try { await ensureTable(); if ((!await this.queries.eventCover(req.params.filename) && !await this.queries.venueImageVisible(req.params.filename)) || !await this.eventFtpService.streamEventCover(req.params.filename, res)) return res.status(404).json({ error: 'Image not found.' }); } catch (error) { console.error('Event or venue image proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load image.' }); } });
     app.get('/api/application-activities', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.applicationActivities()); } catch (error) { return res.status(500).json({ error: 'Unable to load application activities.' }); } });
     app.post('/api/invitations/respond', async (req, res) => { const { token, action } = req.body; const status = action === 'accept' ? 'Accepted' : action === 'decline' ? 'Declined' : null; if (!token || !status) return res.status(400).json({ error: 'A valid invitation token and action are required.' }); try { await ensureTable(); const invitation = status === 'Accepted' ? await this.queries.acceptInvitationAsParticipant(token) : await this.queries.respondToInvitation(token, status); if (!invitation) return res.status(400).json({ error: 'Invalid, expired, or already used invitation.' }); if (invitation.alreadyRegistered) return res.status(409).json({ error: 'This email or user is already registered for this event.', eventId: invitation.eventId, participantId: invitation.participantId || null }); return res.json({ message: status === 'Accepted' ? 'Invitation accepted. Your participation is confirmed.' : 'Invitation declined.', eventId: invitation.eventId, registrationId: null, participantId: invitation.participantId || null, requiresRegistration: Boolean(invitation.requiresRegistration), status, paymentStatus: invitation.paymentStatus || null }); } catch (error) { console.error('Invitation response failed:', error.message); return res.status(500).json({ error: 'Unable to process invitation response.' }); } });
     
@@ -332,7 +333,7 @@ export class Api {
         standingCapacity: nullableNumber(body.standingCapacity, existing.standingCapacity ?? null), seatedCapacity: nullableNumber(body.seatedCapacity, existing.seatedCapacity ?? null), diningCapacity: nullableNumber(body.diningCapacity, existing.diningCapacity ?? null), classroomCapacity: nullableNumber(body.classroomCapacity, existing.classroomCapacity ?? null), sizeSqm: nullableNumber(body.sizeSqm, existing.sizeSqm ?? null),
         priceFrom: nullableNumber(body.priceFrom, existing.priceFrom ?? null), priceUnit: String(body.priceUnit ?? existing.priceUnit ?? 'contact'), currency: String(body.currency ?? existing.currency ?? 'SEK').trim().toUpperCase(), pricingDescription: String(body.pricingDescription ?? existing.pricingDescription ?? '').trim() || null, minimumBookingHours: nullableNumber(body.minimumBookingHours, existing.minimumBookingHours ?? null),
         websiteUrl: String(body.websiteUrl ?? existing.websiteUrl ?? '').trim() || null, phone: String(body.phone ?? existing.phone ?? '').trim() || null, contactEmail: String(body.contactEmail ?? existing.contactEmail ?? '').trim().toLowerCase() || null,
-        availabilityType: String(body.availabilityType ?? existing.availabilityType ?? 'contact'), houseRulesText: String(body.houseRulesText ?? existing.houseRulesText ?? '').trim() || null,
+        availabilityType: String(body.availabilityType ?? existing.availabilityType ?? 'calendar'), availability: body.availability === undefined ? (existing.availability ?? []) : body.availability, houseRulesText: String(body.houseRulesText ?? existing.houseRulesText ?? '').trim() || null,
         amenitySlugs: list(body.amenities, (existing.amenities || []).map((item) => item.slug)), suitableEventTypeSlugs: list(body.suitableEventTypes, (existing.suitableEventTypes || []).map((item) => item.slug)),
         isActive: body.isActive ?? (existing.isActive == null ? true : Boolean(existing.isActive)),
       };
@@ -361,6 +362,11 @@ export class Api {
       if (data.websiteUrl && !/^https:\/\//i.test(data.websiteUrl)) errors.websiteUrl = 'Website URL must use HTTPS.';
       if (data.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.contactEmail)) errors.contactEmail = 'A valid contact email is required.';
       if (!['contact', 'calendar', 'always_open'].includes(data.availabilityType)) errors.availabilityType = 'Invalid availability type.';
+      const schedule = venueAvailability(data.availability);
+      if (schedule.error) errors.availability = schedule.error;
+      else if (schedule.errors) Object.assign(errors, schedule.errors);
+      else data.availability = schedule.slots;
+      if (!existing.id && !data.availability?.length) errors.availability = 'Add at least one weekly availability period.';
       if (!Array.isArray(data.amenitySlugs)) errors.amenities = 'amenities must be an array of amenity slugs.';
       if (!Array.isArray(data.suitableEventTypeSlugs)) errors.suitableEventTypes = 'suitableEventTypes must be an array of event-type slugs.';
       if (!supportedTimezone(data.timezone)) errors.timezone = 'Select a timezone returned by GET /api/timezones.';
@@ -369,6 +375,7 @@ export class Api {
     };
     const venueAvailability = (slots) => {
       if (!Array.isArray(slots)) return { error: 'availability must be an array of weekly time slots.' };
+      if (slots.length > 56) return { error: 'availability can contain at most 56 weekly time slots.' };
       const errors = {};
       const normalized = slots.map((slot, index) => {
         const weekday = Number(slot?.weekday);
@@ -385,6 +392,15 @@ export class Api {
         for (let index = 1; index < days.length; index += 1) if (days[index].startTime < days[index - 1].endTime) errors.availability = 'Availability slots on the same day must not overlap.';
       }
       return Object.keys(errors).length ? { errors } : { slots: normalized };
+    };
+    const requestedAvailabilityDate = (value) => {
+      const date = String(value || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T12:00:00Z`))) return null;
+      const today = new Date();
+      const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+      const requestedUtc = Date.parse(`${date}T12:00:00Z`);
+      const daysAhead = Math.floor((requestedUtc - todayUtc) / (24 * 60 * 60 * 1000));
+      return daysAhead >= 0 && daysAhead <= 366 ? date : null;
     };
     const asUtcDate = (value) => {
       if (value instanceof Date) return value;
@@ -548,11 +564,29 @@ export class Api {
       try { await ensureTable(); const membership = await this.queries.organizationMember(data.organizationId, req.user.id); if (!['owner', 'admin', 'manager'].includes(membership?.role) && !['manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Organization manager access is required to create a venue.' }); const id = await this.queries.createVenue(req.user.id, data); return res.status(201).json(await this.queries.venue(id, req.user.id, req.user.role)); }
       catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That venue slug is already in use.' }); console.error('Venue creation failed:', error.message); return res.status(500).json({ error: 'Unable to create venue.' }); }
     });
+    app.post('/api/venues/:id/media', authenticate, requireVenueOwner, parseVenueImage, async (req, res) => {
+      const venueId = Number(req.params.id); const altText = String(req.body.altText || '').trim(); const caption = req.body.caption == null ? null : String(req.body.caption).trim() || null; const isCover = req.body.kind === 'cover';
+      if (!Number.isInteger(venueId) || venueId < 1 || !req.file || altText.length < 3 || altText.length > 200 || caption?.length > 500 || !['cover', 'gallery'].includes(req.body.kind)) return res.status(422).json({ error: 'Venue image is invalid.' });
+      try { await ensureTable(); if (!await this.queries.canManageVenue(venueId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); const filename = await this.eventFtpService.uploadVenueImage(venueId, req.file); const id = await this.queries.addVenueMedia(venueId, filename, altText, caption, isCover); return res.status(201).json({ id, filename, url: `${this.eventFtpService.publicPath()}/${encodeURIComponent(filename)}`, altText, caption, isCover }); }
+      catch (error) { if (error.code === 'INVALID_IMAGE') return res.status(422).json({ error: error.message }); if (error.code === 'FTP_NOT_CONFIGURED') return res.status(503).json({ error: 'Venue image storage is not configured.' }); console.error('Venue image upload failed:', error.message); return res.status(502).json({ error: 'Unable to upload venue image.' }); }
+    });
     app.get('/api/venues/:id/bookings', authenticate, requireVenueOwner, async (req, res) => {
       const venueId = Number(req.params.id);
       if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
       try { await ensureTable(); const bookings = await this.queries.venueBookings(venueId, req.user.id, req.user.role); if (!bookings.length && !await this.queries.venue(venueId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); return res.json(bookings); }
       catch (error) { console.error('Venue bookings lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue bookings.' }); }
+    });
+    // Event editors request one date at a time. This intentionally never
+    // expands a recurring schedule into months or years of future slots.
+    app.get('/api/venues/:id/availability', authenticate, async (req, res) => {
+      const venueId = Number(req.params.id);
+      const date = requestedAvailabilityDate(req.query.date);
+      if (!Number.isInteger(venueId) || venueId < 1 || !date) return res.status(422).json({ error: 'Provide a valid availability date between today and one year from today.' });
+      try {
+        await ensureTable();
+        const availability = await this.queries.venueAvailabilityForDate(venueId, date);
+        return availability ? res.json(availability) : res.status(404).json({ error: 'Venue not found or unavailable.' });
+      } catch (error) { console.error('Venue availability lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue availability.' }); }
     });
     app.put('/api/venues/:id/availability', authenticate, requireVenueOwner, async (req, res) => {
       const venueId = Number(req.params.id);
