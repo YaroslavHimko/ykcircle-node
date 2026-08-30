@@ -8,6 +8,7 @@ import { PARTICIPANT_STATUSES, isParticipantStatus } from './participant-status.
 import multer from 'multer';
 import { EMAIL_UNSUBSCRIBE_REASONS } from './email-unsubscribe-reasons.js';
 import { legalDocument, legalDocumentIndex, currentLegalDocument } from './legal-documents.js';
+import { createRateLimiter } from './rate-limit.js';
 
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const legalHtml = (markdown) => escapeHtml(markdown).split(/\r?\n/).map((line) => {
@@ -160,6 +161,103 @@ export class Api {
       } catch { /* Treat invalid optional credentials as anonymous. */ }
       return next();
     };
+    const anonymisedIp = (req) => crypto.createHash('sha256').update(`${this.authSecret}:${req.ip || 'unknown'}`).digest('hex').slice(0, 16);
+    const writeLimitLog = (scope) => (req, { retryAfter, max, windowMs }) => console.warn('Venue/event write rate limit reached.', {
+      scope,
+      accountId: req.user?.id || null,
+      ipHash: anonymisedIp(req),
+      route: req.originalUrl,
+      action: req.method,
+      decision: 'blocked',
+      retryAfter,
+      max,
+      windowMs,
+    });
+    const createAccountLimit = createRateLimiter({
+      windowMs: 10 * 60 * 1000,
+      max: 5,
+      key: (req) => `account:${req.user?.id || 'unknown'}`,
+      message: 'Too many venue or event creations. Please try again later.',
+      onBlocked: writeLimitLog('venue-event-create-account'),
+    });
+    const createIpLimit = createRateLimiter({
+      windowMs: 10 * 60 * 1000,
+      max: 10,
+      key: (req) => `ip:${req.ip || 'unknown'}`,
+      message: 'Too many venue or event creations from this IP address. Please try again later.',
+      onBlocked: writeLimitLog('venue-event-create-ip'),
+    });
+    const updateAccountLimit = createRateLimiter({
+      windowMs: 10 * 60 * 1000,
+      max: 30,
+      key: (req) => `account:${req.user?.id || 'unknown'}`,
+      message: 'Too many venue or event edits. Please try again later.',
+      onBlocked: writeLimitLog('venue-event-update-account'),
+    });
+    const updateIpLimit = createRateLimiter({
+      windowMs: 10 * 60 * 1000,
+      max: 60,
+      key: (req) => `ip:${req.ip || 'unknown'}`,
+      message: 'Too many venue or event edits from this IP address. Please try again later.',
+      onBlocked: writeLimitLog('venue-event-update-ip'),
+    });
+    const locationActivity = new Map();
+    const noteLocationActivity = (action) => (req, _res, next) => {
+      const location = req.body?.location && typeof req.body.location === 'object' ? req.body.location : {};
+      const placeId = req.body?.googlePlaceId || req.body?.customGooglePlaceId || location.googlePlaceId;
+      if (!placeId) return next();
+      const now = Date.now();
+      const identity = `${req.user?.id || 'unknown'}:${anonymisedIp(req)}:${action}`;
+      const entry = locationActivity.get(identity) || { timestamps: [], lastLoggedAt: 0 };
+      entry.timestamps = entry.timestamps.filter((time) => now - time < 10 * 60 * 1000);
+      entry.timestamps.push(now);
+      if (entry.timestamps.length >= 20 && now - entry.lastLoggedAt >= 10 * 60 * 1000) {
+        entry.lastLoggedAt = now;
+        console.warn('Unusually high Google Places-backed location activity.', {
+          accountId: req.user?.id || null,
+          ipHash: anonymisedIp(req),
+          route: req.originalUrl,
+          action,
+          count: entry.timestamps.length,
+          windowMs: 10 * 60 * 1000,
+        });
+      }
+      locationActivity.set(identity, entry);
+      if (locationActivity.size > 10000) {
+        for (const [entryKey, activity] of locationActivity) {
+          if (!activity.timestamps.length || now - activity.timestamps.at(-1) >= 10 * 60 * 1000 || locationActivity.size > 10000) locationActivity.delete(entryKey);
+          if (locationActivity.size <= 10000) break;
+        }
+      }
+      return next();
+    };
+    const creationGuards = [createAccountLimit, createIpLimit, noteLocationActivity('create')];
+    const updateGuards = [updateAccountLimit, updateIpLimit, noteLocationActivity('update')];
+    const placesActivityReportLimit = createRateLimiter({
+      windowMs: 10 * 60 * 1000,
+      max: 3,
+      key: (req) => `account:${req.user?.id || 'unknown'}`,
+      message: 'Too many Places activity reports. Please try again later.',
+      onBlocked: writeLimitLog('places-activity-report'),
+    });
+    // Places requests go directly from the browser to Google, so this is
+    // deliberately a sparse, privacy-preserving client activity signal. It
+    // contains no search text, address, place ID, or API key; Cloud Monitoring
+    // remains the authoritative source for Maps API request counts.
+    app.post('/api/maps/places-activity', authenticate, placesActivityReportLimit, (req, res) => {
+      const count = Number(req.body?.count);
+      const windowMs = Number(req.body?.windowMs);
+      if (!Number.isInteger(count) || count < 20 || count > 500 || !Number.isInteger(windowMs) || windowMs < 60 * 1000 || windowMs > 60 * 60 * 1000) return res.status(422).json({ error: 'Places activity report is invalid.' });
+      console.warn('Unusually high client-reported Google Places activity.', {
+        accountId: req.user.id,
+        ipHash: anonymisedIp(req),
+        route: req.originalUrl,
+        action: 'places-autocomplete',
+        count,
+        windowMs,
+      });
+      return res.status(202).json({ accepted: true });
+    });
     const reportEntityTypes = new Set(['image', 'event', 'group', 'review', 'profile', 'organization', 'venue', 'business_listing']);
     const reportReasonCodes = new Set(['illegal_content', 'harassment', 'sexual_content', 'child_safety', 'violence', 'hate', 'scam_fraud', 'impersonation', 'privacy', 'intellectual_property', 'spam', 'unsafe_event', 'misleading_business', 'misleading_listing', 'other']);
     const reportReference = () => `RPT-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
@@ -398,12 +496,12 @@ export class Api {
     };
     const notifyGroupEventMembers = async (eventId) => { const members = await this.queries.pendingGroupEventNotifications(eventId); await Promise.all(members.map(async (member) => { if (!await this.queries.claimGroupEventNotification(eventId, member.userId)) return; try { await this.emailService.sendGroupEventNotification(member.email, member.name, { id: member.groupId, name: member.groupName }, member); } catch (emailError) { try { await this.queries.releaseGroupEventNotification(eventId, member.userId); } catch (releaseError) { console.error(`Unable to release group event notification for ${member.email}:`, releaseError.message); } console.error(`Group event notification failed for ${member.email}:`, emailError.message); } })); };
     const createRichDraft = async (req, res, groupId = req.body.groupId) => { try { await ensureTable(); if (groupId && (!Number.isInteger(Number(groupId)) || !await this.queries.canManageGroup(Number(groupId), req.user.id, req.user.role))) return res.status(403).json({ error: 'You can only post events in groups you manage.' }); const validation = await validateRichEvent(req.body); if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors }); const series = await this.queries.createRichEventSeries(richEventData({ ...req.body, groupId }, req.user.id, validation)); const event = await this.queries.richEvent(series.eventIds[0], req.user.id, req.user.role); return res.status(201).json({ ...event, seriesId: series.seriesId, occurrenceIds: series.eventIds }); } catch (error) { console.error('Rich event creation failed:', error); return res.status(500).json({ error: 'Unable to create event draft.' }); } };
-    app.post('/api/events/drafts', authenticate, requireVerifiedUser, (req, res) => createRichDraft(req, res));
-    app.post('/api/groups/:id/events/drafts', authenticate, (req, res) => createRichDraft(req, res, req.params.id));
+    app.post('/api/events/drafts', authenticate, requireVerifiedUser, ...creationGuards, (req, res) => createRichDraft(req, res));
+    app.post('/api/groups/:id/events/drafts', authenticate, ...creationGuards, (req, res) => createRichDraft(req, res, req.params.id));
     app.post('/api/events/:id/cover', authenticate, parseEventCover, async (req, res) => { if (!req.file) return res.status(400).json({ error: 'A JPEG, PNG, or WebP cover image is required.' }); try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event) return res.status(404).json({ error: 'Event not found or not managed by you.' }); const coverImage = await this.eventFtpService.uploadEventCover(req.params.id, req.file); if (!await this.queries.setEventCover(req.params.id, req.user.id, req.user.role, coverImage)) return res.status(404).json({ error: 'Event not found or not managed by you.' }); return res.json({ coverImage }); } catch (error) { if (error.code === 'INVALID_IMAGE') return res.status(400).json({ error: error.message }); if (error.code === 'FTP_NOT_CONFIGURED') return res.status(503).json({ error: 'Event image storage is not configured.' }); console.error('Event cover upload failed:', error); return res.status(502).json({ error: 'Unable to upload event cover.' }); } });
-    app.patch('/api/events/:id', authenticate, async (req, res) => { try { await ensureTable(); const validation = await validateRichEvent(req.body); if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors }); if (!await this.queries.updateRichEvent(req.params.id, req.user.id, req.user.role, richEventData(req.body, req.user.id, validation))) return res.status(404).json({ error: 'Event not found or not managed by you.' }); return res.json(await this.queries.richEvent(req.params.id, req.user.id, req.user.role)); } catch (error) { console.error('Rich event update failed:', error.message); return res.status(500).json({ error: 'Unable to update event.' }); } });
+    app.patch('/api/events/:id', authenticate, ...updateGuards, async (req, res) => { try { await ensureTable(); const validation = await validateRichEvent(req.body); if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors }); if (!await this.queries.updateRichEvent(req.params.id, req.user.id, req.user.role, richEventData(req.body, req.user.id, validation))) return res.status(404).json({ error: 'Event not found or not managed by you.' }); return res.json(await this.queries.richEvent(req.params.id, req.user.id, req.user.role)); } catch (error) { console.error('Rich event update failed:', error.message); return res.status(500).json({ error: 'Unable to update event.' }); } });
     app.post('/api/events/:id/publish', authenticate, async (req, res) => { try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event) return res.status(404).json({ error: 'Event not found or not managed by you.' }); if (!this.config.runtime.paidEventsEnabled && Number(event.fee) > 0) return res.status(422).json({ error: 'Paid events are disabled during the pre-company beta.' }); const validation = await validateRichEvent(event, { publishing: true }); if (!event.coverImage) validation.errors.coverImage = 'A cover image is required before publication.'; if (!event.categoryId || !event.typeId) validation.errors.taxonomy = 'Category and event type are required before publication.'; if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event cannot be published.', fields: validation.errors }); await this.queries.publishRichEvent(req.params.id, req.user.id, req.user.role); if (event.groupId && event.status !== 'Published') await notifyGroupEventMembers(req.params.id); return res.json(await this.queries.richEvent(req.params.id, req.user.id, req.user.role)); } catch (error) { console.error('Rich event publication failed:', error.message); return res.status(500).json({ error: 'Unable to publish event.' }); } });
-    app.post('/api/events', authenticate, requireVerifiedUser, (req, res, next) => { const fee = req.body.fee ?? 0; const startsAtUtc = req.body.startsAtUtc ?? req.body.startsAt; const endsAtUtc = req.body.endsAtUtc ?? req.body.endsAt ?? null; if (!startsAtUtc || Number.isNaN(Date.parse(startsAtUtc)) || (endsAtUtc && Number.isNaN(Date.parse(endsAtUtc)))) return res.status(400).json({ error: 'Valid startsAtUtc and endsAtUtc timestamps are required.' }); if (!Number.isFinite(Number(fee)) || Number(fee) < 0) return res.status(400).json({ error: 'Fee must be a non-negative number.' }); if (!this.config.runtime.paidEventsEnabled && Number(fee) > 0) return res.status(422).json({ error: 'Paid events are disabled during the pre-company beta.' }); req.body.startsAt = new Date(startsAtUtc).toISOString().slice(0, 19).replace('T', ' '); req.body.endsAt = endsAtUtc ? new Date(endsAtUtc).toISOString().slice(0, 19).replace('T', ' ') : null; req.body.fee = Number(fee).toFixed(2); next(); });
+    app.post('/api/events', authenticate, requireVerifiedUser, ...creationGuards, (req, res, next) => { const fee = req.body.fee ?? 0; const startsAtUtc = req.body.startsAtUtc ?? req.body.startsAt; const endsAtUtc = req.body.endsAtUtc ?? req.body.endsAt ?? null; if (!startsAtUtc || Number.isNaN(Date.parse(startsAtUtc)) || (endsAtUtc && Number.isNaN(Date.parse(endsAtUtc)))) return res.status(400).json({ error: 'Valid startsAtUtc and endsAtUtc timestamps are required.' }); if (!Number.isFinite(Number(fee)) || Number(fee) < 0) return res.status(400).json({ error: 'Fee must be a non-negative number.' }); if (!this.config.runtime.paidEventsEnabled && Number(fee) > 0) return res.status(422).json({ error: 'Paid events are disabled during the pre-company beta.' }); req.body.startsAt = new Date(startsAtUtc).toISOString().slice(0, 19).replace('T', ' '); req.body.endsAt = endsAtUtc ? new Date(endsAtUtc).toISOString().slice(0, 19).replace('T', ' ') : null; req.body.fee = Number(fee).toFixed(2); next(); });
 
     app.get('/api/events', optionalAuthenticate, async (req, res) => { const categorySlug = req.query.category == null ? null : String(req.query.category).trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (req.query.category != null && !categorySlug) return res.status(422).json({ error: 'category must be a valid category slug.' }); try { await ensureTable(); return res.json(await this.queries.eventsForViewer(req.user?.id ?? null, req.user?.role ?? null, { categorySlug })); } catch (error) { console.error('Event lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load events.' }); } });
     app.post('/api/events', authenticate, async (req, res) => { const { title, description = null, location = null, startsAt, endsAt = null, capacity = null, visibility = 'Public', fee = 0 } = req.body; if (!title?.trim() || !startsAt) return res.status(400).json({ error: 'Title and start date are required.' }); if (!['Public', 'Private'].includes(visibility)) return res.status(400).json({ error: 'Visibility must be Public or Private.' }); try { await ensureTable(); const id = await this.queries.createVisibleEvent({ managerId: req.user.id, title: title.trim(), description, location, startsAt, endsAt, capacity: capacity === null ? null : Number(capacity), fee, visibility }); return res.status(201).json({ id, status: 'Draft', visibility, fee, role: req.user.role }); } catch (error) { return res.status(500).json({ error: 'Unable to create event.' }); } });
@@ -444,7 +542,7 @@ export class Api {
       try { await ensureTable(); if (!await this.queries.moderateVenue(venueId, moderationStatus, verificationStatus, isActive)) return res.status(404).json({ error: 'Venue not found.' }); return res.json(await this.queries.venue(venueId, req.user.id, req.user.role)); }
       catch (error) { console.error('Venue moderation update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue moderation.' }); }
     });
-    app.post('/api/venues', authenticate, requireVerifiedUser, requireVenueOwner, async (req, res) => {
+    app.post('/api/venues', authenticate, requireVerifiedUser, requireVenueOwner, ...creationGuards, async (req, res) => {
       const { data, errors } = venueData(req.body);
       if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
       try { await ensureTable(); const membership = await this.queries.organizationMember(data.organizationId, req.user.id); if (!['owner', 'admin', 'manager'].includes(membership?.role) && !['manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Organization manager access is required to create a venue.' }); const id = await this.queries.createVenue(req.user.id, data); return res.status(201).json(await this.queries.venue(id, req.user.id, req.user.role)); }
@@ -465,7 +563,7 @@ export class Api {
       try { await ensureTable(); if (!await this.queries.replaceVenueAvailability(venueId, req.user.id, req.user.role, validated.slots)) return res.status(404).json({ error: 'Venue not found or not managed by you.' }); return res.json({ venueId, availability: await this.queries.venueAvailability(venueId) }); }
       catch (error) { console.error('Venue availability update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue availability.' }); }
     });
-    app.patch('/api/venues/:id', authenticate, requireVenueOwner, async (req, res) => {
+    app.patch('/api/venues/:id', authenticate, requireVenueOwner, ...updateGuards, async (req, res) => {
       const venueId = Number(req.params.id);
       if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
       try {

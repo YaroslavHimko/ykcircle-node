@@ -8,29 +8,7 @@ import { Configuration } from './configuration.js';
 import { Queries } from './queries.js';
 import { Api } from './api.js';
 import { FtpService } from './ftp-service.js';
-
-const createRateLimiter = ({ windowMs, max, key = (req) => req.ip, message = 'Too many requests. Please try again later.' }) => {
-  const attempts = new Map();
-  const maxEntries = 10000;
-  return (req, res, next) => {
-    const now = Date.now();
-    const identity = String(key(req) || req.ip || 'unknown').slice(0, 320);
-    const values = (attempts.get(identity) || []).filter((time) => now - time < windowMs);
-    if (values.length >= max) {
-      const retryAfter = Math.max(1, Math.ceil((values[0] + windowMs - now) / 1000));
-      return res.status(429).set('Retry-After', String(retryAfter)).json({ error: message, retryAfter });
-    }
-    values.push(now);
-    attempts.set(identity, values);
-    if (attempts.size > maxEntries) {
-      for (const [entryKey, entryValues] of attempts) {
-        if (!entryValues.length || now - entryValues.at(-1) >= windowMs || attempts.size > maxEntries) attempts.delete(entryKey);
-        if (attempts.size <= maxEntries) break;
-      }
-    }
-    return next();
-  };
-};
+import { createRateLimiter } from './rate-limit.js';
 
 const securityHeaders = (req, res, next) => {
   req.cspNonce = crypto.randomBytes(16).toString('base64');
@@ -57,7 +35,11 @@ const loadConfiguration = async () => {
 
 const start = async () => {
   const config = new Configuration(await loadConfiguration());
-  if (config.runtime.maps.enabled) console.info(`Google Maps is enabled${config.runtime.maps.requiresConsent ? ' with consent gating.' : '.'}`);
+  console.info('Google Maps configuration:', {
+    enabled: config.runtime.maps.enabled,
+    browserApiKeyPresent: Boolean(config.runtime.maps.browserApiKey),
+    requiresConsent: config.runtime.maps.requiresConsent,
+  });
   const database = new Database(config.database);
   const queries = new Queries(database);
   const emailService = new EmailService({
