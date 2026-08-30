@@ -422,7 +422,7 @@ export class Queries {
     const [result] = await this.database.execute('UPDATE events SET cover_image = ? WHERE id = ? OR series_id = ?', [coverImage, events[0].seriesId, events[0].seriesId]);
     return result.affectedRows > 0;
   }
-  async publicEventCover(filename) { const [rows] = await this.database.execute("SELECT id FROM events WHERE (BINARY cover_image = BINARY ? OR BINARY cover_image LIKE CONCAT(BINARY '%/', BINARY ?)) AND deleted_at IS NULL AND status = 'Published' AND visibility = 'Public' LIMIT 1", [filename, filename]); return rows[0] || null; }
+  async eventCover(filename) { const [rows] = await this.database.execute("SELECT id FROM events WHERE (BINARY cover_image = BINARY ? OR BINARY cover_image LIKE CONCAT(BINARY '%/', BINARY ?)) AND deleted_at IS NULL LIMIT 1", [filename, filename]); return rows[0] || null; }
   async richEvent(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
     const [rows] = await this.database.query(`SELECT e.id, e.manager_id AS managerId, e.title, e.short_description AS shortDescription, e.description, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl,

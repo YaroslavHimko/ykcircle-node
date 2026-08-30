@@ -63,7 +63,7 @@ test('limits non-admin role changes to eligible customer accounts', async () => 
   assert.match(calls[0].sql, /role = 'customer'/);
 });
 
-test('uses binary comparisons when locating a public event cover', async () => {
+test('allows stored event covers for drafts and uses binary filename comparisons', async () => {
   const calls = [];
   const queries = new Queries({
     execute: async (sql, parameters) => {
@@ -72,8 +72,9 @@ test('uses binary comparisons when locating a public event cover', async () => {
     },
   });
 
-  assert.deepEqual(await queries.publicEventCover('event-1-1786906288459.png'), { id: 1 });
+  assert.deepEqual(await queries.eventCover('event-1-1786906288459.png'), { id: 1 });
   assert.match(calls[0].sql, /BINARY cover_image = BINARY \?/);
   assert.match(calls[0].sql, /BINARY cover_image LIKE CONCAT\(BINARY '%\/', BINARY \?\)/);
+  assert.doesNotMatch(calls[0].sql, /status = 'Published'|visibility = 'Public'/);
   assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png', 'event-1-1786906288459.png']);
 });
