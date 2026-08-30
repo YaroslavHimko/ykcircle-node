@@ -94,6 +94,10 @@ test('venue image tokens are rejected when replayed, tampered with, expired, or 
     const response = await fetch(`${baseUrl}/uploads/venue-images/${FILENAME}?token=${encodeURIComponent(token)}`);
     assert.equal(response.status, 404, `expected 404 for ${reason}`);
     assert.deepEqual(await response.json(), { error: 'Image not found.' });
+    // A CDN in front of this API caches by path and ignores the query
+    // string the token rides in, so an anonymous 404 must say so explicitly
+    // or a later request with a valid token gets served the stale 404.
+    assert.equal(response.headers.get('cache-control'), 'no-store', `expected no-store for ${reason}`);
   }
 
   // Nothing reached storage for any rejected token.

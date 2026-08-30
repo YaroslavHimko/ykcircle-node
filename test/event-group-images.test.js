@@ -164,6 +164,10 @@ test('an event cover token minted for another event or another resource kind is 
   for (const [reason, token] of Object.entries(rejected)) {
     const response = await fetch(`${baseUrl}/uploads/event-covers/${filename}?token=${encodeURIComponent(token)}`);
     assert.equal(response.status, 404, `expected 404 for ${reason}`);
+    // A CDN in front of this API caches by path and ignores the query
+    // string the token rides in, so this must say so explicitly or a later
+    // request with a valid token gets served the stale 404.
+    assert.equal(response.headers.get('cache-control'), 'no-store', `expected no-store for ${reason}`);
   }
   assert.deepEqual(streamed.event, []);
 });
@@ -197,5 +201,6 @@ test('a private group cover 404s for an anonymous request with no token', async 
   const response = await fetch(`${baseUrl}/uploads/group-covers/${filename}`);
 
   assert.equal(response.status, 404);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.deepEqual(streamed.group, []);
 });
