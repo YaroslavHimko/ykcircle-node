@@ -183,28 +183,45 @@ export class FtpService {
 
   async streamImage(filename, uploadPath, response, cacheControl = 'public, max-age=86400') {
     uploadPath = this.normalizePath(uploadPath || this.config.uploadPath);
-    if (!this.enabled || !uploadPath || !/^[a-zA-Z0-9._-]+\.(?:jpg|jpeg|png|gif|webp)$/i.test(filename)) return false;
+    const validFilename = /^[a-zA-Z0-9._-]+\.(?:jpg|jpeg|png|gif|webp)$/i.test(filename);
+    const remotePath = validFilename && uploadPath ? `${uploadPath}/${filename}` : null;
+    if (!this.enabled || !uploadPath || !validFilename) {
+      console.warn('FTP image read skipped.', { filename, remotePath, configured: this.enabled });
+      return false;
+    }
     const contentTypes = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
     const extension = filename.split('.').pop().toLowerCase();
     const client = new ftp.Client(this.config.timeoutMs);
     client.ftp.verbose = false;
     const stream = new PassThrough();
+    let stage = 'connect';
     try {
       await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
+      stage = 'change-directory';
       await client.cd(uploadPath);
       // Check existence before sending response headers. A missing file is a
       // genuine 404; connection/authentication failures must remain errors.
+      stage = 'check-file';
       await client.size(filename);
       response.set('Content-Type', contentTypes[extension]);
       response.set('Cache-Control', cacheControl);
       stream.on('close', () => client.close());
       stream.pipe(response);
+      stage = 'download-file';
       await client.downloadTo(stream, filename);
       stream.end();
       return true;
     } catch (error) {
       client.close();
-      if (String(error.code) === '550' || String(error.code) === '450') return false;
+      const code = String(error.code || '');
+      // FTP 550/450 can also mean a bad directory or insufficient permission.
+      // Treat them as a 404 only after the directory was entered successfully
+      // and the individual file check failed; every other case remains a 502.
+      if ((code === '550' || code === '450') && stage === 'check-file') {
+        console.warn('FTP image is missing from configured storage.', { filename, remotePath, stage, code });
+        return false;
+      }
+      console.error('FTP image read failed.', { filename, remotePath, stage, code: code || null });
       if (!response.headersSent) throw error;
       stream.destroy(error);
       return true;

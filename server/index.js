@@ -1,5 +1,4 @@
 import express from 'express';
-import path from 'node:path';
 import crypto from 'node:crypto';
 import cors from 'cors';
 import { Database } from './database.js';
@@ -110,9 +109,9 @@ const start = async () => {
   app.get('/api/maps/config', mapsConfigLimit);
   app.post('/api/groups/:groupId/threads/:threadId/messages', messageLimit);
   app.post('/api/events/:eventId/threads/:threadId/messages', messageLimit);
-  // Keep this before API routes and any catch-all middleware so uploads are
-  // always served as files by the API process.
-  app.use('/uploads', express.static(path.resolve(process.cwd(), config.runtime.uploadsDir)));
+  // Media is served only through API routes below. Do not expose a generic
+  // local /uploads directory: it would bypass signed URLs for draft venues,
+  // events, and private groups if a file were ever present on disk.
   new Api({ config, database, queries, emailService, ftpService, eventFtpService, venueFtpService, groupFtpService, articleFtpService }).register(app);
   await queries.initialize();
   await queries.configureRetentionPolicies(config.runtime.retention);

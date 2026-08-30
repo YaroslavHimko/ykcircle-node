@@ -200,16 +200,9 @@ export class Api {
     const eventCoverToken = createImageToken('event-cover');
     const eventCoverTokenAllows = createImageTokenAllows('event-cover');
     // A 404 here can mean "not visible to this requester" or "the DB says
-    // it's visible but the file isn't actually in storage" - two very
-    // different problems that used to be indistinguishable in the logs.
-    // Hostinger's edge CDN sits in front of this API and caches by path,
-    // ignoring the query string the token rides in - so a single anonymous
-    // 404 (e.g. the moment right after upload, before the owner's browser
-    // even has a token) gets cached at the edge and is then served for every
-    // later request to that same path, token or not. Cache-Control alone
-    // does not guarantee an edge respects it, but it is the one lever
-    // available from the origin, so every non-2xx response here is marked
-    // explicitly uncacheable.
+    // it's visible but the file isn't actually in storage". Keep both the
+    // response and private image reads out of shared caches, and log only the
+    // filename and storage diagnostic - never the signed token.
     const imageNotFound = (req, res, label, message, reason, extra = {}) => {
       console.warn(`${label} image request denied.`, { filename: req.params.filename, reason, hasToken: Boolean(req.query.token), userId: req.user?.id ?? null, role: req.user?.role ?? null, ...extra });
       res.set('Cache-Control', 'no-store');
