@@ -57,6 +57,7 @@ const loadConfiguration = async () => {
 
 const start = async () => {
   const config = new Configuration(await loadConfiguration());
+  if (config.runtime.maps.enabled) console.info(`Google Maps is enabled${config.runtime.maps.requiresConsent ? ' with consent gating.' : '.'}`);
   const database = new Database(config.database);
   const queries = new Queries(database);
   const emailService = new EmailService({

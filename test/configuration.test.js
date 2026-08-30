@@ -54,6 +54,22 @@ test('rejects reusing a browser Maps key as a server key', () => {
   assert.throws(() => new Configuration({ ...values(), runtime: { ...values().runtime, maps: { enabled: true, browserApiKey: 'same-key', serverApiKey: 'same-key' } } }), /must be separate/);
 });
 
+test('uses Maps values supplied by the deployment environment over local configuration', () => {
+  const old = Object.fromEntries(['GOOGLE_MAPS_ENABLED', 'GOOGLE_MAPS_BROWSER_API_KEY', 'GOOGLE_MAPS_REQUIRES_CONSENT'].map((name) => [name, process.env[name]]));
+  process.env.GOOGLE_MAPS_ENABLED = 'on';
+  process.env.GOOGLE_MAPS_BROWSER_API_KEY = 'pipeline-browser-key';
+  process.env.GOOGLE_MAPS_REQUIRES_CONSENT = 'yes';
+  try {
+    const config = new Configuration({ ...values(), runtime: { ...values().runtime, maps: { enabled: false, browserApiKey: 'stale-local-key', requiresConsent: false } } });
+    assert.deepEqual(config.runtime.maps, { enabled: true, browserApiKey: 'pipeline-browser-key', serverApiKey: null, requiresConsent: true });
+  } finally {
+    for (const [name, value] of Object.entries(old)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test('publishes all public legal document metadata and handles unknown slugs', async () => {
   const index = legalDocumentIndex();
 

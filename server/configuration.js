@@ -9,6 +9,14 @@ const ftpConfig = ({ host, user, password, uploadPath, publicUrl, tlsServername,
   timeoutMs,
 });
 
+const environmentBoolean = (name) => {
+  if (process.env[name] === undefined) return undefined;
+  const value = String(process.env[name]).trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(value)) return true;
+  if (['false', '0', 'no', 'off', ''].includes(value)) return false;
+  throw new Error(`${name} must be true or false.`);
+};
+
 export class Configuration {
   constructor(values = {}) {
     const siteValues = values.site || {};
@@ -153,6 +161,11 @@ export class Configuration {
 
     const runtimeValues = values.runtime || {};
     const retentionValues = runtimeValues.retention || values.retention || {};
+    // Environment values are evaluated here (rather than trusting the
+    // imported config module) so deployment-pipeline variables always win,
+    // including when an old ignored config.local.js remains on a server.
+    const mapsEnabled = environmentBoolean('GOOGLE_MAPS_ENABLED');
+    const mapsRequiresConsent = environmentBoolean('GOOGLE_MAPS_REQUIRES_CONSENT');
     this.runtime = {
       uploadsDir: runtimeValues.uploadsDir || values.uploadsDir || process.env.UPLOADS_DIR || 'uploads',
       port: Number(runtimeValues.port ?? values.port ?? process.env.PORT ?? 3001),
@@ -161,12 +174,12 @@ export class Configuration {
       minimumUserAge: Number(process.env.MINIMUM_USER_AGE || runtimeValues.minimumUserAge || values.minimumUserAge || 18),
       paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true' || runtimeValues.paidEventsEnabled === true || values.paidEventsEnabled === true,
       maps: {
-        enabled: process.env.GOOGLE_MAPS_ENABLED === 'true' || runtimeValues.maps?.enabled === true || values.maps?.enabled === true,
-        browserApiKey: process.env.GOOGLE_MAPS_BROWSER_API_KEY || runtimeValues.maps?.browserApiKey || values.maps?.browserApiKey || null,
+        enabled: mapsEnabled ?? (runtimeValues.maps?.enabled === true || values.maps?.enabled === true),
+        browserApiKey: process.env.GOOGLE_MAPS_BROWSER_API_KEY ?? runtimeValues.maps?.browserApiKey ?? values.maps?.browserApiKey ?? null,
         // This value deliberately has no compatibility alias and is never
         // exposed through an API response.
-        serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY || runtimeValues.maps?.serverApiKey || values.maps?.serverApiKey || null,
-        requiresConsent: process.env.GOOGLE_MAPS_REQUIRES_CONSENT === 'true' || runtimeValues.maps?.requiresConsent === true || values.maps?.requiresConsent === true,
+        serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY ?? runtimeValues.maps?.serverApiKey ?? values.maps?.serverApiKey ?? null,
+        requiresConsent: mapsRequiresConsent ?? (runtimeValues.maps?.requiresConsent === true || values.maps?.requiresConsent === true),
       },
       retention: {
         passwordResetDays: Number(process.env.RETENTION_PASSWORD_RESET_DAYS || retentionValues.passwordResetDays || 7),
