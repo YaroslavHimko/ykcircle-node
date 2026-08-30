@@ -181,3 +181,27 @@ test('venue image visibility admits managers of an unapproved venue without wide
 
   assert.equal(await stub(null).venueImageVisible(filename, 99, 'customer'), null);
 });
+
+test('venue moderation compares statuses without blending parameter and column collations', async () => {
+  const calls = [];
+  const queries = new Queries({
+    execute: async (sql, parameters) => {
+      calls.push({ sql, parameters });
+      return [{ affectedRows: 1 }];
+    },
+  });
+
+  assert.equal(await queries.moderateVenue(5, 'approved', null, null), true);
+
+  const { sql, parameters } = calls[0];
+  // A parameter blended with a column by COALESCE has no collation winner
+  // against a literal, which MySQL rejects outright.
+  assert.doesNotMatch(sql, /COALESCE\(\?, verification_status\) =/);
+  assert.match(sql, /CASE WHEN \? IS NULL THEN verification_status = 'verified' ELSE \? = 'verified' END/);
+  // Placeholders and parameters must stay aligned as branches are added.
+  assert.equal((sql.match(/\?/g) || []).length, parameters.length);
+  assert.deepEqual(parameters, ['approved', null, null, null, null, 'approved', 5]);
+
+  await queries.moderateVenue(5, 'approved', 'verified', true);
+  assert.deepEqual(calls[1].parameters, ['approved', 'verified', 'verified', 'verified', true, 'approved', 5]);
+});
