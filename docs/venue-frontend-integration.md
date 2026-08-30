@@ -95,7 +95,8 @@ Organization owners/admins can set a member role with
 
 Create/update venue payloads use camelCase: `shortDescription`, `venueType`,
 `addressLine1`, `addressLine2`, `postalCode`, `city`, `municipality`,
-`region`, `country`, `latitude`, `longitude`, `locationVisibility`, capacity
+`region`, `country`, `countryCode`, `latitude`, `longitude`, `googlePlaceId`,
+`formattedAddress`, `locationVisibility`, capacity
 fields, `sizeSqm`, `priceFrom`, `priceUnit`, `currency`,
 `pricingDescription`, `minimumBookingHours`, `availabilityType`,
 `houseRulesText`, `amenities` (slug array), and `suitableEventTypes` (slug
@@ -121,3 +122,19 @@ and `GET /api/my/saved-venues`.
 
 The pre-existing event booking endpoints remain separate and should be labeled
 as a booking request, not an automatic confirmed booking.
+
+## Event locations and maps
+
+`private_until_booking` is a legacy response value. New venue requests and
+responses use `private`; both mean exact address, Place ID, formatted address,
+and coordinates must be withheld from public API responses.
+
+Event drafts and updates use exactly one `locationType`:
+
+- `venue`: requires `venueId`; no custom address is persisted. The event response includes `venue: { id, name, location }` and follows the venue visibility rule.
+- `custom`: requires a structured `location` object with `formattedAddress`, `latitude`, and `longitude`. Supported fields are `addressLine1`, `addressLine2`, `postalCode`, `locality`, `municipality`, `region`, `country`, `countryCode`, and `googlePlaceId`.
+- `online`: does not send an address, coordinates, or venue. `onlineUrl` is returned only to the event manager/admin, so public pages must not show it.
+
+Load `GET /api/maps/config` before initializing maps. It returns only the restricted browser key, whether Maps are enabled, and whether the real site must wait for consent. It never returns the server Maps key. If maps are disabled, consent is unavailable, or Google fails to load, still show the location text and a navigation link.
+
+Use one client-side `MapLocation` component for venue and event pages. Build a Google Maps Embed URL only from the API's validated `googlePlaceId` or numeric coordinates (`encodeURIComponent` every value); never accept a map/iframe URL or raw HTML from a venue owner. For `private` venues do not render an embed or navigation link. For `approximate` venues use only the returned approximate coordinates, never reconstruct an address from hidden fields.

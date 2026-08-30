@@ -78,3 +78,16 @@ test('allows stored event covers for drafts and uses binary filename comparisons
   assert.doesNotMatch(calls[0].sql, /status = 'Published'|visibility = 'Public'/);
   assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png', 'event-1-1786906288459.png']);
 });
+
+test('keeps rich event location columns and values aligned', async () => {
+  const queries = new Queries({ execute: async () => [[]] });
+  let insert;
+  await queries.insertRichEvent({ query: async (sql, values) => { insert = { sql, values }; return [{ insertId: 1 }]; } }, {
+    managerId: 1, title: 'Location test', locationType: 'custom', customFormattedAddress: 'Stockholm, Sweden', customLatitude: 59.3293, customLongitude: 18.0686,
+  }, 1);
+
+  assert.equal(insert.values.length, 52);
+  assert.equal((insert.sql.match(/\?/g) || []).length, 52);
+  assert.match(insert.sql, /venue_id, custom_address_line_1/);
+  assert.match(insert.sql, /online_url, online_platform/);
+});

@@ -107,6 +107,12 @@ export default {
     uploadsDir: process.env.UPLOADS_DIR || 'uploads',
     port: Number(process.env.PORT || 3001),
     authSecret: process.env.AUTH_SECRET || 'change-this-auth-secret',
+    maps: {
+      enabled: process.env.GOOGLE_MAPS_ENABLED === 'true',
+      browserApiKey: process.env.GOOGLE_MAPS_BROWSER_API_KEY,
+      serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY,
+      requiresConsent: process.env.GOOGLE_MAPS_REQUIRES_CONSENT === 'true',
+    },
     minimumUserAge: Number(process.env.MINIMUM_USER_AGE || 18),
     paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true',
     retention: {

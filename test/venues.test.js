@@ -99,12 +99,31 @@ test('normalizes venue booleans and withholds private location data from public 
   assert.deepEqual(venue.capacity, { min: null, max: 80, standing: null, seated: null, dining: null, classroom: null });
 });
 
+test('normalizes each event location source without leaking private venue details', () => {
+  const queries = new Queries({ execute: async () => [[]] });
+  const venueEvent = queries.normalizeRichEventLocation({ id: 3, locationType: 'venue', venueId: 8, venueName: 'Private loft', venueAddressLine1: 'Secret 1', venuePostalCode: '111 22', venueLatitude: '59.3', venueLongitude: '18.0', venueLocationVisibility: 'private' }, { publicView: true });
+  assert.equal(venueEvent.location, null);
+  assert.equal(venueEvent.venue.location.visibility, 'private');
+  assert.equal(venueEvent.venue.location.addressLine1, null);
+  assert.equal(venueEvent.venue.location.latitude, null);
+
+  const customEvent = queries.normalizeRichEventLocation({ id: 4, locationType: 'custom', customFormattedAddress: 'Sergels torg, Stockholm', customLatitude: '59.332', customLongitude: '18.064', customCountryCode: 'SE' }, { publicView: true });
+  assert.equal(customEvent.location.latitude, 59.332);
+  assert.equal(customEvent.location.longitude, 18.064);
+  assert.equal(customEvent.location.formattedAddress, 'Sergels torg, Stockholm');
+
+  const onlineEvent = queries.normalizeRichEventLocation({ id: 5, locationType: 'online', onlineUrl: 'https://meeting.example/private' }, { publicView: true });
+  assert.equal(onlineEvent.location, null);
+  assert.equal(onlineEvent.venue, null);
+  assert.equal(onlineEvent.onlineUrl, null);
+});
+
 test('creates an expanded venue with matching columns, values, and parameters', async () => {
   const calls = [];
   const queries = new Queries({ execute: async (sql, parameters) => { calls.push({ sql, parameters }); return [{ insertId: 9 }]; } });
   queries.replaceVenueRelations = async () => {};
-  const data = { organizationId: 4, name: 'Demo', slug: 'demo', businessName: null, shortDescription: null, description: null, location: 'Nacka', addressLine1: null, addressLine2: null, postalCode: null, country: 'Sweden', city: 'Nacka', municipality: null, region: null, address: null, latitude: null, longitude: null, locationVisibility: 'exact', timezone: 'UTC', venueType: 'studio', capacityMin: null, capacityMax: 60, standingCapacity: 60, seatedCapacity: 30, diningCapacity: null, classroomCapacity: null, sizeSqm: 220, priceFrom: 1800, priceUnit: 'hour', currency: 'SEK', pricingDescription: null, minimumBookingHours: 2, websiteUrl: null, phone: null, contactEmail: null, availabilityType: 'calendar', houseRulesText: null, isActive: true, amenitySlugs: [], suitableEventTypeSlugs: [] };
+  const data = { organizationId: 4, name: 'Demo', slug: 'demo', businessName: null, shortDescription: null, description: null, location: 'Nacka', addressLine1: null, addressLine2: null, postalCode: null, country: 'Sweden', countryCode: 'SE', city: 'Nacka', municipality: null, region: null, address: null, latitude: null, longitude: null, googlePlaceId: null, formattedAddress: null, locationVisibility: 'exact', timezone: 'UTC', venueType: 'studio', capacityMin: null, capacityMax: 60, standingCapacity: 60, seatedCapacity: 30, diningCapacity: null, classroomCapacity: null, sizeSqm: 220, priceFrom: 1800, priceUnit: 'hour', currency: 'SEK', pricingDescription: null, minimumBookingHours: 2, websiteUrl: null, phone: null, contactEmail: null, availabilityType: 'calendar', houseRulesText: null, isActive: true, amenitySlugs: [], suitableEventTypeSlugs: [] };
   assert.equal(await queries.createVenue(1, data), 9);
-  assert.equal(calls[0].parameters.length, 39);
-  assert.equal((calls[0].sql.match(/\?/g) || []).length, 39);
+  assert.equal(calls[0].parameters.length, 42);
+  assert.equal((calls[0].sql.match(/\?/g) || []).length, 42);
 });

@@ -45,6 +45,15 @@ test('renders controller details into the current privacy notice', async () => {
   assert.match(privacy.contentHash, /^[a-f0-9]{64}$/);
 });
 
+test('keeps Maps server credentials separate from browser configuration', () => {
+  const config = new Configuration({ ...values(), runtime: { ...values().runtime, maps: { enabled: true, browserApiKey: 'browser-key', serverApiKey: 'server-key', requiresConsent: true } } });
+  assert.deepEqual(config.runtime.maps, { enabled: true, browserApiKey: 'browser-key', serverApiKey: 'server-key', requiresConsent: true });
+});
+
+test('rejects reusing a browser Maps key as a server key', () => {
+  assert.throws(() => new Configuration({ ...values(), runtime: { ...values().runtime, maps: { enabled: true, browserApiKey: 'same-key', serverApiKey: 'same-key' } } }), /must be separate/);
+});
+
 test('publishes all public legal document metadata and handles unknown slugs', async () => {
   const index = legalDocumentIndex();
 

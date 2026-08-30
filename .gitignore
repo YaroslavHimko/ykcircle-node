@@ -3,3 +3,4 @@ node_modules
 server/config.local.js
 uploads
 .env
+.env.example

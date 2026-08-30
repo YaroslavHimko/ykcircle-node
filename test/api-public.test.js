@@ -15,7 +15,7 @@ test('serves public API resources and validates unsubscribe requests', async (t)
   const app = express();
   app.use(express.json());
   new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: 'a sufficiently random test secret that exceeds thirty two characters' } },
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: 'a sufficiently random test secret that exceeds thirty two characters', maps: { enabled: true, browserApiKey: 'restricted-browser-key', serverApiKey: 'must-not-leak', requiresConsent: true } } },
     database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
   }).register(app);
   const server = await new Promise((resolve) => {
@@ -29,6 +29,11 @@ test('serves public API resources and validates unsubscribe requests', async (t)
 
   const statuses = await fetch(`${baseUrl}/api/event-statuses`);
   assert.deepEqual(await statuses.json(), ['Draft', 'Published', 'Cancelled', 'Completed', 'Archived']);
+
+  const maps = await fetch(`${baseUrl}/api/maps/config`);
+  assert.deepEqual(await maps.json(), { enabled: true, browserApiKey: 'restricted-browser-key', requiresConsent: true });
+  assert.equal(maps.headers.get('cache-control'), 'public, max-age=300, stale-while-revalidate=86400');
+  assert.equal(maps.headers.get('x-robots-tag'), 'noindex, noarchive');
 
   const communityPosts = await fetch(`${baseUrl}/api/community/posts`);
   assert.equal(communityPosts.status, 404);

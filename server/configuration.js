@@ -160,6 +160,14 @@ export class Configuration {
       allowedOrigins: runtimeValues.allowedOrigins || this.getAllowedOrigins(),
       minimumUserAge: Number(process.env.MINIMUM_USER_AGE || runtimeValues.minimumUserAge || values.minimumUserAge || 18),
       paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true' || runtimeValues.paidEventsEnabled === true || values.paidEventsEnabled === true,
+      maps: {
+        enabled: process.env.GOOGLE_MAPS_ENABLED === 'true' || runtimeValues.maps?.enabled === true || values.maps?.enabled === true,
+        browserApiKey: process.env.GOOGLE_MAPS_BROWSER_API_KEY || runtimeValues.maps?.browserApiKey || values.maps?.browserApiKey || null,
+        // This value deliberately has no compatibility alias and is never
+        // exposed through an API response.
+        serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY || runtimeValues.maps?.serverApiKey || values.maps?.serverApiKey || null,
+        requiresConsent: process.env.GOOGLE_MAPS_REQUIRES_CONSENT === 'true' || runtimeValues.maps?.requiresConsent === true || values.maps?.requiresConsent === true,
+      },
       retention: {
         passwordResetDays: Number(process.env.RETENTION_PASSWORD_RESET_DAYS || retentionValues.passwordResetDays || 7),
         verificationTokenDays: Number(process.env.RETENTION_VERIFICATION_TOKEN_DAYS || retentionValues.verificationTokenDays || 30),
@@ -178,6 +186,12 @@ export class Configuration {
     }
     if (process.env.NODE_ENV === 'production' && ['name', 'email', 'privacyEmail', 'supportEmail', 'moderationEmail'].some((key) => !this.operator[key])) {
       throw new Error('Production requires PLATFORM_OPERATOR_NAME, PLATFORM_OPERATOR_EMAIL, PRIVACY_EMAIL, SUPPORT_EMAIL and MODERATION_EMAIL.');
+    }
+    if (process.env.NODE_ENV === 'production' && this.runtime.maps.enabled && !this.runtime.maps.browserApiKey) {
+      throw new Error('GOOGLE_MAPS_BROWSER_API_KEY is required when GOOGLE_MAPS_ENABLED=true in production.');
+    }
+    if (this.runtime.maps.serverApiKey && this.runtime.maps.serverApiKey === this.runtime.maps.browserApiKey) {
+      throw new Error('GOOGLE_MAPS_BROWSER_API_KEY and GOOGLE_MAPS_SERVER_API_KEY must be separate keys.');
     }
     for (const [name, days] of Object.entries(this.runtime.retention)) {
       if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error(`Retention setting ${name} must be a whole number from 1 to 3650.`);

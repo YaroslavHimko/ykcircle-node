@@ -11,7 +11,7 @@ This is an internal release-control record. Complete every row from the deployed
 | Backups | TODO | All backed-up production data | TODO | TODO | TODO | TODO | TODO |
 | Error monitoring | TODO / not enabled | Logs and identifiers | TODO | TODO | TODO | TODO | TODO |
 | Analytics | TODO / not enabled | Cookie/device/usage data | TODO | TODO | TODO | TODO | TODO |
-| Maps | TODO / not enabled | User-entered locations/IP address | TODO | TODO | TODO | TODO | TODO |
+| Maps | Google Maps Platform / not enabled until `GOOGLE_MAPS_ENABLED=true` | User-entered location searches, selected places, technical/IP data when a map loads | TODO | TODO | Google Maps Platform terms/DPA: TODO | TODO | TODO |
 | AI/content moderation | TODO / not enabled | Reported/uploaded content | TODO | TODO | TODO | TODO | TODO |
 
 The repository confirms configurable MySQL, SMTP and FTP integrations, but it does not identify their real providers or regions. Obtain and retain the actual contracts and transfer assessments before inviting users.

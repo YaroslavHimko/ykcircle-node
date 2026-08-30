@@ -342,24 +342,33 @@ export class Queries {
   async eventCategories() { const [rows] = await this.database.execute('SELECT id, name, slug, description, icon, sort_order AS sortOrder FROM event_categories WHERE is_active = TRUE ORDER BY sort_order, name'); return rows; }
   async eventTypes() { const [rows] = await this.database.execute('SELECT id, name, slug, description FROM event_types WHERE is_active = TRUE ORDER BY name'); return rows; }
   async taxonomyExists(categoryId, typeId) { const [categories] = await this.database.execute('SELECT id FROM event_categories WHERE id = ? AND is_active = TRUE', [categoryId]); const [types] = await this.database.execute('SELECT id FROM event_types WHERE id = ? AND is_active = TRUE', [typeId]); return categories.length > 0 && types.length > 0; }
+  async eventLocationVenue(id) {
+    const [rows] = await this.database.execute("SELECT id FROM venues WHERE id = ? AND COALESCE(is_active, TRUE) = TRUE AND moderation_status = 'approved'", [id]);
+    return Boolean(rows[0]);
+  }
   richEventInsertValues(data, occurrenceNumber = 1) {
     const recurrence = data.recurrence || { frequency: 'none', interval: 1, count: 1 };
     const values = [data.managerId, data.title, data.shortDescription, data.description, data.coverImage, data.categoryId, data.typeId, data.country, data.city,
       data.location, data.address, data.latitude, data.longitude, data.locationType, data.locationVisibility, data.startsAt, data.endsAt,
       data.timezone, data.capacity, data.minimumAttendees, data.registrationDeadline, data.minimumAge, data.languageCode,
       data.whatToBring, data.meetingInstructions, data.cancellationPolicy, data.pricingType, data.fee, data.currency,
-      data.registrationType, data.externalRegistrationUrl, data.visibility, data.groupId, recurrence.frequency, recurrence.interval, recurrence.count, occurrenceNumber];
+      data.registrationType, data.externalRegistrationUrl, data.visibility, data.groupId, recurrence.frequency, recurrence.interval, recurrence.count, occurrenceNumber,
+      data.venueId, data.customAddressLine1, data.customAddressLine2, data.customPostalCode, data.customLocality, data.customMunicipality, data.customRegion,
+      data.customCountry, data.customCountryCode, data.customLatitude, data.customLongitude, data.customGooglePlaceId, data.customFormattedAddress,
+      data.onlineUrl, data.onlinePlatform];
     return values.map((value) => value === undefined || (typeof value === 'number' && Number.isNaN(value)) ? null : value);
   }
   async insertRichEvent(connection, data, occurrenceNumber) {
     const values = this.richEventInsertValues(data, occurrenceNumber);
-    if (values.length !== 37) throw new Error(`Rich event parameter contract failed: expected 37 values, received ${values.length}.`);
+    if (values.length !== 52) throw new Error(`Rich event parameter contract failed: expected 52 values, received ${values.length}.`);
     const [result] = await connection.query(`INSERT INTO events
       (manager_id, title, short_description, description, cover_image, category_id, type_id, country, city, location, address, latitude, longitude,
        location_type, location_visibility, starts_at, ends_at, timezone, capacity, minimum_attendees, registration_deadline, minimum_age,
        language_code, what_to_bring, meeting_instructions, cancellation_policy, pricing_type, participation_fee, currency,
-       registration_type, external_registration_url, visibility, group_id, recurrence_frequency, recurrence_interval, recurrence_count, occurrence_number, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Draft')`, values);
+       registration_type, external_registration_url, visibility, group_id, recurrence_frequency, recurrence_interval, recurrence_count, occurrence_number,
+       venue_id, custom_address_line_1, custom_address_line_2, custom_postal_code, custom_locality, custom_municipality, custom_region,
+       custom_country, custom_country_code, custom_latitude, custom_longitude, custom_google_place_id, custom_formatted_address, online_url, online_platform, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Draft')`, values);
     return result.insertId;
   }
   recurringDate(date, frequency, interval) {
@@ -410,9 +419,12 @@ export class Queries {
       data.location, data.address, data.latitude, data.longitude, data.locationType, data.locationVisibility, data.startsAt, data.endsAt,
       data.timezone, data.capacity, data.minimumAttendees, data.registrationDeadline, data.minimumAge, data.languageCode,
       data.whatToBring, data.meetingInstructions, data.cancellationPolicy, data.pricingType, data.fee, data.currency,
-      data.registrationType, data.externalRegistrationUrl, data.visibility, id].map((value) => value === undefined || (typeof value === 'number' && Number.isNaN(value)) ? null : value);
+      data.registrationType, data.externalRegistrationUrl, data.visibility, data.venueId, data.customAddressLine1, data.customAddressLine2,
+      data.customPostalCode, data.customLocality, data.customMunicipality, data.customRegion, data.customCountry, data.customCountryCode,
+      data.customLatitude, data.customLongitude, data.customGooglePlaceId, data.customFormattedAddress, data.onlineUrl, data.onlinePlatform, id]
+      .map((value) => value === undefined || (typeof value === 'number' && Number.isNaN(value)) ? null : value);
     if (!['manager', 'admin'].includes(role)) params.push(managerId);
-    const [result] = await this.database.query(`UPDATE events SET title=?, short_description=?, description=?, cover_image=?, category_id=?, type_id=?, country=?, city=?, location=?, address=?, latitude=?, longitude=?, location_type=?, location_visibility=?, starts_at=?, ends_at=?, timezone=?, capacity=?, minimum_attendees=?, registration_deadline=?, minimum_age=?, language_code=?, what_to_bring=?, meeting_instructions=?, cancellation_policy=?, pricing_type=?, participation_fee=?, currency=?, registration_type=?, external_registration_url=?, visibility=? WHERE id=? AND deleted_at IS NULL${scope}`, params);
+    const [result] = await this.database.query(`UPDATE events SET title=?, short_description=?, description=?, cover_image=?, category_id=?, type_id=?, country=?, city=?, location=?, address=?, latitude=?, longitude=?, location_type=?, location_visibility=?, starts_at=?, ends_at=?, timezone=?, capacity=?, minimum_attendees=?, registration_deadline=?, minimum_age=?, language_code=?, what_to_bring=?, meeting_instructions=?, cancellation_policy=?, pricing_type=?, participation_fee=?, currency=?, registration_type=?, external_registration_url=?, visibility=?, venue_id=?, custom_address_line_1=?, custom_address_line_2=?, custom_postal_code=?, custom_locality=?, custom_municipality=?, custom_region=?, custom_country=?, custom_country_code=?, custom_latitude=?, custom_longitude=?, custom_google_place_id=?, custom_formatted_address=?, online_url=?, online_platform=? WHERE id=? AND deleted_at IS NULL${scope}`, params);
     return result.affectedRows > 0;
   }
   async setEventCover(id, managerId, role, coverImage) {
@@ -423,6 +435,48 @@ export class Queries {
     return result.affectedRows > 0;
   }
   async eventCover(filename) { const [rows] = await this.database.execute("SELECT id FROM events WHERE (BINARY cover_image = BINARY ? OR BINARY cover_image LIKE CONCAT(BINARY '%/', BINARY ?)) AND deleted_at IS NULL LIMIT 1", [filename, filename]); return rows[0] || null; }
+  normalizeRichEventLocation(event, { publicView = false } = {}) {
+    if (!event) return null;
+    const normalized = { ...event };
+    if (normalized.locationType === 'physical' || normalized.locationType === 'tba') normalized.locationType = 'custom';
+    for (const key of ['latitude', 'longitude', 'customLatitude', 'customLongitude']) if (normalized[key] != null) normalized[key] = Number(normalized[key]);
+    const customLocation = {
+      addressLine1: normalized.customAddressLine1 || normalized.address || null,
+      addressLine2: normalized.customAddressLine2 || null,
+      postalCode: normalized.customPostalCode || null,
+      locality: normalized.customLocality || normalized.city || null,
+      municipality: normalized.customMunicipality || null,
+      region: normalized.customRegion || null,
+      country: normalized.customCountry || normalized.country || null,
+      countryCode: normalized.customCountryCode || null,
+      latitude: normalized.customLatitude ?? normalized.latitude ?? null,
+      longitude: normalized.customLongitude ?? normalized.longitude ?? null,
+      googlePlaceId: normalized.customGooglePlaceId || null,
+      formattedAddress: normalized.customFormattedAddress || normalized.location || normalized.address || null,
+    };
+    if (normalized.locationType === 'venue') {
+      const venue = this.normalizeVenue({
+        id: normalized.venueId, name: normalized.venueName, addressLine1: normalized.venueAddressLine1, addressLine2: normalized.venueAddressLine2,
+        postalCode: normalized.venuePostalCode, city: normalized.venueCity, municipality: normalized.venueMunicipality, region: normalized.venueRegion,
+        country: normalized.venueCountry, countryCode: normalized.venueCountryCode, latitude: normalized.venueLatitude, longitude: normalized.venueLongitude,
+        googlePlaceId: normalized.venueGooglePlaceId, formattedAddress: normalized.venueFormattedAddress, locationVisibility: normalized.venueLocationVisibility,
+      }, { publicView });
+      normalized.venue = venue?.id ? { id: venue.id, name: venue.name, location: venue.location } : null;
+      normalized.location = null;
+    } else if (normalized.locationType === 'online') {
+      normalized.venue = null;
+      normalized.location = null;
+      normalized.onlineUrl = publicView ? null : normalized.onlineUrl || null;
+    } else {
+      normalized.venue = null;
+      normalized.location = customLocation;
+    }
+    // The legacy flat event fields are retained in storage only for backwards
+    // compatibility. API consumers use one structured location source.
+    for (const key of ['country', 'city', 'address', 'latitude', 'longitude']) delete normalized[key];
+    for (const key of ['customAddressLine1', 'customAddressLine2', 'customPostalCode', 'customLocality', 'customMunicipality', 'customRegion', 'customCountry', 'customCountryCode', 'customLatitude', 'customLongitude', 'customGooglePlaceId', 'customFormattedAddress', 'venueId', 'venueName', 'venueBusinessName', 'venueLocation', 'venueAddressLine1', 'venueAddressLine2', 'venuePostalCode', 'venueCity', 'venueMunicipality', 'venueRegion', 'venueCountry', 'venueCountryCode', 'venueLatitude', 'venueLongitude', 'venueGooglePlaceId', 'venueFormattedAddress', 'venueLocationVisibility']) delete normalized[key];
+    return normalized;
+  }
   async richEvent(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
     const [rows] = await this.database.query(`SELECT e.id, e.manager_id AS managerId, e.title, e.short_description AS shortDescription, e.description, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl,
@@ -433,12 +487,13 @@ export class Queries {
       e.pricing_type AS pricingType, e.participation_fee AS fee, e.currency, e.registration_type AS registrationType, e.external_registration_url AS externalRegistrationUrl,
       e.visibility, e.status, e.published_at AS publishedAt, e.created_at AS createdAt, e.updated_at AS updatedAt, u.name AS managerName,
       e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber,
-      vb.id AS venueBookingId, vb.status AS venueBookingStatus, v.id AS venueId, v.name AS venueName, v.business_name AS venueBusinessName, v.location AS venueLocation, v.city AS venueCity, v.country AS venueCountry,
+      e.venue_id AS venueId, e.custom_address_line_1 AS customAddressLine1, e.custom_address_line_2 AS customAddressLine2, e.custom_postal_code AS customPostalCode, e.custom_locality AS customLocality, e.custom_municipality AS customMunicipality, e.custom_region AS customRegion, e.custom_country AS customCountry, e.custom_country_code AS customCountryCode, e.custom_latitude AS customLatitude, e.custom_longitude AS customLongitude, e.custom_google_place_id AS customGooglePlaceId, e.custom_formatted_address AS customFormattedAddress, e.online_url AS onlineUrl, e.online_platform AS onlinePlatform,
+      vb.id AS venueBookingId, vb.status AS venueBookingStatus, v.name AS venueName, v.business_name AS venueBusinessName, v.location AS venueLocation, v.address_line_1 AS venueAddressLine1, v.address_line_2 AS venueAddressLine2, v.postal_code AS venuePostalCode, v.city AS venueCity, v.municipality AS venueMunicipality, v.region AS venueRegion, v.country AS venueCountry, v.country_code AS venueCountryCode, v.latitude AS venueLatitude, v.longitude AS venueLongitude, v.google_place_id AS venueGooglePlaceId, v.formatted_address AS venueFormattedAddress, v.location_visibility AS venueLocationVisibility,
       (SELECT ROUND(AVG(rating), 2) FROM event_ratings WHERE event_id = e.id) AS ratingAverage, (SELECT COUNT(*) FROM event_ratings WHERE event_id = e.id) AS ratingCount,
       (SELECT rating FROM event_ratings WHERE event_id = e.id AND user_id = ?) AS myRating
-      FROM events e JOIN users u ON u.id=e.manager_id LEFT JOIN event_categories c ON c.id=e.category_id LEFT JOIN event_types t ON t.id=e.type_id LEFT JOIN event_groups g ON g.id=e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id LEFT JOIN venues v ON v.id = vb.venue_id
+      FROM events e JOIN users u ON u.id=e.manager_id LEFT JOIN event_categories c ON c.id=e.category_id LEFT JOIN event_types t ON t.id=e.type_id LEFT JOIN event_groups g ON g.id=e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id LEFT JOIN venues v ON v.id = e.venue_id
       WHERE e.id=? AND e.deleted_at IS NULL AND (${privileged ? 'TRUE' : "e.visibility = 'Public' AND e.status = 'Published'"}${userId && !privileged ? ' OR e.manager_id = ?' : ''})`, userId && !privileged ? [userId, id, userId] : [userId, id]);
-    return rows[0];
+    return this.normalizeRichEventLocation(rows[0], { publicView: !privileged && (!userId || rows[0]?.managerId !== userId) });
   }
   async publishRichEvent(id, managerId, role) { const privileged = ['manager', 'admin'].includes(role); const [events] = await this.database.execute(`SELECT COALESCE(series_id, id) AS seriesId FROM events WHERE id = ? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? [id] : [id, managerId]); if (!events[0]) return false; const [result] = await this.database.execute('UPDATE events SET status = ?, published_at = COALESCE(published_at, NOW()) WHERE deleted_at IS NULL AND (id = ? OR series_id = ?)', ['Published', events[0].seriesId, events[0].seriesId]); return result.affectedRows > 0; }
   async updateEventStatus(id, userId, status, role) { const globalAccess = ['manager', 'admin'].includes(role); const ownership = globalAccess ? '' : ' AND manager_id = ?'; const params = globalAccess ? [status, id] : [status, id, userId]; const [result] = await this.database.execute(`UPDATE events SET status = ? WHERE id = ?${ownership}`, params); return result.affectedRows > 0; }
@@ -686,19 +741,27 @@ export class Queries {
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   venueColumns(prefix = 'v') {
-    return `${prefix}.id, ${prefix}.organization_id AS organizationId, ${prefix}.owner_user_id AS ownerUserId, ${prefix}.name, ${prefix}.slug, ${prefix}.business_name AS businessName, ${prefix}.short_description AS shortDescription, ${prefix}.description, ${prefix}.location, ${prefix}.address_line_1 AS addressLine1, ${prefix}.address_line_2 AS addressLine2, ${prefix}.postal_code AS postalCode, ${prefix}.country, ${prefix}.city, ${prefix}.municipality, ${prefix}.region, ${prefix}.address, ${prefix}.latitude, ${prefix}.longitude, ${prefix}.location_visibility AS locationVisibility, ${prefix}.timezone, ${prefix}.capacity_min AS capacityMin, ${prefix}.capacity_max AS capacityMax, ${prefix}.standing_capacity AS standingCapacity, ${prefix}.seated_capacity AS seatedCapacity, ${prefix}.dining_capacity AS diningCapacity, ${prefix}.classroom_capacity AS classroomCapacity, ${prefix}.size_sqm AS sizeSqm, ${prefix}.price_from AS priceFrom, ${prefix}.price_unit AS priceUnit, ${prefix}.currency, ${prefix}.pricing_description AS pricingDescription, ${prefix}.minimum_booking_hours AS minimumBookingHours, ${prefix}.website_url AS websiteUrl, ${prefix}.phone, ${prefix}.contact_email AS contactEmail, ${prefix}.availability_type AS availabilityType, ${prefix}.house_rules_text AS houseRulesText, ${prefix}.is_active AS isActive, ${prefix}.is_verified AS isVerified, ${prefix}.is_featured AS isFeatured, ${prefix}.verification_status AS verificationStatus, ${prefix}.moderation_status AS moderationStatus, ${prefix}.published_at AS publishedAt, ${prefix}.created_at AS createdAt, ${prefix}.updated_at AS updatedAt`;
+    return `${prefix}.id, ${prefix}.organization_id AS organizationId, ${prefix}.owner_user_id AS ownerUserId, ${prefix}.name, ${prefix}.slug, ${prefix}.business_name AS businessName, ${prefix}.short_description AS shortDescription, ${prefix}.description, ${prefix}.location, ${prefix}.address_line_1 AS addressLine1, ${prefix}.address_line_2 AS addressLine2, ${prefix}.postal_code AS postalCode, ${prefix}.country, ${prefix}.country_code AS countryCode, ${prefix}.city, ${prefix}.municipality, ${prefix}.region, ${prefix}.address, ${prefix}.latitude, ${prefix}.longitude, ${prefix}.google_place_id AS googlePlaceId, ${prefix}.formatted_address AS formattedAddress, ${prefix}.location_visibility AS locationVisibility, ${prefix}.timezone, ${prefix}.capacity_min AS capacityMin, ${prefix}.capacity_max AS capacityMax, ${prefix}.standing_capacity AS standingCapacity, ${prefix}.seated_capacity AS seatedCapacity, ${prefix}.dining_capacity AS diningCapacity, ${prefix}.classroom_capacity AS classroomCapacity, ${prefix}.size_sqm AS sizeSqm, ${prefix}.price_from AS priceFrom, ${prefix}.price_unit AS priceUnit, ${prefix}.currency, ${prefix}.pricing_description AS pricingDescription, ${prefix}.minimum_booking_hours AS minimumBookingHours, ${prefix}.website_url AS websiteUrl, ${prefix}.phone, ${prefix}.contact_email AS contactEmail, ${prefix}.availability_type AS availabilityType, ${prefix}.house_rules_text AS houseRulesText, ${prefix}.is_active AS isActive, ${prefix}.is_verified AS isVerified, ${prefix}.is_featured AS isFeatured, ${prefix}.verification_status AS verificationStatus, ${prefix}.moderation_status AS moderationStatus, ${prefix}.published_at AS publishedAt, ${prefix}.created_at AS createdAt, ${prefix}.updated_at AS updatedAt`;
   }
   normalizeVenue(venue, { publicView = false } = {}) {
     if (!venue) return null;
     const normalized = { ...venue, isActive: Boolean(venue.isActive), isVerified: Boolean(venue.isVerified), isFeatured: Boolean(venue.isFeatured), sponsored: Boolean(venue.sponsored) };
     for (const key of ['latitude', 'longitude', 'sizeSqm', 'priceFrom', 'minimumBookingHours']) if (normalized[key] != null) normalized[key] = Number(normalized[key]);
     for (const key of ['capacityMin', 'capacityMax', 'standingCapacity', 'seatedCapacity', 'diningCapacity', 'classroomCapacity']) if (normalized[key] != null) normalized[key] = Number(normalized[key]);
-    normalized.location = { locality: normalized.city || null, municipality: normalized.municipality || null, region: normalized.region || null, country: normalized.country || null, latitude: normalized.latitude ?? null, longitude: normalized.longitude ?? null };
+    if (normalized.locationVisibility === 'private_until_booking') normalized.locationVisibility = 'private';
+    normalized.location = {
+      visibility: normalized.locationVisibility,
+      addressLine1: normalized.addressLine1 || null, addressLine2: normalized.addressLine2 || null, postalCode: normalized.postalCode || null,
+      locality: normalized.city || null, municipality: normalized.municipality || null, region: normalized.region || null,
+      country: normalized.country || null, countryCode: normalized.countryCode || null, latitude: normalized.latitude ?? null, longitude: normalized.longitude ?? null,
+      googlePlaceId: normalized.googlePlaceId || null, formattedAddress: normalized.formattedAddress || normalized.address || null,
+    };
     normalized.capacity = { min: normalized.capacityMin ?? null, max: normalized.capacityMax ?? null, standing: normalized.standingCapacity ?? null, seated: normalized.seatedCapacity ?? null, dining: normalized.diningCapacity ?? null, classroom: normalized.classroomCapacity ?? null };
     normalized.pricing = { from: normalized.priceFrom ?? null, unit: normalized.priceUnit, currency: normalized.currency, description: normalized.pricingDescription || null };
     if (publicView && normalized.locationVisibility !== 'exact') {
-      normalized.addressLine1 = null; normalized.addressLine2 = null; normalized.address = null; normalized.postalCode = null;
-      if (normalized.locationVisibility === 'private_until_booking') { normalized.latitude = null; normalized.longitude = null; normalized.location.latitude = null; normalized.location.longitude = null; }
+      normalized.addressLine1 = null; normalized.addressLine2 = null; normalized.address = null; normalized.postalCode = null; normalized.formattedAddress = null; normalized.googlePlaceId = null;
+      normalized.location.addressLine1 = null; normalized.location.addressLine2 = null; normalized.location.postalCode = null; normalized.location.formattedAddress = null; normalized.location.googlePlaceId = null;
+      if (normalized.locationVisibility === 'private') { normalized.latitude = null; normalized.longitude = null; normalized.location.latitude = null; normalized.location.longitude = null; }
     }
     return normalized;
   }
@@ -780,8 +843,8 @@ export class Queries {
     return Promise.all(rows.map((venue) => this.decorateVenue(venue, { publicView: !managedOnly && !privileged })));
   }
   async createVenue(ownerUserId, data) {
-    const [result] = await this.database.execute(`INSERT INTO venues (organization_id, owner_user_id, name, slug, business_name, short_description, description, location, address_line_1, address_line_2, postal_code, country, city, municipality, region, address, latitude, longitude, location_visibility, timezone, venue_type_id, capacity_min, capacity_max, standing_capacity, seated_capacity, dining_capacity, classroom_capacity, size_sqm, price_from, price_unit, currency, pricing_description, minimum_booking_hours, website_url, phone, contact_email, availability_type, house_rules_text, is_active, moderation_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT id FROM venue_types WHERE slug = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`, [data.organizationId, ownerUserId, data.name, data.slug, data.businessName, data.shortDescription, data.description, data.location, data.addressLine1, data.addressLine2, data.postalCode, data.country, data.city, data.municipality, data.region, data.address, data.latitude, data.longitude, data.locationVisibility, data.timezone, data.venueType, data.capacityMin, data.capacityMax, data.standingCapacity, data.seatedCapacity, data.diningCapacity, data.classroomCapacity, data.sizeSqm, data.priceFrom, data.priceUnit, data.currency, data.pricingDescription, data.minimumBookingHours, data.websiteUrl, data.phone, data.contactEmail, data.availabilityType, data.houseRulesText, data.isActive]);
+    const [result] = await this.database.execute(`INSERT INTO venues (organization_id, owner_user_id, name, slug, business_name, short_description, description, location, address_line_1, address_line_2, postal_code, country, country_code, city, municipality, region, address, latitude, longitude, google_place_id, formatted_address, location_visibility, timezone, venue_type_id, capacity_min, capacity_max, standing_capacity, seated_capacity, dining_capacity, classroom_capacity, size_sqm, price_from, price_unit, currency, pricing_description, minimum_booking_hours, website_url, phone, contact_email, availability_type, house_rules_text, is_active, moderation_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT id FROM venue_types WHERE slug = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`, [data.organizationId, ownerUserId, data.name, data.slug, data.businessName, data.shortDescription, data.description, data.location, data.addressLine1, data.addressLine2, data.postalCode, data.country, data.countryCode, data.city, data.municipality, data.region, data.address, data.latitude, data.longitude, data.googlePlaceId, data.formattedAddress, data.locationVisibility, data.timezone, data.venueType, data.capacityMin, data.capacityMax, data.standingCapacity, data.seatedCapacity, data.diningCapacity, data.classroomCapacity, data.sizeSqm, data.priceFrom, data.priceUnit, data.currency, data.pricingDescription, data.minimumBookingHours, data.websiteUrl, data.phone, data.contactEmail, data.availabilityType, data.houseRulesText, data.isActive]);
     await this.replaceVenueRelations(result.insertId, data.amenitySlugs, data.suitableEventTypeSlugs);
     return result.insertId;
   }
@@ -793,7 +856,7 @@ export class Queries {
   }
   async updateVenue(id, userId, role, data) {
     if (!await this.canManageVenue(id, userId, role)) return false;
-    const [result] = await this.database.execute('UPDATE venues SET name=?, slug=?, business_name=?, short_description=?, description=?, location=?, address_line_1=?, address_line_2=?, postal_code=?, country=?, city=?, municipality=?, region=?, address=?, latitude=?, longitude=?, location_visibility=?, timezone=?, venue_type_id=(SELECT id FROM venue_types WHERE slug=?), capacity_min=?, capacity_max=?, standing_capacity=?, seated_capacity=?, dining_capacity=?, classroom_capacity=?, size_sqm=?, price_from=?, price_unit=?, currency=?, pricing_description=?, minimum_booking_hours=?, website_url=?, phone=?, contact_email=?, availability_type=?, house_rules_text=?, is_active=? WHERE id=?', [data.name, data.slug, data.businessName, data.shortDescription, data.description, data.location, data.addressLine1, data.addressLine2, data.postalCode, data.country, data.city, data.municipality, data.region, data.address, data.latitude, data.longitude, data.locationVisibility, data.timezone, data.venueType, data.capacityMin, data.capacityMax, data.standingCapacity, data.seatedCapacity, data.diningCapacity, data.classroomCapacity, data.sizeSqm, data.priceFrom, data.priceUnit, data.currency, data.pricingDescription, data.minimumBookingHours, data.websiteUrl, data.phone, data.contactEmail, data.availabilityType, data.houseRulesText, data.isActive, id]);
+    const [result] = await this.database.execute('UPDATE venues SET name=?, slug=?, business_name=?, short_description=?, description=?, location=?, address_line_1=?, address_line_2=?, postal_code=?, country=?, country_code=?, city=?, municipality=?, region=?, address=?, latitude=?, longitude=?, google_place_id=?, formatted_address=?, location_visibility=?, timezone=?, venue_type_id=(SELECT id FROM venue_types WHERE slug=?), capacity_min=?, capacity_max=?, standing_capacity=?, seated_capacity=?, dining_capacity=?, classroom_capacity=?, size_sqm=?, price_from=?, price_unit=?, currency=?, pricing_description=?, minimum_booking_hours=?, website_url=?, phone=?, contact_email=?, availability_type=?, house_rules_text=?, is_active=? WHERE id=?', [data.name, data.slug, data.businessName, data.shortDescription, data.description, data.location, data.addressLine1, data.addressLine2, data.postalCode, data.country, data.countryCode, data.city, data.municipality, data.region, data.address, data.latitude, data.longitude, data.googlePlaceId, data.formattedAddress, data.locationVisibility, data.timezone, data.venueType, data.capacityMin, data.capacityMax, data.standingCapacity, data.seatedCapacity, data.diningCapacity, data.classroomCapacity, data.sizeSqm, data.priceFrom, data.priceUnit, data.currency, data.pricingDescription, data.minimumBookingHours, data.websiteUrl, data.phone, data.contactEmail, data.availabilityType, data.houseRulesText, data.isActive, id]);
     await this.replaceVenueRelations(id, data.amenitySlugs, data.suitableEventTypeSlugs);
     return result.affectedRows > 0;
   }

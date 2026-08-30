@@ -104,6 +104,10 @@ const start = async () => {
   const reportLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5, key: (req) => req.ip, message: 'Too many reports submitted. Please try again later.' });
   const uploadLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 20, message: 'Too many uploads. Please try again later.' });
   const messageLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 60, message: 'Too many messages. Please try again later.' });
+  // The browser key is public by design, but this endpoint is not a general
+  // configuration feed. The frontend caches it for a session, so repeated
+  // requests are abusive rather than a legitimate application workflow.
+  const mapsConfigLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30, message: 'Too many map configuration requests. Please try again later.' });
   const apiWriteLimit = createRateLimiter({ windowMs: 60 * 1000, max: 120, message: 'Too many write requests. Please try again shortly.' });
   app.use('/api', (req, res, next) => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) ? apiWriteLimit(req, res, next) : next());
   app.post('/api/auth/login', authIpLimit, authIdentityLimit);
@@ -118,6 +122,7 @@ const start = async () => {
   app.post('/api/groups/:id/cover', uploadLimit);
   app.post('/api/articles/:id/cover', uploadLimit);
   app.post('/api/articles/:id/media', uploadLimit);
+  app.get('/api/maps/config', mapsConfigLimit);
   app.post('/api/groups/:groupId/threads/:threadId/messages', messageLimit);
   app.post('/api/events/:eventId/threads/:threadId/messages', messageLimit);
   // Keep this before API routes and any catch-all middleware so uploads are

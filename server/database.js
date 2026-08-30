@@ -180,7 +180,11 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, manager_id INT UNSIGNED NOT NULL,
         group_id INT UNSIGNED NULL, series_id INT UNSIGNED NULL, recurrence_frequency ENUM('none','daily','weekly','monthly') NOT NULL DEFAULT 'none', recurrence_interval SMALLINT UNSIGNED NOT NULL DEFAULT 1, recurrence_count SMALLINT UNSIGNED NOT NULL DEFAULT 1, occurrence_number SMALLINT UNSIGNED NOT NULL DEFAULT 1,
         title VARCHAR(200) NOT NULL, short_description VARCHAR(240) NULL, description TEXT NULL, cover_image VARCHAR(1024) NULL, category_id INT UNSIGNED NULL, type_id INT UNSIGNED NULL,
-        country VARCHAR(120) NULL, city VARCHAR(120) NULL, location VARCHAR(255) NULL, address VARCHAR(255) NULL, latitude DECIMAL(10,7) NULL, longitude DECIMAL(10,7) NULL, location_type ENUM('physical','online','tba') NOT NULL DEFAULT 'physical', location_visibility ENUM('public','registered','attendees_only','approximate') NOT NULL DEFAULT 'public',
+        country VARCHAR(120) NULL, city VARCHAR(120) NULL, location VARCHAR(255) NULL, address VARCHAR(255) NULL, latitude DECIMAL(9,6) NULL, longitude DECIMAL(9,6) NULL,
+        location_type ENUM('venue','custom','online') NOT NULL DEFAULT 'custom', location_visibility ENUM('public','registered','attendees_only','approximate') NOT NULL DEFAULT 'public',
+        venue_id INT UNSIGNED NULL,
+        custom_address_line_1 VARCHAR(255) NULL, custom_address_line_2 VARCHAR(255) NULL, custom_postal_code VARCHAR(32) NULL, custom_locality VARCHAR(120) NULL, custom_municipality VARCHAR(120) NULL, custom_region VARCHAR(120) NULL, custom_country VARCHAR(120) NULL, custom_country_code CHAR(2) NULL, custom_latitude DECIMAL(9,6) NULL, custom_longitude DECIMAL(9,6) NULL, custom_google_place_id VARCHAR(255) NULL, custom_formatted_address VARCHAR(500) NULL,
+        online_url VARCHAR(1024) NULL, online_platform VARCHAR(120) NULL,
         starts_at DATETIME NOT NULL, ends_at DATETIME NULL, timezone VARCHAR(64) NOT NULL DEFAULT 'UTC', capacity INT UNSIGNED NULL, minimum_attendees INT UNSIGNED NULL, registration_deadline DATETIME NULL, minimum_age TINYINT UNSIGNED NULL, language_code VARCHAR(12) NULL, what_to_bring TEXT NULL, meeting_instructions TEXT NULL, cancellation_policy TEXT NULL,
         pricing_type ENUM('free','paid') NOT NULL DEFAULT 'free', participation_fee DECIMAL(10,2) NOT NULL DEFAULT 0, currency CHAR(3) NOT NULL DEFAULT 'SEK', registration_type ENUM('yaroko','external','none') NOT NULL DEFAULT 'yaroko', external_registration_url VARCHAR(1024) NULL,
         status ENUM('Draft', 'Published', 'Cancelled', 'Completed', 'Archived') NOT NULL DEFAULT 'Draft',
@@ -482,13 +486,16 @@ export class Database {
         address_line_2 VARCHAR(255) NULL,
         postal_code VARCHAR(32) NULL,
         country VARCHAR(120) NULL,
+        country_code CHAR(2) NULL,
         city VARCHAR(120) NULL,
         municipality VARCHAR(120) NULL,
         region VARCHAR(120) NULL,
         address VARCHAR(255) NULL,
-        latitude DECIMAL(10,7) NULL,
-        longitude DECIMAL(10,7) NULL,
-        location_visibility ENUM('exact','approximate','private_until_booking') NOT NULL DEFAULT 'exact',
+        latitude DECIMAL(9,6) NULL,
+        longitude DECIMAL(9,6) NULL,
+        google_place_id VARCHAR(255) NULL,
+        formatted_address VARCHAR(500) NULL,
+        location_visibility ENUM('exact','approximate','private') NOT NULL DEFAULT 'exact',
         timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
         venue_type_id INT UNSIGNED NULL,
         capacity_min INT UNSIGNED NULL,
@@ -599,8 +606,55 @@ export class Database {
         starts_at DATETIME NOT NULL, ends_at DATETIME NOT NULL, status ENUM('draft','scheduled','active','paused','ended') NOT NULL DEFAULT 'draft', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX venue_promotions_active (status, starts_at, ends_at), CONSTRAINT venue_promotions_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
+      await this.migrateLocationSchema();
     })();
     return this.initialized;
+  }
+
+  async columnExists(table, column) {
+    const [rows] = await this.pool.execute(`SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1`, [table, column]);
+    return Boolean(rows[0]);
+  }
+
+  async addColumnIfMissing(table, column, definition) {
+    if (!await this.columnExists(table, column)) await this.pool.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+  }
+
+  async constraintExists(name) {
+    const [rows] = await this.pool.execute('SELECT 1 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND constraint_name = ? LIMIT 1', [name]);
+    return Boolean(rows[0]);
+  }
+
+  async migrateLocationSchema() {
+    // CREATE TABLE only affects new installations. Keep existing installations
+    // compatible by applying these additive migrations at startup.
+    const venueColumns = {
+      country_code: 'CHAR(2) NULL',
+      google_place_id: 'VARCHAR(255) NULL',
+      formatted_address: 'VARCHAR(500) NULL',
+    };
+    const eventColumns = {
+      venue_id: 'INT UNSIGNED NULL',
+      custom_address_line_1: 'VARCHAR(255) NULL', custom_address_line_2: 'VARCHAR(255) NULL', custom_postal_code: 'VARCHAR(32) NULL',
+      custom_locality: 'VARCHAR(120) NULL', custom_municipality: 'VARCHAR(120) NULL', custom_region: 'VARCHAR(120) NULL', custom_country: 'VARCHAR(120) NULL', custom_country_code: 'CHAR(2) NULL',
+      custom_latitude: 'DECIMAL(9,6) NULL', custom_longitude: 'DECIMAL(9,6) NULL', custom_google_place_id: 'VARCHAR(255) NULL', custom_formatted_address: 'VARCHAR(500) NULL',
+      online_url: 'VARCHAR(1024) NULL', online_platform: 'VARCHAR(120) NULL',
+    };
+    for (const [column, definition] of Object.entries(venueColumns)) await this.addColumnIfMissing('venues', column, definition);
+    for (const [column, definition] of Object.entries(eventColumns)) await this.addColumnIfMissing('events', column, definition);
+
+    // The old values have a clear physical equivalent. Keeping the conversion
+    // in the migration makes old event records valid under the new invariant.
+    await this.pool.execute("UPDATE events SET location_type = 'custom' WHERE location_type IN ('physical', 'tba')");
+    await this.pool.execute("ALTER TABLE events MODIFY COLUMN location_type ENUM('venue','custom','online') NOT NULL DEFAULT 'custom'");
+    await this.pool.execute("UPDATE venues SET location_visibility = 'private' WHERE location_visibility = 'private_until_booking'");
+    await this.pool.execute("ALTER TABLE venues MODIFY COLUMN location_visibility ENUM('exact','approximate','private') NOT NULL DEFAULT 'exact'");
+    // Existing installations may have been edited before this relation was
+    // introduced. Clear any orphan before adding the integrity constraint.
+    await this.pool.execute('UPDATE events e LEFT JOIN venues v ON v.id = e.venue_id SET e.venue_id = NULL WHERE e.venue_id IS NOT NULL AND v.id IS NULL');
+    if (!await this.constraintExists('events_venue_location_fk')) {
+      await this.pool.execute('ALTER TABLE events ADD CONSTRAINT events_venue_location_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE SET NULL');
+    }
   }
 
   execute(...args) { return this.pool.execute(...args); }
