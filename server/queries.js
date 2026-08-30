@@ -922,12 +922,15 @@ export class Queries {
     return result.affectedRows > 0;
   }
   async moderateVenue(venueId, moderationStatus, verificationStatus = null, isActive = null) {
-    // Each branch compares like with like. COALESCE(?, verification_status)
-    // would blend the parameter's connection collation with the column's,
-    // leaving no winner against a literal ("Illegal mix of collations").
-    // Both branches read the same value whichever order MySQL evaluates the
-    // assignments in: an omitted status leaves the column unchanged.
-    const [result] = await this.database.execute(`UPDATE venues SET moderation_status = ?, verification_status = COALESCE(?, verification_status), is_verified = CASE WHEN ? IS NULL THEN verification_status = 'verified' ELSE ? = 'verified' END, is_active = COALESCE(?, is_active), published_at = CASE WHEN ? = 'approved' AND published_at IS NULL THEN NOW() ELSE published_at END WHERE id = ?`, [moderationStatus, verificationStatus, verificationStatus, verificationStatus, isActive, moderationStatus, venueId]);
+    // Never compare a bound parameter with a SQL string literal. The driver
+    // tags parameters with its own collation, so such a comparison can leave
+    // MySQL with two COERCIBLE operands and no precedence rule to pick between
+    // them ("Illegal mix of collations"). Status strings are therefore compared
+    // in JavaScript and bound as booleans. Column-versus-literal stays in SQL
+    // because a column's collation takes precedence over a literal's, and it
+    // reads the same value whichever order MySQL evaluates the assignments in:
+    // an omitted status leaves the column unchanged.
+    const [result] = await this.database.execute(`UPDATE venues SET moderation_status = ?, verification_status = COALESCE(?, verification_status), is_verified = CASE WHEN ? IS NULL THEN verification_status = 'verified' ELSE ? END, is_active = COALESCE(?, is_active), published_at = CASE WHEN ? AND published_at IS NULL THEN NOW() ELSE published_at END WHERE id = ?`, [moderationStatus, verificationStatus, verificationStatus, verificationStatus === 'verified', isActive, moderationStatus === 'approved', venueId]);
     return result.affectedRows > 0;
   }
   async saveVenue(venueId, userId) {

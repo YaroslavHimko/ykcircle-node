@@ -194,14 +194,18 @@ test('venue moderation compares statuses without blending parameter and column c
   assert.equal(await queries.moderateVenue(5, 'approved', null, null), true);
 
   const { sql, parameters } = calls[0];
-  // A parameter blended with a column by COALESCE has no collation winner
-  // against a literal, which MySQL rejects outright.
-  assert.doesNotMatch(sql, /COALESCE\(\?, verification_status\) =/);
-  assert.match(sql, /CASE WHEN \? IS NULL THEN verification_status = 'verified' ELSE \? = 'verified' END/);
+  // Comparing a bound parameter with a SQL string literal is what MySQL
+  // rejects: the driver's collation and the literal's are both COERCIBLE, so
+  // neither takes precedence. Status comparisons must happen in JavaScript.
+  assert.doesNotMatch(sql, /\?\s*=\s*'/);
+  assert.doesNotMatch(sql, /'[^']*'\s*=\s*\?/);
+  assert.doesNotMatch(sql, /COALESCE\(\?, verification_status\)\s*=/);
+  // Column-versus-literal is safe and still carries the derivation.
+  assert.match(sql, /THEN verification_status = 'verified'/);
   // Placeholders and parameters must stay aligned as branches are added.
   assert.equal((sql.match(/\?/g) || []).length, parameters.length);
-  assert.deepEqual(parameters, ['approved', null, null, null, null, 'approved', 5]);
+  assert.deepEqual(parameters, ['approved', null, null, false, null, true, 5]);
 
-  await queries.moderateVenue(5, 'approved', 'verified', true);
-  assert.deepEqual(calls[1].parameters, ['approved', 'verified', 'verified', 'verified', true, 'approved', 5]);
+  await queries.moderateVenue(5, 'pending', 'verified', true);
+  assert.deepEqual(calls[1].parameters, ['pending', 'verified', 'verified', true, true, false, 5]);
 });
