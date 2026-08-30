@@ -819,11 +819,13 @@ export class Queries {
   async venueImageVisible(filename, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
     const visibility = privileged ? 'TRUE' : "(v.is_active = TRUE AND v.moderation_status = 'approved') OR v.owner_user_id = ? OR om.role IN ('owner','admin','manager')";
+    // publiclyVisible drives the proxy's cache header: an image readable only
+    // because the viewer manages the venue must never enter a shared cache.
     const [rows] = await this.database.execute(
-      `SELECT m.id FROM venue_media m JOIN venues v ON v.id = m.venue_id LEFT JOIN organization_members om ON om.organization_id = v.organization_id AND om.user_id = ? WHERE m.filename = ? AND (${visibility})`,
+      `SELECT m.id, (v.is_active = TRUE AND v.moderation_status = 'approved') AS publiclyVisible FROM venue_media m JOIN venues v ON v.id = m.venue_id LEFT JOIN organization_members om ON om.organization_id = v.organization_id AND om.user_id = ? WHERE m.filename = ? AND (${visibility})`,
       privileged ? [userId, filename] : [userId, filename, userId],
     );
-    return rows[0] || null;
+    return rows[0] ? { ...rows[0], publiclyVisible: Boolean(rows[0].publiclyVisible) } : null;
   }
   async venue(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);

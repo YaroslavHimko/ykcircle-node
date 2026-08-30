@@ -164,7 +164,7 @@ export class Api {
       } catch { /* Treat invalid optional credentials as anonymous. */ }
       return next();
     };
-    app.get(venueUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); if (!await this.queries.venueImageVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null) || !await this.venueFtpService.streamVenueImage(req.params.filename, res)) return res.status(404).json({ error: 'Image not found.' }); } catch (error) { console.error('Venue image proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load image.' }); } });
+    app.get(venueUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); res.set('Vary', 'Authorization'); const visible = await this.queries.venueImageVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null); if (!visible || !await this.venueFtpService.streamVenueImage(req.params.filename, res, visible.publiclyVisible ? undefined : 'private, no-store')) return res.status(404).json({ error: 'Image not found.' }); } catch (error) { console.error('Venue image proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load image.' }); } });
     const anonymisedIp = (req) => crypto.createHash('sha256').update(`${this.authSecret}:${req.ip || 'unknown'}`).digest('hex').slice(0, 16);
     const writeLimitLog = (scope) => (req, { retryAfter, max, windowMs }) => console.warn('Venue/event write rate limit reached.', {
       scope,

@@ -147,3 +147,37 @@ test('returns only the recurring venue hours for one requested date', async () =
   assert.match(calls[1].sql, /weekday = \?/);
   assert.deepEqual(calls[1].parameters, [7, 1]);
 });
+
+test('venue image visibility admits managers of an unapproved venue without widening it publicly', async () => {
+  const calls = [];
+  const stub = (row) => new Queries({
+    execute: async (sql, parameters) => {
+      calls.push({ sql, parameters });
+      return [row ? [row] : []];
+    },
+  });
+  const filename = 'venue-4-1788107654373-s044wf1o.png';
+
+  // An anonymous visitor keeps the approved-and-active predicate, and binds
+  // NULL for both membership and ownership so neither can match.
+  const anonymous = await stub({ id: 1, publiclyVisible: 1 }).venueImageVisible(filename);
+  assert.deepEqual(anonymous, { id: 1, publiclyVisible: true });
+  assert.match(calls[0].sql, /v\.is_active = TRUE AND v\.moderation_status = 'approved'/);
+  assert.deepEqual(calls[0].parameters, [null, filename, null]);
+
+  // An owner or organisation manager reaches a draft venue's image, and the
+  // owner id is bound after the filename to match the predicate order.
+  const owner = await stub({ id: 1, publiclyVisible: 0 }).venueImageVisible(filename, 12, 'venue_owner');
+  assert.deepEqual(owner, { id: 1, publiclyVisible: false });
+  assert.match(calls[1].sql, /v\.owner_user_id = \?/);
+  assert.match(calls[1].sql, /om\.role IN \('owner','admin','manager'\)/);
+  assert.deepEqual(calls[1].parameters, [12, filename, 12]);
+
+  // A platform manager bypasses the predicate entirely and binds one id only.
+  const privileged = await stub({ id: 1, publiclyVisible: 0 }).venueImageVisible(filename, 3, 'manager');
+  assert.equal(privileged.publiclyVisible, false);
+  assert.match(calls[2].sql, /WHERE m\.filename = \? AND \(TRUE\)/);
+  assert.deepEqual(calls[2].parameters, [3, filename]);
+
+  assert.equal(await stub(null).venueImageVisible(filename, 99, 'customer'), null);
+});
