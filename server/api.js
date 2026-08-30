@@ -89,15 +89,20 @@ export class Api {
     const eventCoverUrl = (filename, token = null) => filename ? `${this.eventFtpService.publicPath()}/${encodeURIComponent(filename)}${token ? `?token=${encodeURIComponent(token)}` : ''}` : null;
     // An event's cover is publicly cacheable once it is Published and Public;
     // otherwise only its manager (or a site manager/admin) gets a signed
-    // token, mirroring the venue image contract.
+    // token, mirroring the venue image contract. Unlike venues, an event's
+    // stored cover_image is historically a full path (uploadEventCover
+    // returns publicPath()/filename, not a bare filename), so it must be
+    // reduced to a filename before it becomes a route param or a token
+    // payload - otherwise the URL doubles the upload path and the proxy 404s.
     const decorateEventImage = (event, viewer = {}) => {
       if (!event || !event.coverImage) return event;
+      const filename = String(event.coverImage).split('/').pop();
       const { userId = null, role = null } = viewer;
       const privileged = ['manager', 'admin'].includes(role);
       const isPublic = event.status === 'Published' && event.visibility === 'Public';
       const canManage = privileged || (userId != null && event.managerId === userId);
-      const token = !isPublic && canManage ? eventCoverToken(event.coverImage) : null;
-      const url = eventCoverUrl(event.coverImage, token);
+      const token = !isPublic && canManage ? eventCoverToken(filename) : null;
+      const url = eventCoverUrl(filename, token);
       return { ...event, coverImageUrl: url, thumbnailUrl: url };
     };
     const decorateEventImages = (events, viewer) => events.map((event) => decorateEventImage(event, viewer));

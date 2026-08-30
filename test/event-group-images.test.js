@@ -57,6 +57,76 @@ const startApi = async (t, { eventCoverVisible, groupForCover }) => {
   return { baseUrl: `http://127.0.0.1:${server.address().port}`, streamed };
 };
 
+// uploadEventCover() historically stores publicPath()/filename (a full path)
+// in cover_image, unlike venues/groups which store a bare filename. These two
+// pin that decorateEventImage reduces it to a filename before it becomes a
+// route param or a token payload - otherwise the URL doubles the upload path.
+test('a public event exposes coverImageUrl without doubling a legacy full-path cover_image', async (t) => {
+  const app = express();
+  app.use(express.json());
+  new Api({
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: SECRET, maps: { enabled: false } } },
+    database: {},
+    queries: {
+      initialize: async () => {},
+      richEvent: async () => ({ id: 1, managerId: 7, status: 'Published', visibility: 'Public', coverImage: '/uploads/event-covers/event-1-1786906288459.png', groupId: null }),
+      publicEventParticipants: async () => [],
+    },
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: { publicPath: () => '/uploads/event-covers' },
+    groupFtpService: ftp('/uploads/group-covers'),
+    articleFtpService: ftp('/uploads/articles'),
+    venueFtpService: ftp('/uploads/venue-images'),
+  }).register(app);
+  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  const response = await fetch(`${baseUrl}/api/events/1`);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.coverImageUrl, '/uploads/event-covers/event-1-1786906288459.png');
+});
+
+test('a private draft event tokens the bare cover filename, not the stored full path', async (t) => {
+  const app = express();
+  app.use(express.json());
+  const managerId = 7;
+  new Api({
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: SECRET, maps: { enabled: false } } },
+    database: {},
+    queries: {
+      initialize: async () => {},
+      findUserById: async (id) => (id === managerId ? { id: managerId, role: 'customer', sessionVersion: 1 } : null),
+      richEvent: async () => ({ id: 1, managerId, status: 'Draft', visibility: 'Private', coverImage: '/uploads/event-covers/event-1-1786906288459.png', groupId: null }),
+      publicEventParticipants: async () => [],
+      eventParticipantStatus: async () => null,
+    },
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: { publicPath: () => '/uploads/event-covers' },
+    groupFtpService: ftp('/uploads/group-covers'),
+    articleFtpService: ftp('/uploads/articles'),
+    venueFtpService: ftp('/uploads/venue-images'),
+  }).register(app);
+  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const payload = Buffer.from(JSON.stringify({ id: managerId, sessionVersion: 1, exp: Date.now() + 60000 })).toString('base64url');
+  const authToken = `${payload}.${crypto.createHmac('sha256', SECRET).update(payload).digest('base64url')}`;
+
+  const response = await fetch(`${baseUrl}/api/events/1`, { headers: { Authorization: `Bearer ${authToken}` } });
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  const [urlPath, query] = body.coverImageUrl.split('?');
+  assert.equal(urlPath, '/uploads/event-covers/event-1-1786906288459.png');
+  const [tokenPayload] = new URLSearchParams(query).get('token').split('.');
+  assert.equal(JSON.parse(Buffer.from(tokenPayload, 'base64url').toString()).filename, 'event-1-1786906288459.png');
+});
+
 test('a signed token serves a draft event cover without letting it be cached', async (t) => {
   const filename = 'event-4-1788108214313-aaaaaaaa.png';
   const { baseUrl, streamed } = await startApi(t, { eventCoverVisible: async () => { throw new Error('must not query visibility once a token is valid'); }, groupForCover: async () => null });
