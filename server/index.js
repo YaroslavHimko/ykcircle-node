@@ -64,6 +64,7 @@ const start = async () => {
   });
   const ftpService = new FtpService(config.ftp.profilePictures);
   const eventFtpService = new FtpService(config.ftp.events);
+  const venueFtpService = new FtpService(config.ftp.venues);
   const groupFtpService = new FtpService(config.ftp.groups);
   const articleFtpService = new FtpService(config.ftp.articles);
   const app = express();
@@ -112,7 +113,7 @@ const start = async () => {
   // Keep this before API routes and any catch-all middleware so uploads are
   // always served as files by the API process.
   app.use('/uploads', express.static(path.resolve(process.cwd(), config.runtime.uploadsDir)));
-  new Api({ config, database, queries, emailService, ftpService, eventFtpService, groupFtpService, articleFtpService }).register(app);
+  new Api({ config, database, queries, emailService, ftpService, eventFtpService, venueFtpService, groupFtpService, articleFtpService }).register(app);
   await queries.initialize();
   await queries.configureRetentionPolicies(config.runtime.retention);
   const runRetention = async () => { try { await queries.applyRetentionPolicies(config.runtime.retention); } catch (error) { console.error('Retention cleanup failed:', error.message); } };

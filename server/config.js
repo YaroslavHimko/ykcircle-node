@@ -64,6 +64,16 @@ export default {
       secure: process.env.FTP_EVENT_SECURE === 'true',
       timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
     },
+    venues: {
+      host: process.env.FTP_VENUE_HOST || process.env.FTP_HOST || process.env.FTP_HOSTNAME || process.env.FTP_IP,
+      user: process.env.FTP_VENUE_USERNAME,
+      password: process.env.FTP_VENUE_PASSWORD,
+      uploadPath: process.env.FTP_VENUE_UPLOAD_PATH,
+      publicUrl: process.env.FTP_VENUE_PUBLIC_URL || `${apiUrl}/uploads/venue-images`,
+      tlsServername: process.env.FTP_VENUE_TLS_SERVERNAME || process.env.FTP_TLS_SERVERNAME,
+      secure: process.env.FTP_VENUE_SECURE === 'true',
+      timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
+    },
     groups: {
       host: process.env.FTP_GROUP_HOST || process.env.FTP_HOST || process.env.FTP_HOSTNAME || process.env.FTP_IP,
       user: process.env.FTP_GROUP_USERNAME,

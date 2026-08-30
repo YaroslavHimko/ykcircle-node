@@ -16,7 +16,7 @@ test('serves public API resources and validates unsubscribe requests', async (t)
   app.use(express.json());
   new Api({
     config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: 'a sufficiently random test secret that exceeds thirty two characters', maps: { enabled: true, browserApiKey: 'restricted-browser-key', serverApiKey: 'must-not-leak', requiresConsent: true } } },
-    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
   }).register(app);
   const server = await new Promise((resolve) => {
     const listener = app.listen(0, () => resolve(listener));

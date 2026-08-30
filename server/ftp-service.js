@@ -136,6 +136,10 @@ export class FtpService {
     return this.streamImage(filename, this.config.eventUploadPath || this.config.uploadPath, response);
   }
 
+  async streamVenueImage(filename, response) {
+    return this.streamImage(filename, this.config.uploadPath, response);
+  }
+
   async streamGroupCover(filename, response) {
     return this.streamImage(filename, this.config.uploadPath, response, 'private, no-store');
   }

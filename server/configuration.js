@@ -86,6 +86,7 @@ export class Configuration {
     const ftpValues = values.ftp || {};
     const profile = ftpValues.profilePictures || values.ftpProfilePictures;
     const events = ftpValues.events || values.ftpEvents;
+    const venues = ftpValues.venues || values.ftpVenues;
     const groups = ftpValues.groups || values.ftpGroups;
     const articles = ftpValues.articles || values.ftpArticles;
     this.ftp = {
@@ -107,6 +108,16 @@ export class Configuration {
         publicUrl: process.env.FTP_EVENT_PUBLIC_URL || `${apiUrl}/uploads/event-covers`,
         tlsServername: process.env.FTP_EVENT_TLS_SERVERNAME || process.env.FTP_TLS_SERVERNAME,
         secure: process.env.FTP_EVENT_SECURE === 'true',
+        timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
+      }),
+      venues: venues || ftpConfig({
+        host: process.env.FTP_VENUE_HOST || process.env.FTP_HOST || process.env.FTP_IP,
+        user: process.env.FTP_VENUE_USERNAME,
+        password: process.env.FTP_VENUE_PASSWORD,
+        uploadPath: process.env.FTP_VENUE_UPLOAD_PATH,
+        publicUrl: process.env.FTP_VENUE_PUBLIC_URL || `${apiUrl}/uploads/venue-images`,
+        tlsServername: process.env.FTP_VENUE_TLS_SERVERNAME || process.env.FTP_TLS_SERVERNAME,
+        secure: process.env.FTP_VENUE_SECURE === 'true',
         timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
       }),
       groups: groups || ftpConfig({
@@ -156,6 +167,7 @@ export class Configuration {
     };
     overrideFtp(this.ftp.profilePictures, 'FTP_PROFILE');
     overrideFtp(this.ftp.events, 'FTP_EVENT');
+    overrideFtp(this.ftp.venues, 'FTP_VENUE');
     overrideFtp(this.ftp.groups, 'FTP_GROUP');
     overrideFtp(this.ftp.articles, 'FTP_ARTICLE');
 
@@ -237,6 +249,7 @@ export class Configuration {
     this.port = this.runtime.port;
     this.ftpProfilePictures = this.ftp.profilePictures;
     this.ftpEvents = this.ftp.events;
+    this.ftpVenues = this.ftp.venues;
     this.ftpGroups = this.ftp.groups;
     this.ftpArticles = this.ftp.articles;
   }

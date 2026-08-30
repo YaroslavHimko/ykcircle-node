@@ -27,13 +27,18 @@ test('keeps grouped configuration and compatibility aliases in sync', () => {
   const config = new Configuration({
     ...values(),
     email: { from: { noReply: 'notices@example.test' }, urls: { login: 'https://ykcircle.test/sign-in' } },
-    ftp: { articles: { host: 'ftp.example.test', user: 'writer', password: 'secret', uploadPath: '/uploads/articles', publicUrl: 'https://cdn.example.test/articles' } },
+    ftp: {
+      venues: { host: 'ftp.example.test', user: 'venue-writer', password: 'secret', uploadPath: '/uploads/venues', publicUrl: 'https://cdn.example.test/venues' },
+      articles: { host: 'ftp.example.test', user: 'writer', password: 'secret', uploadPath: '/uploads/articles', publicUrl: 'https://cdn.example.test/articles' },
+    },
   });
 
   assert.equal(config.noReplyFrom, 'notices@example.test');
   assert.equal(config.loginUrl, 'https://ykcircle.test/sign-in');
   assert.equal(config.ftpArticles, config.ftp.articles);
   assert.equal(config.ftp.articles.publicUrl, 'https://cdn.example.test/articles');
+  assert.equal(config.ftpVenues, config.ftp.venues);
+  assert.equal(config.ftp.venues.publicUrl, 'https://cdn.example.test/venues');
 });
 
 test('renders controller details into the current privacy notice', async () => {
