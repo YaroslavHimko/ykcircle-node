@@ -741,7 +741,7 @@ export class Queries {
   }
   async venue(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, member.role AS membershipRole, type.slug AS venueType, type.name AS venueTypeName FROM venues v JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN organization_members member ON member.organization_id = v.organization_id AND member.user_id = ? LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE v.id = ? AND (${privileged ? 'TRUE' : "(v.is_active = TRUE AND v.moderation_status = 'approved') OR v.owner_user_id = ? OR member.user_id IS NOT NULL"})`, privileged ? [userId, id] : [userId, id, userId]);
+    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, member.role AS membershipRole, type.slug AS venueType, type.name AS venueTypeName FROM venues v JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN organization_members member ON member.organization_id = v.organization_id AND member.user_id = ? LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE v.id = ? AND (${privileged ? 'TRUE' : "COALESCE(v.is_active, TRUE) = TRUE OR v.owner_user_id = ? OR member.user_id IS NOT NULL"})`, privileged ? [userId, id] : [userId, id, userId]);
     if (!rows[0]) return null;
     const managed = privileged || rows[0].ownerUserId === userId || Boolean(rows[0].membershipRole);
     return { ...await this.decorateVenue(rows[0], { publicView: !managed }), availability: await this.venueAvailability(id) };
@@ -762,7 +762,7 @@ export class Queries {
         parameters = [userId, userId];
       }
     } else if (!privileged) {
-      filter = "COALESCE(v.is_active, TRUE) = TRUE AND v.moderation_status = 'approved'";
+      filter = 'COALESCE(v.is_active, TRUE) = TRUE';
       if (userId !== null) {
         filter = `(${filter} OR v.owner_user_id = ?)`;
         parameters = [userId];
@@ -827,12 +827,12 @@ export class Queries {
     return result.affectedRows > 0;
   }
   async saveVenue(venueId, userId) {
-    const [result] = await this.database.execute('INSERT IGNORE INTO saved_venues (user_id, venue_id) SELECT ?, id FROM venues WHERE id = ? AND is_active = TRUE AND moderation_status = \'approved\'', [userId, venueId]);
+    const [result] = await this.database.execute('INSERT IGNORE INTO saved_venues (user_id, venue_id) SELECT ?, id FROM venues WHERE id = ? AND is_active = TRUE', [userId, venueId]);
     return result.affectedRows > 0;
   }
   async unsaveVenue(venueId, userId) { const [result] = await this.database.execute('DELETE FROM saved_venues WHERE venue_id = ? AND user_id = ?', [venueId, userId]); return result.affectedRows > 0; }
   async savedVenues(userId) {
-    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, type.slug AS venueType, type.name AS venueTypeName, FALSE AS sponsored FROM saved_venues saved JOIN venues v ON v.id = saved.venue_id JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE saved.user_id = ? AND v.is_active = TRUE AND v.moderation_status = 'approved' ORDER BY saved.created_at DESC`, [userId]);
+    const [rows] = await this.database.execute(`SELECT ${this.venueColumns()}, owner.name AS ownerName, organization.name AS organizationName, organization.slug AS organizationSlug, type.slug AS venueType, type.name AS venueTypeName, FALSE AS sponsored FROM saved_venues saved JOIN venues v ON v.id = saved.venue_id JOIN users owner ON owner.id = v.owner_user_id LEFT JOIN organizations organization ON organization.id = v.organization_id LEFT JOIN venue_types type ON type.id = v.venue_type_id WHERE saved.user_id = ? AND v.is_active = TRUE ORDER BY saved.created_at DESC`, [userId]);
     return Promise.all(rows.map((venue) => this.decorateVenue(venue, { publicView: true })));
   }
   async similarVenues(venueId, userId = null, role = null) {

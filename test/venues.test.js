@@ -29,7 +29,7 @@ test('a customer sees active venues and their own inactive venues', async () => 
 
   await queries.venuesForViewer(42, 'customer');
 
-  assert.match(calls[0].sql, /COALESCE\(v\.is_active, TRUE\) = TRUE AND v\.moderation_status = 'approved' OR v\.owner_user_id = \?/);
+  assert.match(calls[0].sql, /COALESCE\(v\.is_active, TRUE\) = TRUE OR v\.owner_user_id = \?/);
   assert.deepEqual(calls[0].parameters, [42]);
 });
 
@@ -66,7 +66,7 @@ test('a manager can see every venue, including inactive and managed listings', a
   assert.deepEqual(calls[1].parameters, []);
 });
 
-test('only exposes approved venues publicly and labels active promotions as sponsored', async () => {
+test('only exposes active venues publicly and labels active promotions as sponsored', async () => {
   const calls = [];
   const queries = new Queries({
     execute: async (sql, parameters) => {
@@ -77,7 +77,8 @@ test('only exposes approved venues publicly and labels active promotions as spon
 
   await queries.venuesForViewer(null, null, { city: 'Stockholm', venueType: 'event-space', minCapacity: 50, maxPrice: 5000, verifiedOnly: true });
 
-  assert.match(calls[0].sql, /v\.is_active, TRUE\) = TRUE AND v\.moderation_status = 'approved'/);
+  assert.match(calls[0].sql, /COALESCE\(v\.is_active, TRUE\) = TRUE/);
+  assert.doesNotMatch(calls[0].sql, /moderation_status = 'approved'/);
   assert.match(calls[0].sql, /type\.slug = \?/);
   assert.match(calls[0].sql, /COALESCE\(v\.capacity_max, v\.standing_capacity, v\.seated_capacity, 0\) >= \?/);
   assert.match(calls[0].sql, /v\.verification_status = 'verified'/);
