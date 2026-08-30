@@ -6,6 +6,8 @@ test('validates forum scopes before using table names in SQL', () => {
   const queries = new Queries({ execute: async () => [[]] });
 
   assert.deepEqual(queries.forumTables('group'), { threads: 'group_forum_threads', messages: 'group_forum_messages', owner: 'group_id' });
+  assert.deepEqual(queries.forumTables('event'), { threads: 'event_forum_threads', messages: 'event_forum_messages', owner: 'event_id' });
+  assert.throws(() => queries.forumTables('community'), /Invalid forum scope/);
   assert.throws(() => queries.forumTables('group; DROP TABLE users'), /Invalid forum scope/);
 });
 

@@ -12,7 +12,7 @@
 Depending on use of YKCircle, we process:
 - account data: name, email, authentication identifiers, verification status;
 - profile data: image, bio, city, languages, interests;
-- community data: posts, group memberships, event participation, responses, reviews, images;
+- community data: group memberships, event participation, reviews, images;
 - organizer/business data: organization details, event details, attendee-management information;
 - location data: selected city, venue coordinates, optional user-provided activity location;
 - technical data: IP address, device/browser data, security logs, session identifiers;
@@ -27,7 +27,7 @@ The current purposes and legal bases are:
 | Purpose | Indicative basis |
 |---|---|
 | Account creation and Platform delivery | Contract |
-| Free account, profile, community, group, event and messaging features | Contract |
+| Free account, profile, group, event and messaging features | Contract |
 | Security/fraud prevention | Legitimate interests |
 | Content moderation | Legitimate interests / legal obligation where applicable |
 | Non-essential analytics | Consent where required |
@@ -35,7 +35,7 @@ The current purposes and legal bases are:
 
 
 ## 4. Public content and Google
-Public posts, events, groups, profiles, business listings, and reviews may be indexed by search engines. The UI must clearly tell users when content is public and potentially searchable.
+Public events, groups, profiles, business listings, and reviews may be indexed by search engines. The UI must clearly tell users when content is public and potentially searchable.
 
 Private, members-only, draft, removed, or restricted content must not be intentionally indexed.
 

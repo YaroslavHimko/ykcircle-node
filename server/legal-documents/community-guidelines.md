@@ -4,7 +4,7 @@
 
 YKCircle exists to help people make real plans, meet through shared interests, create communities, and organize events.
 
-These rules apply to profiles, posts, groups, events, comments/messages, images, reviews, business listings, and organizer activity.
+These rules apply to profiles, groups, events, comments/messages, images, reviews, business listings, and organizer activity.
 
 ## 1. Be authentic
 No impersonation, deceptive identities, fake businesses, or manipulation of reviews/attendance.
@@ -37,34 +37,31 @@ Only upload images you have the right to use. Illegal sexual content, exploitati
 
 Images may be automatically screened and manually reviewed.
 
-## 10. Community posts
-Posts should represent a genuine current intention. Repetitive reposting to manipulate visibility is prohibited. Posts may expire automatically.
-
-## 11. Groups
+## 10. Groups
 Private groups must remain private and must not be exposed through public navigation/search.
 
-## 12. Reviews
+## 11. Reviews
 Reviews must reflect genuine experience. Fake, incentivized misleading, coercive, or retaliatory reviews are prohibited.
 
-## 13. Spam
+## 12. Spam
 No repetitive unsolicited messages, mass posting, scraping users for marketing, or unauthorized automation.
 
-## 14. Reporting
-Use Report on the relevant post, image, group, event, review, profile, or business listing.
+## 13. Reporting
+Use Report on the relevant image, group, event, review, profile, or business listing.
 
 Illegal-content reporting: [REPORT ILLEGAL CONTENT URL]  
 Moderation contact: [MODERATION EMAIL]
 
-## 15. Moderation actions
+## 14. Moderation actions
 YKCircle may warn, request edits, reduce visibility, noindex, hide, reject, remove, suspend features, or suspend/terminate accounts.
 
 Where applicable, users will receive a reason and appeal route.
 
-## 16. Appeals
+## 15. Appeals
 Appeal here: [APPEAL URL]
 
-## 17. Emergencies
+## 16. Emergencies
 YKCircle is not an emergency service. If someone is in immediate danger, contact the relevant emergency authorities.
 
-## 18. Principle
+## 17. Principle
 **Find people → make a plan → meet responsibly.**

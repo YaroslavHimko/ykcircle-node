@@ -2,7 +2,7 @@
 
 > Last updated: [DATE]
 
-These Terms govern access to and use of YKCircle, including the website, mobile applications, community features, event tools, organizer tools, business listings, and related services.
+These Terms govern access to and use of YKCircle, including the website, mobile applications, event tools, organizer tools, business listings, and related services.
 
 **Operator:** [LEGAL COMPANY NAME], acting personally until a future company migration is announced.
 **Organisation number:** [ORG NUMBER]  
@@ -13,7 +13,7 @@ These Terms govern access to and use of YKCircle, including the website, mobile 
 By creating an account or using functionality that requires acceptance of these Terms, you agree to them.
 
 ## 1. What YKCircle is
-YKCircle helps people discover events, activities, groups, places, community posts, organizers, venues, and service providers. Unless checkout explicitly says otherwise, YKCircle is a platform provider and is not the organizer of third-party events.
+YKCircle helps people discover events, activities, groups, places, organizers, venues, and service providers. Unless checkout explicitly says otherwise, YKCircle is a platform provider and is not the organizer of third-party events.
 
 ## 2. Eligibility
 You must be at least **[MINIMUM AGE]** years old to create an account. If minors are later allowed, introduce separate age-appropriate safety and privacy safeguards before launch.
@@ -22,7 +22,7 @@ You must be at least **[MINIMUM AGE]** years old to create an account. If minors
 You are responsible for keeping credentials secure and information accurate. Do not impersonate others, create deceptive accounts, sell accounts, or automate abusive account creation.
 
 ## 4. User content
-Users may publish profiles, posts, groups, events, images, reviews, recommendations, and business listings. You retain ownership but grant YKCircle a non-exclusive licence to host, process, display, resize, moderate, and distribute the content as necessary to operate the Platform.
+Users may publish profiles, groups, events, images, reviews, recommendations, and business listings. You retain ownership but grant YKCircle a non-exclusive licence to host, process, display, resize, moderate, and distribute the content as necessary to operate the Platform.
 
 You must have the right to upload and publish the content you submit.
 

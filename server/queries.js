@@ -110,13 +110,12 @@ export class Queries {
       if (!user) { await connection.rollback(); return null; }
       const deletedEmail = `deleted-${user.id}-${Date.now()}@deleted.invalid`;
       await connection.execute("UPDATE users SET name = 'Deleted user', email = ?, phone = NULL, profile_picture = NULL, password_hash = ?, isEmailConfirmed = FALSE, session_version = session_version + 1, deleted_at = NOW() WHERE id = ?", [deletedEmail, `deleted:${Date.now()}`, id]);
-      await connection.execute("UPDATE community_posts SET status = 'removed', visibility = 'private', is_indexable = FALSE WHERE author_user_id = ?", [id]);
       await connection.execute("UPDATE events SET deleted_at = NOW(), status = 'Archived' WHERE manager_id = ? AND deleted_at IS NULL", [id]);
       await connection.execute("UPDATE event_groups SET visibility = 'Private', status = 'archived' WHERE organizer_id = ?", [id]);
       await connection.execute('UPDATE venues SET is_active = FALSE WHERE owner_user_id = ?', [id]);
       await connection.execute("UPDATE articles SET status = 'removed', is_indexable = FALSE WHERE author_user_id = ?", [id]);
-      for (const table of ['community_post_conversation_messages', 'community_post_forum_messages', 'group_forum_messages', 'event_forum_messages']) {
-        const authorColumn = table === 'community_post_conversation_messages' ? 'sender_user_id' : 'author_user_id';
+      for (const table of ['group_forum_messages', 'event_forum_messages']) {
+        const authorColumn = 'author_user_id';
         await connection.execute(`UPDATE ${table} SET body = '[Deleted]' WHERE ${authorColumn} = ?`, [id]);
       }
       await connection.execute('INSERT INTO account_deletion_jobs (user_id, requested_by_user_id, status, details, completed_at) VALUES (?, ?, \'completed\', ?, NOW())', [id, id, JSON.stringify({ profilePicture: user.profilePicture, contentAnonymised: true })]);
@@ -192,7 +191,7 @@ export class Queries {
     const privileged = ['manager', 'admin'].includes(role);
     const managedFilter = managedOnly ? (privileged ? 'TRUE' : 'g.organizer_id = ?') : (membershipOnly ? 'g.organizer_id = ? OR gm.user_id IS NOT NULL' : (privileged ? 'TRUE' : "g.visibility = 'Public' OR g.organizer_id = ? OR gm.user_id IS NOT NULL"));
     const params = (privileged && !membershipOnly) ? [userId, userId] : [userId, userId, userId];
-    const [rows] = await this.database.execute(`SELECT g.id, g.organizer_id AS organizerId, g.name, g.slug, g.description, g.cover_image AS coverImage, CASE WHEN g.cover_image IS NULL THEN NULL ELSE CONCAT('/uploads/group-covers/', g.cover_image) END AS coverImageUrl, g.visibility, g.city, g.category_id AS categoryId, g.source_post_id AS sourcePostId, g.status, g.created_at AS createdAt, g.updated_at AS updatedAt,
+    const [rows] = await this.database.execute(`SELECT g.id, g.organizer_id AS organizerId, g.name, g.slug, g.description, g.cover_image AS coverImage, CASE WHEN g.cover_image IS NULL THEN NULL ELSE CONCAT('/uploads/group-covers/', g.cover_image) END AS coverImageUrl, g.visibility, g.status, g.created_at AS createdAt, g.updated_at AS updatedAt,
       owner.name AS organizerName, COUNT(DISTINCT members.user_id) AS memberCount, gm.role AS membershipRole, group_ratings.ratingAverage, COALESCE(group_ratings.ratedEventCount, 0) AS ratedEventCount,
       IF(gm.user_id IS NULL, FALSE, TRUE) AS isMember, IF(g.organizer_id = ?, TRUE, FALSE) AS isOrganizer
       FROM event_groups g JOIN users owner ON owner.id = g.organizer_id
@@ -205,7 +204,7 @@ export class Queries {
   }
   async group(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT g.id, g.organizer_id AS organizerId, g.name, g.slug, g.description, g.cover_image AS coverImage, CASE WHEN g.cover_image IS NULL THEN NULL ELSE CONCAT('/uploads/group-covers/', g.cover_image) END AS coverImageUrl, g.visibility, g.city, g.category_id AS categoryId, g.source_post_id AS sourcePostId, g.status, g.created_at AS createdAt, g.updated_at AS updatedAt,
+    const [rows] = await this.database.execute(`SELECT g.id, g.organizer_id AS organizerId, g.name, g.slug, g.description, g.cover_image AS coverImage, CASE WHEN g.cover_image IS NULL THEN NULL ELSE CONCAT('/uploads/group-covers/', g.cover_image) END AS coverImageUrl, g.visibility, g.status, g.created_at AS createdAt, g.updated_at AS updatedAt,
       owner.name AS organizerName, COUNT(DISTINCT members.user_id) AS memberCount, gm.role AS membershipRole, group_ratings.ratingAverage, COALESCE(group_ratings.ratedEventCount, 0) AS ratedEventCount,
       IF(gm.user_id IS NULL, FALSE, TRUE) AS isMember, IF(g.organizer_id = ?, TRUE, FALSE) AS isOrganizer
       FROM event_groups g JOIN users owner ON owner.id = g.organizer_id
@@ -497,6 +496,7 @@ export class Queries {
     await this.database.execute('DELETE FROM event_invitations WHERE id = ?', [invitation.id]);
     return { eventId: invitation.eventId, participantId: participant.insertId, name: invitation.name, email: invitation.email, requiresRegistration: false, status: 'Pending', paymentStatus };
   }
+  /* Retired Communities data-access methods.
   async communityPostTypes() { const [rows] = await this.database.execute('SELECT id, type_key AS typeKey, name, description, sort_order AS sortOrder FROM community_post_types WHERE is_active = TRUE ORDER BY sort_order, name'); return rows; }
   async communityCategories() { const [rows] = await this.database.execute('SELECT id, parent_id AS parentId, name, slug, description, sort_order AS sortOrder FROM community_categories WHERE is_active = TRUE ORDER BY parent_id IS NOT NULL, sort_order, name'); return rows; }
   async validCommunityTaxonomy(postTypeId, categoryId, subcategoryId = null) { const [types] = await this.database.execute('SELECT id FROM community_post_types WHERE id = ? AND is_active = TRUE', [postTypeId]); if (!types[0]) return false; const [categories] = await this.database.execute('SELECT id FROM community_categories WHERE id = ? AND parent_id IS NULL AND is_active = TRUE', [categoryId]); if (!categories[0]) return false; if (subcategoryId === null) return true; const [subcategories] = await this.database.execute('SELECT id FROM community_categories WHERE id = ? AND parent_id = ? AND is_active = TRUE', [subcategoryId, categoryId]); return Boolean(subcategories[0]); }
@@ -572,7 +572,8 @@ export class Queries {
   async communityConversationMessages(conversationId) { const [rows] = await this.database.execute('SELECT m.id, m.conversation_id AS conversationId, m.sender_user_id AS senderUserId, m.body, m.created_at AS createdAt, u.name AS senderName, u.profile_picture AS senderProfilePicture FROM community_post_conversation_messages m JOIN users u ON u.id = m.sender_user_id WHERE m.conversation_id = ? ORDER BY m.id ASC', [conversationId]); return rows; }
   async addCommunityConversationMessage(conversationId, senderUserId, body) { const [result] = await this.database.execute('INSERT INTO community_post_conversation_messages (conversation_id, sender_user_id, body) VALUES (?, ?, ?)', [conversationId, senderUserId, body]); await this.database.execute('UPDATE community_post_conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?', [conversationId]); return result.insertId; }
   async markCommunityConversationRead(conversationId, userId, lastMessageId) { if (!lastMessageId) return; await this.database.execute('INSERT INTO community_post_conversation_reads (conversation_id, user_id, last_read_message_id) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE last_read_message_id = GREATEST(last_read_message_id, VALUES(last_read_message_id)), read_at = CURRENT_TIMESTAMP', [conversationId, userId, lastMessageId]); }
-  forumTables(scope) { const tables = { community: { threads: 'community_post_forum_threads', messages: 'community_post_forum_messages', owner: 'post_id' }, group: { threads: 'group_forum_threads', messages: 'group_forum_messages', owner: 'group_id' }, event: { threads: 'event_forum_threads', messages: 'event_forum_messages', owner: 'event_id' } }; if (!tables[scope]) throw new Error('Invalid forum scope.'); return tables[scope]; }
+  */
+  forumTables(scope) { const tables = { group: { threads: 'group_forum_threads', messages: 'group_forum_messages', owner: 'group_id' }, event: { threads: 'event_forum_threads', messages: 'event_forum_messages', owner: 'event_id' } }; if (!tables[scope]) throw new Error('Invalid forum scope.'); return tables[scope]; }
   async forumThreads(scope, ownerId, userId = null) { const table = this.forumTables(scope); const [rows] = await this.database.execute(`SELECT t.id, t.${table.owner} AS ownerId, t.author_user_id AS authorUserId, t.title, t.status, t.created_at AS createdAt, t.updated_at AS updatedAt, u.name AS authorName, u.profile_picture AS authorProfilePicture, COUNT(m.id) AS messageCount,
     SUM(CASE WHEN m.author_user_id <> ? AND m.id > COALESCE(read_state.last_read_message_id, 0) THEN 1 ELSE 0 END) AS unreadCount
     FROM ${table.threads} t JOIN users u ON u.id = t.author_user_id LEFT JOIN forum_thread_reads read_state ON read_state.scope = ? AND read_state.thread_id = t.id AND read_state.user_id = ? LEFT JOIN ${table.messages} m ON m.thread_id = t.id WHERE t.${table.owner} = ? AND t.status <> 'removed' GROUP BY t.id, u.name, u.profile_picture, read_state.last_read_message_id ORDER BY t.updated_at DESC`, [userId, scope, userId, ownerId]); return rows; }
@@ -594,6 +595,7 @@ export class Queries {
     return privileged || event.managerId === userId || (event.status === 'Published' && event.visibility === 'Public') || (Boolean(userId) && (Number(event.isRegistered) === 1 || Number(event.isParticipant) === 1));
   }
   async canManageEventForum(eventId, userId, role) { const privileged = ['manager', 'admin'].includes(role); const [rows] = await this.database.execute(`SELECT id FROM events WHERE id = ? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]); return rows.length > 0; }
+  /* Retired Communities data-access methods.
   async acceptCommunityPostResponse(postId, responseId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
     const connection = await this.database.getConnection();
@@ -632,6 +634,7 @@ export class Queries {
       return { groupId: result.insertId };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
+  */
   async articleCategories() { const [rows] = await this.database.execute('SELECT id, name, slug, description, sort_order AS sortOrder FROM article_categories WHERE is_active = TRUE ORDER BY sort_order, name'); return rows; }
   articleColumns() { return "a.id, a.slug, a.title, a.excerpt, a.body, a.cover_image AS coverImage, a.cover_alt_text AS coverAltText, a.status, a.is_indexable AS isIndexable, a.published_at AS publishedAt, a.created_at AS createdAt, a.updated_at AS updatedAt, a.author_user_id AS authorUserId, u.name AS authorName, c.id AS categoryId, c.name AS categoryName, c.slug AS categorySlug, GROUP_CONCAT(DISTINCT t.slug ORDER BY t.slug SEPARATOR ',') AS tagSlugs"; }
   async articles({ categorySlug = null, tagSlug = null, page = 1, limit = 20, editorId = null, editorRole = null } = {}) { const privileged = ['manager', 'admin'].includes(editorRole); const admin = editorRole === 'admin'; const conditions = [privileged ? `BINARY a.status <> BINARY 'removed'${admin ? '' : ' AND a.author_user_id = ?'}` : "BINARY a.status = BINARY 'published' AND a.is_indexable = TRUE AND a.published_at IS NOT NULL AND a.published_at <= NOW()"] ; const params = privileged && !admin ? [editorId] : []; if (categorySlug) { conditions.push('c.slug = ?'); params.push(categorySlug); } if (tagSlug) { conditions.push('EXISTS (SELECT 1 FROM article_tag_assignments filter_ata JOIN article_tags filter_t ON filter_t.id = filter_ata.tag_id WHERE filter_ata.article_id = a.id AND filter_t.slug = ?)'); params.push(tagSlug); } const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50); const offset = (Math.max(Number(page) || 1, 1) - 1) * safeLimit; const [rows] = await this.database.execute(`SELECT ${this.articleColumns()} FROM articles a JOIN users u ON u.id = a.author_user_id LEFT JOIN article_categories c ON c.id = a.category_id LEFT JOIN article_tag_assignments ata ON ata.article_id = a.id LEFT JOIN article_tags t ON t.id = ata.tag_id WHERE ${conditions.join(' AND ')} GROUP BY a.id, u.name, c.id, c.name, c.slug ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ? OFFSET ?`, [...params, safeLimit, offset]); return rows.map((row) => ({ ...row, tags: row.tagSlugs ? row.tagSlugs.split(',') : [], tagSlugs: undefined })); }
@@ -778,7 +781,7 @@ export class Queries {
   }
   async createVenue(ownerUserId, data) {
     const [result] = await this.database.execute(`INSERT INTO venues (organization_id, owner_user_id, name, slug, business_name, short_description, description, location, address_line_1, address_line_2, postal_code, country, city, municipality, region, address, latitude, longitude, location_visibility, timezone, venue_type_id, capacity_min, capacity_max, standing_capacity, seated_capacity, dining_capacity, classroom_capacity, size_sqm, price_from, price_unit, currency, pricing_description, minimum_booking_hours, website_url, phone, contact_email, availability_type, house_rules_text, is_active, moderation_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT id FROM venue_types WHERE slug = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`, [data.organizationId, ownerUserId, data.name, data.slug, data.businessName, data.shortDescription, data.description, data.location, data.addressLine1, data.addressLine2, data.postalCode, data.country, data.city, data.municipality, data.region, data.address, data.latitude, data.longitude, data.locationVisibility, data.timezone, data.venueType, data.capacityMin, data.capacityMax, data.standingCapacity, data.seatedCapacity, data.diningCapacity, data.classroomCapacity, data.sizeSqm, data.priceFrom, data.priceUnit, data.currency, data.pricingDescription, data.minimumBookingHours, data.websiteUrl, data.phone, data.contactEmail, data.availabilityType, data.houseRulesText, data.isActive]);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT id FROM venue_types WHERE slug = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')`, [data.organizationId, ownerUserId, data.name, data.slug, data.businessName, data.shortDescription, data.description, data.location, data.addressLine1, data.addressLine2, data.postalCode, data.country, data.city, data.municipality, data.region, data.address, data.latitude, data.longitude, data.locationVisibility, data.timezone, data.venueType, data.capacityMin, data.capacityMax, data.standingCapacity, data.seatedCapacity, data.diningCapacity, data.classroomCapacity, data.sizeSqm, data.priceFrom, data.priceUnit, data.currency, data.pricingDescription, data.minimumBookingHours, data.websiteUrl, data.phone, data.contactEmail, data.availabilityType, data.houseRulesText, data.isActive]);
     await this.replaceVenueRelations(result.insertId, data.amenitySlugs, data.suitableEventTypeSlugs);
     return result.insertId;
   }
@@ -939,8 +942,7 @@ export class Queries {
     const [verification] = await this.database.execute('UPDATE users SET verification_token_hash = NULL, verification_expires_at = NULL WHERE verification_expires_at < DATE_SUB(NOW(), INTERVAL ? DAY)', [retention.verificationTokenDays]);
     const [invitations] = await this.database.execute("DELETE FROM event_invitations WHERE token_expires_at < DATE_SUB(NOW(), INTERVAL ? DAY) AND status IN ('Pending', 'Declined')", [retention.invitationDays]);
     const [groupInvitations] = await this.database.execute("DELETE FROM group_invitations WHERE expires_at < DATE_SUB(NOW(), INTERVAL ? DAY) AND status IN ('pending', 'declined', 'revoked')", [retention.invitationDays]);
-    const [posts] = await this.database.execute("UPDATE community_posts SET status = 'expired', is_indexable = FALSE WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= NOW()");
-    const result = { passwordResetTokens: reset.affectedRows, verificationTokens: verification.affectedRows, eventInvitations: invitations.affectedRows, groupInvitations: groupInvitations.affectedRows, expiredPosts: posts.affectedRows };
+    const result = { passwordResetTokens: reset.affectedRows, verificationTokens: verification.affectedRows, eventInvitations: invitations.affectedRows, groupInvitations: groupInvitations.affectedRows };
     await this.audit(null, 'retention_cleanup', 'retention', null, result);
     return result;
   }
@@ -949,15 +951,12 @@ export class Queries {
     if (!user[0]) return null;
     const [legalAcceptances] = await this.database.execute('SELECT document_type AS documentType, version, accepted_at AS acceptedAt FROM user_legal_acceptances WHERE user_id = ? ORDER BY accepted_at', [userId]);
     const [marketingPreferences] = await this.database.execute('SELECT marketing_opt_in AS marketingOptIn, policy_version AS policyVersion, source, changed_at AS changedAt FROM marketing_email_preferences WHERE LOWER(email) = LOWER(?)', [user[0].email]);
-    const [posts] = await this.database.execute('SELECT id, slug, title, short_description AS shortDescription, body, visibility, status, expires_at AS expiresAt, created_at AS createdAt, updated_at AS updatedAt FROM community_posts WHERE author_user_id = ?', [userId]);
     const [registrations] = await this.database.execute('SELECT event_id AS eventId, status, payment_status AS paymentStatus, created_at AS createdAt FROM event_registrations WHERE user_id = ?', [userId]);
     const [memberships] = await this.database.execute('SELECT group_id AS groupId, role, status, joined_at AS joinedAt FROM group_memberships WHERE user_id = ?', [userId]);
     const [reports] = await this.database.execute('SELECT reference, entity_type AS entityType, entity_id AS entityId, reason_code AS reasonCode, description, status, created_at AS createdAt FROM content_reports WHERE reporter_user_id = ?', [userId]);
-    const [directMessages] = await this.database.execute('SELECT id, conversation_id AS conversationId, body, created_at AS createdAt FROM community_post_conversation_messages WHERE sender_user_id = ?', [userId]);
-    const [communityForumMessages] = await this.database.execute('SELECT id, thread_id AS threadId, body, created_at AS createdAt FROM community_post_forum_messages WHERE author_user_id = ?', [userId]);
     const [groupForumMessages] = await this.database.execute('SELECT id, thread_id AS threadId, body, created_at AS createdAt FROM group_forum_messages WHERE author_user_id = ?', [userId]);
     const [eventForumMessages] = await this.database.execute('SELECT id, thread_id AS threadId, body, created_at AS createdAt FROM event_forum_messages WHERE author_user_id = ?', [userId]);
-    return { generatedAt: new Date().toISOString(), user: user[0], legalAcceptances, marketingPreferences, communityPosts: posts, eventRegistrations: registrations, groupMemberships: memberships, reports, directMessages, forumMessages: { community: communityForumMessages, group: groupForumMessages, event: eventForumMessages } };
+    return { generatedAt: new Date().toISOString(), user: user[0], legalAcceptances, marketingPreferences, eventRegistrations: registrations, groupMemberships: memberships, reports, forumMessages: { group: groupForumMessages, event: eventForumMessages } };
   }
   async users() { const [rows] = await this.database.execute('SELECT id, name, email, phone, role, isEmailConfirmed, created_at AS createdAt FROM users ORDER BY created_at DESC'); return rows; }
   async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'venue_owner', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }

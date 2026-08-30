@@ -30,6 +30,9 @@ test('serves public API resources and validates unsubscribe requests', async (t)
   const statuses = await fetch(`${baseUrl}/api/event-statuses`);
   assert.deepEqual(await statuses.json(), ['Draft', 'Published', 'Cancelled', 'Completed', 'Archived']);
 
+  const communityPosts = await fetch(`${baseUrl}/api/community/posts`);
+  assert.equal(communityPosts.status, 404);
+
   const reasons = await fetch(`${baseUrl}/api/email/unsubscribe-reasons`);
   assert.deepEqual(await reasons.json(), EMAIL_UNSUBSCRIBE_REASONS);
 
@@ -42,4 +45,7 @@ test('serves public API resources and validates unsubscribe requests', async (t)
   const invalid = await fetch(`${baseUrl}/api/email/unsubscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'invalid', reason: 'Unknown' }) });
   assert.equal(invalid.status, 400);
   assert.equal(preferenceCalls.length, 0);
+
+  const retiredContentType = await fetch(`${baseUrl}/api/reports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entityType: 'community_post' }) });
+  assert.equal(retiredContentType.status, 422);
 });

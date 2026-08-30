@@ -18,9 +18,6 @@ export class Database {
         verification_resend_available_at DATETIME NULL, deleted_at DATETIME NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
-      try { await this.pool.execute('ALTER TABLE users ADD COLUMN session_version INT UNSIGNED NOT NULL DEFAULT 0'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      try { await this.pool.execute('ALTER TABLE users ADD COLUMN deleted_at DATETIME NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      try { await this.pool.execute("ALTER TABLE users MODIFY role ENUM('customer', 'organizer', 'venue_owner', 'manager', 'admin') NOT NULL DEFAULT 'customer'"); } catch (error) { console.error('User role migration failed:', error.message); throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS password_reset_tokens (
         user_id INT UNSIGNED NOT NULL PRIMARY KEY,
         token_hash CHAR(64) NOT NULL UNIQUE,
@@ -153,7 +150,7 @@ export class Database {
         reference VARCHAR(40) NOT NULL UNIQUE,
         reporter_user_id INT UNSIGNED NULL,
         reporter_email VARCHAR(255) NULL,
-        entity_type ENUM('community_post','image','event','group','review','profile','organization','venue','business_listing') NOT NULL,
+        entity_type ENUM('image','event','group','review','profile','organization','venue','business_listing') NOT NULL,
         entity_id VARCHAR(128) NULL,
         content_url VARCHAR(2048) NULL,
         reason_code ENUM('illegal_content','harassment','sexual_content','child_safety','violence','hate','scam_fraud','impersonation','privacy','intellectual_property','spam','unsafe_event','misleading_business','misleading_listing','other') NOT NULL,
@@ -171,18 +168,29 @@ export class Database {
         CONSTRAINT content_reports_reporter_fk FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE SET NULL,
         CONSTRAINT content_reports_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
       )`);
-      try { await this.pool.execute("ALTER TABLE content_reports MODIFY entity_type ENUM('community_post','image','event','group','review','profile','organization','venue','business_listing') NOT NULL"); } catch (error) { console.error('Content report type migration failed:', error.message); throw error; }
-      try { await this.pool.execute("ALTER TABLE content_reports MODIFY reason_code ENUM('illegal_content','harassment','sexual_content','child_safety','violence','hate','scam_fraud','impersonation','privacy','intellectual_property','spam','unsafe_event','misleading_business','misleading_listing','other') NOT NULL"); } catch (error) { console.error('Content report reason migration failed:', error.message); throw error; }
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_groups (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, organizer_id INT UNSIGNED NOT NULL,
+        name VARCHAR(120) NOT NULL, slug VARCHAR(140) NOT NULL UNIQUE, description TEXT NULL, cover_image VARCHAR(255) NULL,
+        visibility ENUM('Public', 'Private') NOT NULL DEFAULT 'Public', status ENUM('active','archived','removed') NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX (organizer_id), INDEX (visibility), INDEX event_groups_status_index (status),
+        CONSTRAINT event_groups_organizer_fk FOREIGN KEY (organizer_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS events (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, manager_id INT UNSIGNED NOT NULL,
-        title VARCHAR(200) NOT NULL, description TEXT NULL, location VARCHAR(255) NULL,
-        starts_at DATETIME NOT NULL, ends_at DATETIME NULL, capacity INT UNSIGNED NULL, participation_fee DECIMAL(10,2) NOT NULL DEFAULT 0,
+        group_id INT UNSIGNED NULL, series_id INT UNSIGNED NULL, recurrence_frequency ENUM('none','daily','weekly','monthly') NOT NULL DEFAULT 'none', recurrence_interval SMALLINT UNSIGNED NOT NULL DEFAULT 1, recurrence_count SMALLINT UNSIGNED NOT NULL DEFAULT 1, occurrence_number SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+        title VARCHAR(200) NOT NULL, short_description VARCHAR(240) NULL, description TEXT NULL, cover_image VARCHAR(1024) NULL, category_id INT UNSIGNED NULL, type_id INT UNSIGNED NULL,
+        country VARCHAR(120) NULL, city VARCHAR(120) NULL, location VARCHAR(255) NULL, address VARCHAR(255) NULL, latitude DECIMAL(10,7) NULL, longitude DECIMAL(10,7) NULL, location_type ENUM('physical','online','tba') NOT NULL DEFAULT 'physical', location_visibility ENUM('public','registered','attendees_only','approximate') NOT NULL DEFAULT 'public',
+        starts_at DATETIME NOT NULL, ends_at DATETIME NULL, timezone VARCHAR(64) NOT NULL DEFAULT 'UTC', capacity INT UNSIGNED NULL, minimum_attendees INT UNSIGNED NULL, registration_deadline DATETIME NULL, minimum_age TINYINT UNSIGNED NULL, language_code VARCHAR(12) NULL, what_to_bring TEXT NULL, meeting_instructions TEXT NULL, cancellation_policy TEXT NULL,
+        pricing_type ENUM('free','paid') NOT NULL DEFAULT 'free', participation_fee DECIMAL(10,2) NOT NULL DEFAULT 0, currency CHAR(3) NOT NULL DEFAULT 'SEK', registration_type ENUM('yaroko','external','none') NOT NULL DEFAULT 'yaroko', external_registration_url VARCHAR(1024) NULL,
         status ENUM('Draft', 'Published', 'Cancelled', 'Completed', 'Archived') NOT NULL DEFAULT 'Draft',
-        visibility ENUM('Public', 'Private') NOT NULL DEFAULT 'Public',
+        visibility ENUM('Public', 'Private', 'Members', 'Unlisted') NOT NULL DEFAULT 'Public', published_at DATETIME NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         deleted_at DATETIME NULL,
-        INDEX (status), INDEX (manager_id),
-        CONSTRAINT events_manager_fk FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE CASCADE
+        INDEX (status), INDEX (manager_id), INDEX (group_id), INDEX (category_id), INDEX (type_id), INDEX events_series_id_idx (series_id, occurrence_number),
+        CONSTRAINT events_manager_fk FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT events_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL,
+        CONSTRAINT events_series_fk FOREIGN KEY (series_id) REFERENCES events(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS application_activities (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -193,34 +201,9 @@ export class Database {
       )`);
       await this.pool.execute(`INSERT IGNORE INTO application_activities (name, sort_order) VALUES
         ('Publish an Article', 10), ('Travel Collaboration', 20), ('General Enquiry', 30)`);
-      try { await this.pool.execute("ALTER TABLE contact_submissions MODIFY status ENUM('New', 'Approved', 'Contact Again', 'Ordered', 'Declined') NOT NULL DEFAULT 'New'"); } catch (error) { console.error('Application status migration failed:', error.message); throw error; }
-      try { await this.pool.execute('ALTER TABLE events ADD COLUMN deleted_at DATETIME NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      try { await this.pool.execute('ALTER TABLE events ADD COLUMN participation_fee DECIMAL(10,2) NOT NULL DEFAULT 0'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      try { await this.pool.execute("ALTER TABLE events MODIFY status ENUM('Draft', 'Published', 'Cancelled', 'Completed', 'Archived') NOT NULL DEFAULT 'Draft'"); } catch (error) { console.error('Event status migration failed:', error.message); throw error; }
-      try { await this.pool.execute("ALTER TABLE events MODIFY visibility ENUM('Public', 'Private', 'Members', 'Unlisted') NOT NULL DEFAULT 'Public'"); } catch (error) { console.error('Event visibility migration failed:', error.message); throw error; }
-      for (const [column, definition] of [
-        ['series_id', 'INT UNSIGNED NULL'],
-        ['recurrence_frequency', "ENUM('none','daily','weekly','monthly') NOT NULL DEFAULT 'none'"],
-        ['recurrence_interval', 'SMALLINT UNSIGNED NOT NULL DEFAULT 1'],
-        ['recurrence_count', 'SMALLINT UNSIGNED NOT NULL DEFAULT 1'],
-        ['occurrence_number', 'SMALLINT UNSIGNED NOT NULL DEFAULT 1'],
-      ]) {
-        try { await this.pool.execute(`ALTER TABLE events ADD COLUMN ${column} ${definition}`); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      }
-      try { await this.pool.execute('ALTER TABLE events ADD INDEX events_series_id_idx (series_id, occurrence_number)'); } catch (error) { if (error.code !== 'ER_DUP_KEYNAME') throw error; }
-      try { await this.pool.execute('ALTER TABLE events ADD CONSTRAINT events_series_fk FOREIGN KEY (series_id) REFERENCES events(id) ON DELETE SET NULL'); } catch (error) { if (error.code !== 'ER_FK_DUP_NAME' && error.code !== 'ER_CANT_CREATE_TABLE') throw error; }
-      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_groups (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, organizer_id INT UNSIGNED NOT NULL,
-        name VARCHAR(120) NOT NULL, slug VARCHAR(140) NOT NULL UNIQUE, description TEXT NULL, cover_image VARCHAR(255) NULL,
-        visibility ENUM('Public', 'Private') NOT NULL DEFAULT 'Public',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX (organizer_id), INDEX (visibility),
-        CONSTRAINT event_groups_organizer_fk FOREIGN KEY (organizer_id) REFERENCES users(id) ON DELETE CASCADE
-      )`);
-      try { await this.pool.execute('ALTER TABLE event_groups ADD COLUMN cover_image VARCHAR(255) NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS group_memberships (
         group_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL,
-        role ENUM('owner', 'member') NOT NULL DEFAULT 'member', joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        role ENUM('owner', 'moderator', 'member') NOT NULL DEFAULT 'member', status ENUM('invited', 'active', 'left', 'removed') NOT NULL DEFAULT 'active', joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (group_id, user_id), INDEX (user_id),
         CONSTRAINT group_memberships_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE CASCADE,
         CONSTRAINT group_memberships_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -235,9 +218,6 @@ export class Database {
         CONSTRAINT group_invitation_inviter_fk FOREIGN KEY (invited_by_user_id) REFERENCES users(id) ON DELETE CASCADE,
         CONSTRAINT group_invitation_user_fk FOREIGN KEY (invited_user_id) REFERENCES users(id) ON DELETE SET NULL
       )`);
-      try { await this.pool.execute('ALTER TABLE events ADD COLUMN group_id INT UNSIGNED NULL, ADD INDEX (group_id)'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_DUP_KEYNAME') throw error; }
-      try { await this.pool.execute('ALTER TABLE events ADD INDEX events_group_id_idx (group_id)'); } catch (error) { if (error.code !== 'ER_DUP_KEYNAME') throw error; }
-      try { await this.pool.execute('ALTER TABLE events ADD CONSTRAINT events_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL'); } catch (error) { if (error.code !== 'ER_DUP_KEYNAME' && error.code !== 'ER_FK_DUP_NAME' && error.code !== 'ER_CANT_CREATE_TABLE') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS group_event_notifications (
         event_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL, sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (event_id, user_id),
@@ -246,7 +226,7 @@ export class Database {
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_registrations (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL,
-        user_id INT UNSIGNED NULL, attendee_name VARCHAR(160) NULL, attendee_email VARCHAR(255) NULL, status ENUM('Pending', 'Confirmed', 'Cancelled', 'Attended', 'Declined', 'Withdrawn') NOT NULL DEFAULT 'Pending', payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required',
+        user_id INT UNSIGNED NULL, attendee_name VARCHAR(160) NULL, attendee_email VARCHAR(255) NULL, attendee_phone VARCHAR(40) NULL, status ENUM('Pending', 'Confirmed', 'Cancelled', 'Attended', 'Declined', 'Withdrawn') NOT NULL DEFAULT 'Pending', payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY event_user_unique (event_id, user_id), INDEX (user_id),
         CONSTRAINT registrations_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
@@ -272,38 +252,19 @@ export class Database {
         ('Meetup', 'meetup'), ('Activity', 'activity'), ('Workshop', 'workshop'), ('Class', 'class'), ('Dinner', 'dinner'),
         ('Tour', 'tour'), ('Trip', 'trip'), ('Networking', 'networking'), ('Conference', 'conference'), ('Party', 'party'),
         ('Performance', 'performance'), ('Competition', 'competition'), ('Online Event', 'online-event'), ('Other', 'other')`);
-      const eventMigrations = [
-        ['category_id', 'INT UNSIGNED NULL'], ['type_id', 'INT UNSIGNED NULL'], ['cover_image', 'VARCHAR(1024) NULL'],
-        ['short_description', 'VARCHAR(240) NULL'], ['country', 'VARCHAR(120) NULL'], ['city', 'VARCHAR(120) NULL'], ['address', 'VARCHAR(255) NULL'],
-        ['latitude', 'DECIMAL(10,7) NULL'], ['longitude', 'DECIMAL(10,7) NULL'], ['location_type', "ENUM('physical','online','tba') NOT NULL DEFAULT 'physical'"],
-        ['location_visibility', "ENUM('public','registered','attendees_only','approximate') NOT NULL DEFAULT 'public'"],
-        ['timezone', "VARCHAR(64) NOT NULL DEFAULT 'UTC'"], ['minimum_attendees', 'INT UNSIGNED NULL'],
-        ['registration_deadline', 'DATETIME NULL'], ['minimum_age', 'TINYINT UNSIGNED NULL'], ['language_code', 'VARCHAR(12) NULL'],
-        ['what_to_bring', 'TEXT NULL'], ['meeting_instructions', 'TEXT NULL'], ['cancellation_policy', 'TEXT NULL'],
-        ['pricing_type', "ENUM('free','paid') NOT NULL DEFAULT 'free'"], ['currency', "CHAR(3) NOT NULL DEFAULT 'SEK'"],
-        ['registration_type', "ENUM('yaroko','external','none') NOT NULL DEFAULT 'yaroko'"], ['external_registration_url', 'VARCHAR(1024) NULL'],
-        ['published_at', 'DATETIME NULL']
-      ];
-      for (const [column, definition] of eventMigrations) {
-        try { await this.pool.execute(`ALTER TABLE events ADD COLUMN ${column} ${definition}`); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS unsubscribed_emails (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, email VARCHAR(255) NOT NULL UNIQUE,
         reason VARCHAR(120) NOT NULL, unsubscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
-      try { await this.pool.execute("ALTER TABLE event_registrations ADD COLUMN payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required'"); } catch (error) { if (error.code === 'ER_DUP_FIELDNAME') await this.pool.execute("ALTER TABLE event_registrations MODIFY payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required'"); else throw error; }
-      try { await this.pool.execute('ALTER TABLE event_registrations ADD COLUMN attendee_phone VARCHAR(40) NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_participants (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL,
-        user_id INT UNSIGNED NULL, participant_name VARCHAR(160) NOT NULL,
+        user_id INT UNSIGNED NULL, participant_name VARCHAR(160) NOT NULL, participant_phone VARCHAR(40) NULL,
         status ENUM('Pending', 'Attended', 'No Show') NOT NULL DEFAULT 'Pending', payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required',
         participant_email VARCHAR(255) NULL, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY event_participant_user (event_id, user_id), INDEX (event_id),
         CONSTRAINT participants_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
         CONSTRAINT participants_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
       )`);
-      try { await this.pool.execute("ALTER TABLE event_participants ADD COLUMN payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required'"); } catch (error) { if (error.code === 'ER_DUP_FIELDNAME') await this.pool.execute("ALTER TABLE event_participants MODIFY payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required'"); else throw error; }
-      try { await this.pool.execute('ALTER TABLE event_participants ADD COLUMN participant_phone VARCHAR(40) NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_ratings (
         event_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL, rating TINYINT UNSIGNED NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -320,6 +281,7 @@ export class Database {
         CONSTRAINT invitations_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
         CONSTRAINT invitations_manager_fk FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
+      /* Communities were retired. Existing data is intentionally left untouched, but new installations no longer provision these tables.
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_types (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, type_key VARCHAR(48) NOT NULL UNIQUE,
         name VARCHAR(100) NOT NULL, description VARCHAR(255) NULL, sort_order INT NOT NULL DEFAULT 0,
@@ -354,7 +316,6 @@ export class Database {
         CONSTRAINT community_post_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL,
         CONSTRAINT community_post_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL
       )`);
-      try { await this.pool.execute('ALTER TABLE community_posts ADD COLUMN event_id INT UNSIGNED NULL, ADD INDEX (event_id), ADD CONSTRAINT community_post_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL'); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME' && error.code !== 'ER_DUP_KEYNAME' && error.code !== 'ER_CANT_CREATE_TABLE') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_events (
         post_id INT UNSIGNED NOT NULL, event_id INT UNSIGNED NOT NULL, position INT UNSIGNED NOT NULL,
         PRIMARY KEY (post_id, event_id), UNIQUE KEY community_post_event_position (post_id, position), INDEX (event_id),
@@ -404,6 +365,7 @@ export class Database {
         CONSTRAINT community_forum_message_thread_fk FOREIGN KEY (thread_id) REFERENCES community_post_forum_threads(id) ON DELETE CASCADE,
         CONSTRAINT community_forum_message_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
+      */
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS group_forum_threads (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, group_id INT UNSIGNED NOT NULL, author_user_id INT UNSIGNED NOT NULL, title VARCHAR(180) NOT NULL,
         status ENUM('active','locked','removed') NOT NULL DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -429,10 +391,11 @@ export class Database {
         CONSTRAINT event_forum_message_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS forum_thread_reads (
-        scope ENUM('community','group','event') NOT NULL, thread_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL, last_read_message_id INT UNSIGNED NOT NULL,
+        scope ENUM('group','event') NOT NULL, thread_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL, last_read_message_id INT UNSIGNED NOT NULL,
         read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY (scope, thread_id, user_id), INDEX (user_id, scope, read_at),
         CONSTRAINT forum_thread_read_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
+      /* Communities were retired. Existing report records are retained but no longer provisioned on new installations.
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_reports (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, post_id INT UNSIGNED NOT NULL, reporter_user_id INT UNSIGNED NOT NULL,
         reason VARCHAR(120) NOT NULL, details VARCHAR(1000) NULL,
@@ -457,12 +420,7 @@ export class Database {
         const [parents] = await this.pool.execute('SELECT id FROM community_categories WHERE parent_id IS NULL AND slug = ?', [parentSlug]);
         for (const [index, name] of names.entries()) await this.pool.execute('INSERT IGNORE INTO community_categories (parent_id, name, slug, sort_order) VALUES (?, ?, ?, ?)', [parents[0].id, name, name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), (index + 1) * 10]);
       }
-      for (const [column, definition] of [['city', 'VARCHAR(120) NULL'], ['category_id', 'INT UNSIGNED NULL'], ['source_post_id', 'INT UNSIGNED NULL'], ['status', "ENUM('active','archived','removed') NOT NULL DEFAULT 'active'"]]) {
-        try { await this.pool.execute(`ALTER TABLE event_groups ADD COLUMN ${column} ${definition}`); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      }
-      try { await this.pool.execute("ALTER TABLE group_memberships MODIFY role ENUM('owner', 'moderator', 'member') NOT NULL DEFAULT 'member'"); } catch (error) { console.error('Group membership role migration failed:', error.message); throw error; }
-      try { await this.pool.execute("ALTER TABLE group_memberships ADD COLUMN status ENUM('invited', 'active', 'left', 'removed') NOT NULL DEFAULT 'active'"); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      try { await this.pool.execute('ALTER TABLE event_groups ADD INDEX event_groups_community_index (city, category_id, status)'); } catch (error) { if (error.code !== 'ER_DUP_KEYNAME') throw error; }
+      */
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS article_categories (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(100) NOT NULL, slug VARCHAR(120) NOT NULL UNIQUE,
         description VARCHAR(255) NULL, sort_order INT NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -512,22 +470,55 @@ export class Database {
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venues (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        organization_id INT UNSIGNED NULL,
         owner_user_id INT UNSIGNED NOT NULL,
         name VARCHAR(160) NOT NULL,
+        slug VARCHAR(180) NOT NULL UNIQUE,
         business_name VARCHAR(160) NULL,
+        short_description VARCHAR(400) NULL,
         description TEXT NULL,
         location VARCHAR(255) NOT NULL,
+        address_line_1 VARCHAR(255) NULL,
+        address_line_2 VARCHAR(255) NULL,
+        postal_code VARCHAR(32) NULL,
         country VARCHAR(120) NULL,
         city VARCHAR(120) NULL,
+        municipality VARCHAR(120) NULL,
+        region VARCHAR(120) NULL,
         address VARCHAR(255) NULL,
         latitude DECIMAL(10,7) NULL,
         longitude DECIMAL(10,7) NULL,
+        location_visibility ENUM('exact','approximate','private_until_booking') NOT NULL DEFAULT 'exact',
         timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
+        venue_type_id INT UNSIGNED NULL,
+        capacity_min INT UNSIGNED NULL,
+        capacity_max INT UNSIGNED NULL,
+        standing_capacity INT UNSIGNED NULL,
+        seated_capacity INT UNSIGNED NULL,
+        dining_capacity INT UNSIGNED NULL,
+        classroom_capacity INT UNSIGNED NULL,
+        size_sqm DECIMAL(8,2) NULL,
+        price_from DECIMAL(10,2) NULL,
+        price_unit ENUM('hour','half_day','day','evening','person','event','contact') NOT NULL DEFAULT 'contact',
+        currency CHAR(3) NOT NULL DEFAULT 'SEK',
+        pricing_description TEXT NULL,
+        minimum_booking_hours DECIMAL(5,2) NULL,
+        website_url VARCHAR(1024) NULL,
+        phone VARCHAR(80) NULL,
+        contact_email VARCHAR(255) NULL,
+        is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+        is_featured BOOLEAN NOT NULL DEFAULT FALSE,
+        moderation_status ENUM('draft','pending','approved','rejected','removed') NOT NULL DEFAULT 'draft',
+        verification_status ENUM('unverified','pending','verified','rejected') NOT NULL DEFAULT 'unverified',
+        published_at DATETIME NULL,
+        availability_type ENUM('contact','calendar','always_open') NOT NULL DEFAULT 'contact',
+        house_rules_text TEXT NULL,
         is_active BOOLEAN NOT NULL DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX venues_owner_index (owner_user_id, is_active),
         INDEX venues_location_index (city, country),
+        INDEX venues_public_discovery (is_active, moderation_status, city, venue_type_id),
         CONSTRAINT venues_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_availability (
@@ -569,22 +560,6 @@ export class Database {
         CONSTRAINT organization_members_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
         CONSTRAINT organization_members_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
-      for (const [column, definition] of [
-        ['organization_id', 'INT UNSIGNED NULL'], ['slug', 'VARCHAR(180) NULL'], ['short_description', 'VARCHAR(400) NULL'], ['venue_type_id', 'INT UNSIGNED NULL'],
-        ['address_line_1', 'VARCHAR(255) NULL'], ['address_line_2', 'VARCHAR(255) NULL'], ['postal_code', 'VARCHAR(32) NULL'], ['municipality', 'VARCHAR(120) NULL'], ['region', 'VARCHAR(120) NULL'],
-        ['location_visibility', "ENUM('exact','approximate','private_until_booking') NOT NULL DEFAULT 'exact'"], ['capacity_min', 'INT UNSIGNED NULL'], ['capacity_max', 'INT UNSIGNED NULL'],
-        ['standing_capacity', 'INT UNSIGNED NULL'], ['seated_capacity', 'INT UNSIGNED NULL'], ['dining_capacity', 'INT UNSIGNED NULL'], ['classroom_capacity', 'INT UNSIGNED NULL'], ['size_sqm', 'DECIMAL(8,2) NULL'],
-        ['price_from', 'DECIMAL(10,2) NULL'], ['price_unit', "ENUM('hour','half_day','day','evening','person','event','contact') NOT NULL DEFAULT 'contact'"], ['currency', "CHAR(3) NOT NULL DEFAULT 'SEK'"],
-        ['pricing_description', 'TEXT NULL'], ['minimum_booking_hours', 'DECIMAL(5,2) NULL'], ['website_url', 'VARCHAR(1024) NULL'], ['phone', 'VARCHAR(80) NULL'], ['contact_email', 'VARCHAR(255) NULL'],
-        ['is_verified', 'BOOLEAN NOT NULL DEFAULT FALSE'], ['is_featured', 'BOOLEAN NOT NULL DEFAULT FALSE'], ['moderation_status', "ENUM('draft','pending','approved','rejected','removed') NOT NULL DEFAULT 'draft'"],
-        ['verification_status', "ENUM('unverified','pending','verified','rejected') NOT NULL DEFAULT 'unverified'"], ['published_at', 'DATETIME NULL'], ['availability_type', "ENUM('contact','calendar','always_open') NOT NULL DEFAULT 'contact'"], ['house_rules_text', 'TEXT NULL']
-      ]) {
-        try { await this.pool.execute(`ALTER TABLE venues ADD COLUMN ${column} ${definition}`); } catch (error) { if (error.code !== 'ER_DUP_FIELDNAME') throw error; }
-      }
-      await this.pool.execute("UPDATE venues SET slug = CONCAT('venue-', id) WHERE slug IS NULL OR slug = ''");
-      await this.pool.execute("UPDATE venues SET moderation_status = 'approved', published_at = COALESCE(published_at, created_at) WHERE is_active = TRUE AND moderation_status = 'draft'");
-      try { await this.pool.execute('CREATE UNIQUE INDEX venues_slug_unique ON venues (slug)'); } catch (error) { if (!['ER_DUP_KEYNAME', 'ER_DUP_ENTRY'].includes(error.code)) throw error; }
-      try { await this.pool.execute('CREATE INDEX venues_public_discovery ON venues (is_active, moderation_status, city, venue_type_id)'); } catch (error) { if (error.code !== 'ER_DUP_KEYNAME') throw error; }
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_types (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, slug VARCHAR(100) NOT NULL UNIQUE, name VARCHAR(120) NOT NULL, sort_order INT NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT TRUE
       )`);
