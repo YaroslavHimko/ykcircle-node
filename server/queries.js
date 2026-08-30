@@ -235,8 +235,11 @@ export class Queries {
   }
   async groupForCover(filename, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT g.id FROM event_groups g LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ? AND gm.status = 'active' WHERE g.cover_image = ? AND (${privileged ? 'TRUE' : "g.visibility = 'Public' OR g.organizer_id = ? OR gm.user_id IS NOT NULL"})`, privileged ? [userId, filename] : [userId, filename, userId]);
-    return rows[0] || null;
+    const [rows] = await this.database.execute(
+      `SELECT g.id, (g.visibility = 'Public') AS publiclyVisible FROM event_groups g LEFT JOIN group_memberships gm ON gm.group_id = g.id AND gm.user_id = ? AND gm.status = 'active' WHERE g.cover_image = ? AND (${privileged ? 'TRUE' : "g.visibility = 'Public' OR g.organizer_id = ? OR gm.user_id IS NOT NULL"})`,
+      privileged ? [userId, filename] : [userId, filename, userId],
+    );
+    return rows[0] ? { ...rows[0], publiclyVisible: Boolean(rows[0].publiclyVisible) } : null;
   }
   async deleteGroup(id, userId, role) {
     const globalAccess = ['manager', 'admin'].includes(role);
@@ -434,7 +437,15 @@ export class Queries {
     const [result] = await this.database.execute('UPDATE events SET cover_image = ? WHERE id = ? OR series_id = ?', [coverImage, events[0].seriesId, events[0].seriesId]);
     return result.affectedRows > 0;
   }
-  async eventCover(filename) { const [rows] = await this.database.execute("SELECT id FROM events WHERE (BINARY cover_image = BINARY ? OR BINARY cover_image LIKE CONCAT(BINARY '%/', BINARY ?)) AND deleted_at IS NULL LIMIT 1", [filename, filename]); return rows[0] || null; }
+  async eventCoverVisible(filename, userId = null, role = null) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const visibility = privileged ? 'TRUE' : "(e.status = 'Published' AND e.visibility = 'Public') OR e.manager_id = ?";
+    const [rows] = await this.database.execute(
+      `SELECT e.id, (e.status = 'Published' AND e.visibility = 'Public') AS publiclyVisible FROM events e WHERE (BINARY e.cover_image = BINARY ? OR BINARY e.cover_image LIKE CONCAT(BINARY '%/', BINARY ?)) AND e.deleted_at IS NULL AND (${visibility}) LIMIT 1`,
+      privileged ? [filename, filename] : [filename, filename, userId],
+    );
+    return rows[0] ? { ...rows[0], publiclyVisible: Boolean(rows[0].publiclyVisible) } : null;
+  }
   normalizeRichEventLocation(event, { publicView = false } = {}) {
     if (!event) return null;
     const normalized = { ...event };

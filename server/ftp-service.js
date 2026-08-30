@@ -132,18 +132,18 @@ export class FtpService {
     return this.streamImage(filename, this.config.uploadPath, response);
   }
 
-  async streamEventCover(filename, response) {
-    return this.streamImage(filename, this.config.eventUploadPath || this.config.uploadPath, response);
-  }
-
   // An omitted cacheControl inherits streamImage's public default, so the
   // canonical header value stays defined in exactly one place.
+  async streamEventCover(filename, response, cacheControl) {
+    return this.streamImage(filename, this.config.eventUploadPath || this.config.uploadPath, response, cacheControl);
+  }
+
   async streamVenueImage(filename, response, cacheControl) {
     return this.streamImage(filename, this.config.uploadPath, response, cacheControl);
   }
 
-  async streamGroupCover(filename, response) {
-    return this.streamImage(filename, this.config.uploadPath, response, 'private, no-store');
+  async streamGroupCover(filename, response, cacheControl) {
+    return this.streamImage(filename, this.config.uploadPath, response, cacheControl);
   }
 
   async uploadArticleImage(articleId, file) {

@@ -63,19 +63,32 @@ test('limits non-admin role changes to eligible customer accounts', async () => 
   assert.match(calls[0].sql, /role = 'customer'/);
 });
 
-test('allows stored event covers for drafts and uses binary filename comparisons', async () => {
+test('gates a draft event cover to its manager and uses binary filename comparisons', async () => {
   const calls = [];
   const queries = new Queries({
     execute: async (sql, parameters) => {
       calls.push({ sql, parameters });
-      return [[{ id: 1 }]];
+      return [[{ id: 1, publiclyVisible: 0 }]];
     },
   });
 
-  assert.deepEqual(await queries.eventCover('event-1-1786906288459.png'), { id: 1 });
-  assert.match(calls[0].sql, /BINARY cover_image = BINARY \?/);
-  assert.match(calls[0].sql, /BINARY cover_image LIKE CONCAT\(BINARY '%\/', BINARY \?\)/);
-  assert.doesNotMatch(calls[0].sql, /status = 'Published'|visibility = 'Public'/);
+  assert.deepEqual(await queries.eventCoverVisible('event-1-1786906288459.png', 7, 'customer'), { id: 1, publiclyVisible: false });
+  assert.match(calls[0].sql, /BINARY e\.cover_image = BINARY \?/);
+  assert.match(calls[0].sql, /BINARY e\.cover_image LIKE CONCAT\(BINARY '%\/', BINARY \?\)/);
+  assert.match(calls[0].sql, /e\.manager_id = \?/);
+  assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png', 'event-1-1786906288459.png', 7]);
+});
+
+test('lets a site manager reach any event cover without an owner parameter', async () => {
+  const calls = [];
+  const queries = new Queries({
+    execute: async (sql, parameters) => {
+      calls.push({ sql, parameters });
+      return [[{ id: 1, publiclyVisible: 1 }]];
+    },
+  });
+
+  assert.deepEqual(await queries.eventCoverVisible('event-1-1786906288459.png', 99, 'admin'), { id: 1, publiclyVisible: true });
   assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png', 'event-1-1786906288459.png']);
 });
 
