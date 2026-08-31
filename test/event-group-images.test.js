@@ -14,6 +14,7 @@ const mint = (namespace, filename, { expiresInMs = 60000, signNamespace, signPay
   const payload = Buffer.from(JSON.stringify({ filename, exp: Date.now() + expiresInMs })).toString('base64url');
   return `${payload}.${signPayload ? sign(payload, signNamespace ?? namespace) : 'not-a-signature'}`;
 };
+const protectedPath = (kind, filename, token) => `/api/media/${kind}/${encodeURIComponent(token)}/${encodeURIComponent(filename)}`;
 
 const startApi = async (t, { eventCoverVisible, groupForCover, user = null, initialize = async () => {} }) => {
   const streamed = { event: [], group: [] };
@@ -122,9 +123,9 @@ test('a private draft event tokens the bare cover filename, not the stored full 
   const body = await response.json();
 
   assert.equal(response.status, 200);
-  const [urlPath, query] = body.coverImageUrl.split('?');
-  assert.equal(urlPath, '/api/media/event/event-1-1786906288459.png');
-  const [tokenPayload] = new URLSearchParams(query).get('token').split('.');
+  const urlPath = body.coverImageUrl;
+  assert.match(urlPath, /^\/api\/media\/event\/[^/]+\/event-1-1786906288459\.png$/);
+  const tokenPayload = decodeURIComponent(urlPath.split('/').at(-2)).split('.')[0];
   assert.equal(JSON.parse(Buffer.from(tokenPayload, 'base64url').toString()).filename, 'event-1-1786906288459.png');
 });
 
@@ -132,7 +133,7 @@ test('a valid signed token survives shared authorization and serves a private or
   const filename = 'event-4-1788108214313-aaaaaaaa.png';
   const { baseUrl, streamed } = await startApi(t, { initialize: async () => { throw new Error('must not initialize or reauthorize a valid signed media request'); }, eventCoverVisible: async () => { throw new Error('must not query visibility once a token is valid'); }, groupForCover: async () => null });
 
-  const response = await fetch(`${baseUrl}/api/media/event/${filename}?token=${encodeURIComponent(mint('event-cover', filename))}`);
+  const response = await fetch(`${baseUrl}${protectedPath('event', filename, mint('event-cover', filename))}`);
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('location'), null);
@@ -186,7 +187,7 @@ test('an event cover token minted for another event or another resource kind is 
   };
 
   for (const [reason, token] of Object.entries(rejected)) {
-    const response = await fetch(`${baseUrl}/api/media/event/${filename}?token=${encodeURIComponent(token)}`);
+    const response = await fetch(`${baseUrl}${protectedPath('event', filename, token)}`);
     assert.equal(response.status, 403, `expected 403 for ${reason}`);
     assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0', `expected protected no-store for ${reason}`);
   }
@@ -208,7 +209,7 @@ test('a signed token serves a private group cover without letting it be cached',
   const filename = 'group-2-1788108214313-cccccccc.png';
   const { baseUrl, streamed } = await startApi(t, { eventCoverVisible: async () => null, groupForCover: async () => { throw new Error('must not query visibility once a token is valid'); } });
 
-  const response = await fetch(`${baseUrl}/api/media/group/${filename}?token=${encodeURIComponent(mint('group-cover', filename))}`);
+  const response = await fetch(`${baseUrl}${protectedPath('group', filename, mint('group-cover', filename))}`);
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');

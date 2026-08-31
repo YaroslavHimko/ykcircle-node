@@ -15,6 +15,7 @@ const mint = (filename, { expiresInMs = 60000, namespace, signPayload = true } =
   const payload = Buffer.from(JSON.stringify({ filename, exp: Date.now() + expiresInMs })).toString('base64url');
   return `${payload}.${signPayload ? sign(payload, namespace) : 'not-a-signature'}`;
 };
+const protectedPath = (filename, token) => `/api/media/venue/${encodeURIComponent(token)}/${encodeURIComponent(filename)}`;
 
 const startApi = async (t, { visible, user = null }) => {
   const streamed = [];
@@ -55,7 +56,7 @@ test('a signed token serves an unapproved venue image without letting it be cach
   // venueImageVisible would refuse this image: a valid token is the only way in.
   const { baseUrl, streamed, visibilityCalls } = await startApi(t, { visible: null });
 
-  const response = await fetch(`${baseUrl}/api/media/venue/${FILENAME}?token=${encodeURIComponent(mint(FILENAME))}`);
+  const response = await fetch(`${baseUrl}${protectedPath(FILENAME, mint(FILENAME))}`);
 
   assert.equal(response.status, 200);
   assert.equal(await response.text(), 'png-bytes');
@@ -113,7 +114,7 @@ test('venue image tokens are rejected when replayed, tampered with, expired, or 
   };
 
   for (const [reason, token] of Object.entries(rejected)) {
-    const response = await fetch(`${baseUrl}/api/media/venue/${FILENAME}?token=${encodeURIComponent(token)}`);
+    const response = await fetch(token ? `${baseUrl}${protectedPath(FILENAME, token)}` : `${baseUrl}/api/media/venue/${FILENAME}`);
     assert.equal(response.status, 403, `expected 403 for ${reason}`);
     assert.deepEqual(await response.json(), { error: 'Protected media access denied.' });
     assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0', `expected protected no-store for ${reason}`);

@@ -88,7 +88,7 @@ export class Api {
     // Public media keeps its CDN-cacheable upload URL. Protected media must
     // always use an API route so a CDN never mistakes a tokenized request for
     // a static asset and serves it without reaching this process.
-    const protectedMediaUrl = (kind, filename, token) => `/api/media/${kind}/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}`;
+    const protectedMediaUrl = (kind, filename, token) => `/api/media/${kind}/${encodeURIComponent(token)}/${encodeURIComponent(filename)}`;
     const groupCoverUrl = (filename, token = null) => filename ? (token ? protectedMediaUrl('group', filename, token) : `${this.groupFtpService.publicPath()}/${encodeURIComponent(filename)}`) : null;
     const eventCoverUrl = (filename, token = null) => filename ? (token ? protectedMediaUrl('event', filename, token) : `${this.eventFtpService.publicPath()}/${encodeURIComponent(filename)}`) : null;
     // An event's cover is publicly cacheable once it is Published and Public;
@@ -211,14 +211,16 @@ export class Api {
       return res.status(404).json({ error: message });
     };
     const mediaRequestId = () => crypto.randomBytes(12).toString('hex');
-    const redactedMediaUrl = (url) => String(url || '').replace(/([?&]token=)[^&]*/gi, '$1[present]');
+    const redactedMediaUrl = (url) => String(url || '')
+      .replace(/(\/api\/media\/(?:event|venue|group)\/)[^/?]+(?=\/)/i, '$1[TOKEN]')
+      .replace(/([?&]token=)[^&]*/gi, '$1[present]');
     const attachMediaResponseLog = (req, res, details) => {
       res.once('finish', () => console.info('Media response completed.', {
         requestId: req.mediaRequestId,
-        route: req.path,
+        route: redactedMediaUrl(req.path),
         originalUrl: redactedMediaUrl(req.originalUrl || req.url),
         filename: req.params.filename,
-        tokenPresent: Boolean(req.query.token),
+        tokenPresent: Boolean(req.mediaTokenPresent ?? req.query.token),
         status: res.statusCode,
         location: res.getHeader('location') || null,
         contentType: res.getHeader('content-type') || null,
@@ -227,8 +229,8 @@ export class Api {
       }));
     };
     const mediaAccess = async ({ req, tokenKind, visible, allowSignedToken }) => {
-      const tokenPresent = allowSignedToken && Boolean(req.query.token);
-      const token = allowSignedToken ? validateImageToken(tokenKind, req.query.token, req.params.filename) : { valid: false, expired: false };
+      const tokenPresent = allowSignedToken && Boolean(req.mediaToken);
+      const token = allowSignedToken ? validateImageToken(tokenKind, req.mediaToken, req.params.filename) : { valid: false, expired: false };
       const access = {
         publicAccess: false,
         signedTokenAccess: token.valid,
@@ -272,17 +274,22 @@ export class Api {
       }
     });
     const logProtectedMedia = (req, details) => console.info('Protected media request.', {
-      route: req.path,
+      route: redactedMediaUrl(req.path),
       mediaType: req.params.kind,
       filename: req.params.filename,
       requestId: req.mediaRequestId,
-      tokenPresent: Boolean(req.query.token),
+      tokenPresent: Boolean(req.mediaTokenPresent ?? req.query.token),
       userId: req.user?.id ?? null,
       ...details,
     });
-    const protectedMediaRoute = ({ kind, tokenKind, visible, stream, message }) => app.get(`/api/media/${kind}/:filename`, optionalAuthenticate, async (req, res) => {
+    const protectedMediaRoute = ({ kind, tokenKind, visible, stream, message }) => {
+      const handler = async (req, res) => {
       req.mediaRequestId = mediaRequestId();
-      const routeToken = validateImageToken(tokenKind, req.query.token, req.params.filename);
+      // Path tokens are the canonical format. Query tokens remain accepted
+      // temporarily for existing clients, but are no longer generated.
+      req.mediaToken = req.params.token || req.query.token || null;
+      req.mediaTokenPresent = Boolean(req.mediaToken);
+      const routeToken = validateImageToken(tokenKind, req.mediaToken, req.params.filename);
       let result = null;
       let finalAuthorization = null;
       attachMediaResponseLog(req, res, () => ({
@@ -344,7 +351,10 @@ export class Api {
           return res.status(502).json({ error: 'Unable to load image.' });
         }
       }
-    });
+      };
+      app.get(`/api/media/${kind}/:token/:filename`, optionalAuthenticate, handler);
+      app.get(`/api/media/${kind}/:filename`, optionalAuthenticate, handler);
+    };
     const mediaVisibility = (method) => (...args) => this.queries[method](...args);
     const mediaStream = (service, method) => (...args) => service[method](...args);
     publicMediaRoute({ route: venueUploadRoute, label: 'Venue', visible: mediaVisibility('venueImageVisible'), stream: mediaStream(this.venueFtpService, 'streamVenueImage'), message: 'Image not found.' });
