@@ -206,17 +206,49 @@ export class Api {
     // Public upload routes deliberately do not honour image tokens. They are
     // only storage/public-CDN endpoints; protected bytes are served below.
     const imageNotFound = (req, res, label, message, reason, extra = {}) => {
-      console.warn(`${label} image request denied.`, { filename: req.params.filename, reason, hasToken: Boolean(req.query.token), userId: req.user?.id ?? null, role: req.user?.role ?? null, ...extra });
+      console.warn(`${label} image request denied.`, { requestId: req.mediaRequestId || null, filename: req.params.filename, reason, tokenPresent: Boolean(req.query.token), userId: req.user?.id ?? null, role: req.user?.role ?? null, ...extra });
       res.set('Cache-Control', 'no-store');
       return res.status(404).json({ error: message });
     };
+    const mediaRequestId = () => crypto.randomBytes(12).toString('hex');
+    const mediaAccess = async ({ req, tokenKind, visible, allowSignedToken }) => {
+      const tokenPresent = allowSignedToken && Boolean(req.query.token);
+      const token = allowSignedToken ? validateImageToken(tokenKind, req.query.token, req.params.filename) : { valid: false, expired: false };
+      const access = {
+        publicAccess: false,
+        signedTokenAccess: token.valid,
+        authenticatedUserAccess: false,
+        adminAccess: false,
+      };
+      // A supplied but invalid token is never silently ignored, even if the
+      // caller also has credentials. This keeps signature failures observable
+      // and prevents a malformed signed URL from changing authorization flow.
+      if (tokenPresent && !token.valid) return { access, tokenPresent, token, media: null, allowed: false, authorizationReason: 'invalid-signed-media-token' };
+
+      // A valid signed token is a capability for precisely this filename. It
+      // must survive all later work; no visibility lookup may overwrite it.
+      const media = token.valid ? null : await visible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null);
+      access.publicAccess = Boolean(media?.publiclyVisible);
+      if (media && req.user && !access.publicAccess) {
+        access.adminAccess = ['manager', 'admin'].includes(req.user.role);
+        access.authenticatedUserAccess = !access.adminAccess;
+      }
+      const allowed = access.publicAccess || access.signedTokenAccess || access.authenticatedUserAccess || access.adminAccess;
+      const authorizationReason = access.signedTokenAccess ? 'signed-media-token'
+        : access.publicAccess ? 'public-media'
+          : access.adminAccess ? 'administrator'
+            : access.authenticatedUserAccess ? 'authenticated-user'
+              : 'denied';
+      return { access, tokenPresent, token, media, allowed, authorizationReason };
+    };
     const publicMediaRoute = ({ route, label, visible, stream, message }) => app.get(route, async (req, res) => {
       try {
+        req.mediaRequestId = mediaRequestId();
         await ensureTable();
         // Do not use supplied credentials or tokens here: /uploads is public
         // only, and private media must be requested through /api/media.
-        const media = await visible(req.params.filename, null, null);
-        if (!media?.publiclyVisible) return imageNotFound(req, res, label, message, 'not-public');
+        const result = await mediaAccess({ req, tokenKind: null, visible: (...args) => visible(args[0], null, null), allowSignedToken: false });
+        if (!result.access.publicAccess) return imageNotFound(req, res, label, message, 'not-public');
         if (!await stream(req.params.filename, res)) return imageNotFound(req, res, label, message, 'missing-from-storage');
       } catch (error) {
         console.error(`${label} public image proxy failed:`, error.message);
@@ -227,38 +259,33 @@ export class Api {
       route: req.path,
       mediaType: req.params.kind,
       filename: req.params.filename,
-      hasToken: Boolean(req.query.token),
+      requestId: req.mediaRequestId,
+      tokenPresent: Boolean(req.query.token),
       userId: req.user?.id ?? null,
       ...details,
     });
     const protectedMediaRoute = ({ kind, tokenKind, visible, stream, message }) => app.get(`/api/media/${kind}/:filename`, optionalAuthenticate, async (req, res) => {
-      const tokenPresent = Boolean(req.query.token);
-      const token = validateImageToken(tokenKind, req.query.token, req.params.filename);
-      logProtectedMedia(req, { mediaType: kind, stage: 'route-reached', tokenValid: token.valid, tokenExpired: token.expired });
-      res.set({ 'Cache-Control': 'private, no-store, max-age=0', Vary: 'Authorization' });
+      req.mediaRequestId = mediaRequestId();
+      const routeToken = validateImageToken(tokenKind, req.query.token, req.params.filename);
+      logProtectedMedia(req, { mediaType: kind, stage: 'route-reached', tokenValid: routeToken.valid, tokenExpired: routeToken.expired, signedTokenAccess: routeToken.valid });
       try {
-        if (tokenPresent && !token.valid) {
-          logProtectedMedia(req, { mediaType: kind, tokenValid: false, tokenExpired: token.expired, authorization: 'denied', status: 403 });
-          return res.status(403).json({ error: 'Protected media access denied.' });
-        }
         await ensureTable();
-        const media = token.valid ? { publiclyVisible: false } : await visible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null);
-        // This endpoint is solely for protected media. A signed URL is an
-        // authorization grant; without it, only an authenticated caller with
-        // normal access rules may retrieve a non-public image.
-        if (!media || (!token.valid && (!req.user || media.publiclyVisible))) {
-          logProtectedMedia(req, { mediaType: kind, tokenValid: token.valid, tokenExpired: false, authorization: 'denied', status: 403 });
+        const result = await mediaAccess({ req, tokenKind, visible, allowSignedToken: true });
+        const privateResponse = result.access.signedTokenAccess || !result.access.publicAccess;
+        res.set({ 'Cache-Control': privateResponse ? 'private, no-store, max-age=0' : 'public, max-age=86400', Vary: 'Authorization' });
+        if (!result.allowed) {
+          logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, authorization: 'denied', authorizationReason: result.authorizationReason, status: 403 });
           return res.status(403).json({ error: 'Protected media access denied.' });
         }
-        if (!await stream(req.params.filename, res, 'private, no-store, max-age=0')) {
-          logProtectedMedia(req, { mediaType: kind, tokenValid: token.valid, tokenExpired: false, authorization: token.valid ? 'signed-token' : 'authenticated-user', status: 404 });
+        if (!await stream(req.params.filename, res, privateResponse ? 'private, no-store, max-age=0' : undefined)) {
+          logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, authorization: 'allowed', authorizationReason: result.authorizationReason, status: 404 });
           return res.status(404).json({ error: message });
         }
-        logProtectedMedia(req, { mediaType: kind, tokenValid: token.valid, tokenExpired: false, authorization: token.valid ? 'signed-token' : 'authenticated-user', status: 200 });
+        logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, authorization: 'allowed', authorizationReason: result.authorizationReason, status: 200 });
       } catch (error) {
         console.error(`${kind} protected media proxy failed:`, error.message);
         if (!res.headersSent) {
-          logProtectedMedia(req, { mediaType: kind, tokenValid: token.valid, tokenExpired: token.expired, authorization: 'error', status: 502 });
+          logProtectedMedia(req, { mediaType: kind, tokenValid: false, tokenExpired: false, authorization: 'error', authorizationReason: 'internal-error', status: 502 });
           return res.status(502).json({ error: 'Unable to load image.' });
         }
       }

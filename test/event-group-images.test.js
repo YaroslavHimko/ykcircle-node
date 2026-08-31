@@ -15,7 +15,7 @@ const mint = (namespace, filename, { expiresInMs = 60000, signNamespace, signPay
   return `${payload}.${signPayload ? sign(payload, signNamespace ?? namespace) : 'not-a-signature'}`;
 };
 
-const startApi = async (t, { eventCoverVisible, groupForCover }) => {
+const startApi = async (t, { eventCoverVisible, groupForCover, user = null }) => {
   const streamed = { event: [], group: [] };
   const app = express();
   app.use(express.json());
@@ -24,6 +24,7 @@ const startApi = async (t, { eventCoverVisible, groupForCover }) => {
     database: {},
     queries: {
       initialize: async () => {},
+      findUserById: async (id) => user?.id === id ? user : null,
       eventCoverVisible: async (...args) => eventCoverVisible(...args),
       groupForCover: async (...args) => groupForCover(...args),
     },
@@ -127,11 +128,25 @@ test('a private draft event tokens the bare cover filename, not the stored full 
   assert.equal(JSON.parse(Buffer.from(tokenPayload, 'base64url').toString()).filename, 'event-1-1786906288459.png');
 });
 
-test('a signed token serves a draft event cover without letting it be cached', async (t) => {
+test('a valid signed token survives shared authorization and serves a private or draft event cover', async (t) => {
   const filename = 'event-4-1788108214313-aaaaaaaa.png';
   const { baseUrl, streamed } = await startApi(t, { eventCoverVisible: async () => { throw new Error('must not query visibility once a token is valid'); }, groupForCover: async () => null });
 
   const response = await fetch(`${baseUrl}/api/media/event/${filename}?token=${encodeURIComponent(mint('event-cover', filename))}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
+  assert.deepEqual(streamed.event, [{ filename, cacheControl: 'private, no-store, max-age=0' }]);
+});
+
+test('an event owner may retrieve a private cover through the media API without a signed URL', async (t) => {
+  const filename = 'event-4-1788108214313-aaaaaaaa.png';
+  const user = { id: 7, role: 'customer', sessionVersion: 1 };
+  const { baseUrl, streamed } = await startApi(t, { user, eventCoverVisible: async (_filename, userId) => userId === user.id ? { id: 4, publiclyVisible: false } : null, groupForCover: async () => null });
+  const payload = Buffer.from(JSON.stringify({ id: user.id, sessionVersion: 1, exp: Date.now() + 60000 })).toString('base64url');
+  const authorization = `${payload}.${crypto.createHmac('sha256', SECRET).update(payload).digest('base64url')}`;
+
+  const response = await fetch(`${baseUrl}/api/media/event/${filename}`, { headers: { Authorization: `Bearer ${authorization}` } });
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
@@ -147,6 +162,13 @@ test('a published public event cover is served without a token and stays shared-
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'public, max-age=86400');
   assert.deepEqual(streamed.event, [{ filename, cacheControl: undefined }]);
+
+  // The dynamic endpoint uses the same access result and remains safe for a
+  // public event even when a caller does not have a signed URL.
+  const apiResponse = await fetch(`${baseUrl}/api/media/event/${filename}`);
+  assert.equal(apiResponse.status, 200);
+  assert.equal(apiResponse.headers.get('cache-control'), 'public, max-age=86400');
+  assert.deepEqual(streamed.event, [{ filename, cacheControl: undefined }, { filename, cacheControl: undefined }]);
 });
 
 test('an event cover token minted for another event or another resource kind is rejected', async (t) => {
@@ -166,6 +188,17 @@ test('an event cover token minted for another event or another resource kind is 
     assert.equal(response.status, 403, `expected 403 for ${reason}`);
     assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0', `expected protected no-store for ${reason}`);
   }
+  assert.deepEqual(streamed.event, []);
+});
+
+test('an anonymous request without a token cannot read a private event cover from the media API', async (t) => {
+  const filename = 'event-4-1788108214313-aaaaaaaa.png';
+  const { baseUrl, streamed } = await startApi(t, { eventCoverVisible: async () => null, groupForCover: async () => null });
+
+  const response = await fetch(`${baseUrl}/api/media/event/${filename}`);
+
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
   assert.deepEqual(streamed.event, []);
 });
 
