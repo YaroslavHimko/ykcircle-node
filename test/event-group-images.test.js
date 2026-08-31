@@ -15,7 +15,7 @@ const mint = (namespace, filename, { expiresInMs = 60000, signNamespace, signPay
   return `${payload}.${signPayload ? sign(payload, signNamespace ?? namespace) : 'not-a-signature'}`;
 };
 
-const startApi = async (t, { eventCoverVisible, groupForCover, user = null }) => {
+const startApi = async (t, { eventCoverVisible, groupForCover, user = null, initialize = async () => {} }) => {
   const streamed = { event: [], group: [] };
   const app = express();
   app.use(express.json());
@@ -23,7 +23,7 @@ const startApi = async (t, { eventCoverVisible, groupForCover, user = null }) =>
     config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: SECRET, maps: { enabled: false } } },
     database: {},
     queries: {
-      initialize: async () => {},
+      initialize,
       findUserById: async (id) => user?.id === id ? user : null,
       eventCoverVisible: async (...args) => eventCoverVisible(...args),
       groupForCover: async (...args) => groupForCover(...args),
@@ -130,7 +130,7 @@ test('a private draft event tokens the bare cover filename, not the stored full 
 
 test('a valid signed token survives shared authorization and serves a private or draft event cover', async (t) => {
   const filename = 'event-4-1788108214313-aaaaaaaa.png';
-  const { baseUrl, streamed } = await startApi(t, { eventCoverVisible: async () => { throw new Error('must not query visibility once a token is valid'); }, groupForCover: async () => null });
+  const { baseUrl, streamed } = await startApi(t, { initialize: async () => { throw new Error('must not initialize or reauthorize a valid signed media request'); }, eventCoverVisible: async () => { throw new Error('must not query visibility once a token is valid'); }, groupForCover: async () => null });
 
   const response = await fetch(`${baseUrl}/api/media/event/${filename}?token=${encodeURIComponent(mint('event-cover', filename))}`);
 

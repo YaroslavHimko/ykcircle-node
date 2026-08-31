@@ -284,6 +284,7 @@ export class Api {
       req.mediaRequestId = mediaRequestId();
       const routeToken = validateImageToken(tokenKind, req.query.token, req.params.filename);
       let result = null;
+      let finalAuthorization = null;
       attachMediaResponseLog(req, res, () => ({
         mediaType: kind,
         authorizationSurface: 'protected-api',
@@ -293,27 +294,53 @@ export class Api {
         publicAccess: result?.access.publicAccess ?? false,
         authenticatedUserAccess: result?.access.authenticatedUserAccess ?? false,
         adminAccess: result?.access.adminAccess ?? false,
+        finalAuthorization: finalAuthorization ?? (result?.allowed ? 'allowed' : 'denied'),
         authorizationReason: result?.authorizationReason ?? null,
       }));
       logProtectedMedia(req, { mediaType: kind, stage: 'route-reached', tokenValid: routeToken.valid, tokenExpired: routeToken.expired, signedTokenAccess: routeToken.valid });
       try {
+        // A verified, filename-bound token is the authorization capability for
+        // browser image loads. Do not revalidate it after asynchronous work or
+        // apply event visibility rules that require a logged-in user.
+        if (routeToken.valid) {
+          result = {
+            access: { publicAccess: false, signedTokenAccess: true, authenticatedUserAccess: false, adminAccess: false },
+            tokenPresent: true,
+            token: routeToken,
+            media: null,
+            allowed: true,
+            authorizationReason: 'signed-media-token',
+          };
+          finalAuthorization = 'allowed';
+          res.set({ 'Cache-Control': 'private, no-store, max-age=0', Vary: 'Authorization' });
+          if (!await stream(req.params.filename, res, 'private, no-store, max-age=0')) {
+            logProtectedMedia(req, { mediaType: kind, tokenValid: true, tokenExpired: false, ...result.access, finalAuthorization: 'allowed', authorization: 'allowed', authorizationReason: result.authorizationReason, status: 404, denialBranch: 'missing-from-storage' });
+            return res.status(404).json({ error: message });
+          }
+          logProtectedMedia(req, { mediaType: kind, tokenValid: true, tokenExpired: false, ...result.access, finalAuthorization: 'allowed', authorization: 'allowed', authorizationReason: result.authorizationReason, status: 200 });
+          return;
+        }
         await ensureTable();
         result = await mediaAccess({ req, tokenKind, visible, allowSignedToken: true });
         const privateResponse = result.access.signedTokenAccess || !result.access.publicAccess;
         res.set({ 'Cache-Control': privateResponse ? 'private, no-store, max-age=0' : 'public, max-age=86400', Vary: 'Authorization' });
         if (!result.allowed) {
-          logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, authorization: 'denied', authorizationReason: result.authorizationReason, status: 403 });
+          finalAuthorization = 'denied';
+          logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, finalAuthorization: 'denied', authorization: 'denied', authorizationReason: result.authorizationReason, status: 403, denialBranch: 'final-authorization' });
           return res.status(403).json({ error: 'Protected media access denied.' });
         }
         if (!await stream(req.params.filename, res, privateResponse ? 'private, no-store, max-age=0' : undefined)) {
-          logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, authorization: 'allowed', authorizationReason: result.authorizationReason, status: 404 });
+          finalAuthorization = 'allowed';
+          logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, finalAuthorization: 'allowed', authorization: 'allowed', authorizationReason: result.authorizationReason, status: 404, denialBranch: 'missing-from-storage' });
           return res.status(404).json({ error: message });
         }
-        logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, authorization: 'allowed', authorizationReason: result.authorizationReason, status: 200 });
+        finalAuthorization = 'allowed';
+        logProtectedMedia(req, { mediaType: kind, tokenValid: result.token.valid, tokenExpired: result.token.expired, ...result.access, finalAuthorization: 'allowed', authorization: 'allowed', authorizationReason: result.authorizationReason, status: 200 });
       } catch (error) {
         console.error(`${kind} protected media proxy failed:`, error.message);
         if (!res.headersSent) {
-          logProtectedMedia(req, { mediaType: kind, tokenValid: false, tokenExpired: false, authorization: 'error', authorizationReason: 'internal-error', status: 502 });
+          finalAuthorization = 'error';
+          logProtectedMedia(req, { mediaType: kind, tokenValid: false, tokenExpired: false, finalAuthorization, authorization: 'error', authorizationReason: 'internal-error', status: 502, denialBranch: 'internal-error' });
           return res.status(502).json({ error: 'Unable to load image.' });
         }
       }
