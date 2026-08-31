@@ -1,6 +1,5 @@
 import ftp from 'basic-ftp';
-import { Readable } from 'node:stream';
-import { PassThrough } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 
 const IMAGE_TYPES = new Map([
   ['image/jpeg', { extension: 'jpg', signature: (buffer) => buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff }],
@@ -191,28 +190,37 @@ export class FtpService {
     }
     const contentTypes = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
     const extension = filename.split('.').pop().toLowerCase();
-    const client = new ftp.Client(this.config.timeoutMs);
-    client.ftp.verbose = false;
-    const stream = new PassThrough();
+    let client;
     let stage = 'connect';
     try {
-      await client.access({ host: this.config.host, user: this.config.user, password: this.config.password, secure: this.config.secure, secureOptions: this.config.tlsServername ? { servername: this.config.tlsServername } : undefined });
+      client = await this.connect();
       stage = 'change-directory';
       await client.cd(uploadPath);
       // Check existence before sending response headers. A missing file is a
       // genuine 404; connection/authentication failures must remain errors.
       stage = 'check-file';
       await client.size(filename);
+
+      // Do not commit a 200 response until the FTP transfer has completed.
+      // This guarantees a transfer failure is returned as a normal 5xx instead
+      // of a truncated image body with successful response headers.
+      const chunks = [];
+      const download = new Writable({
+        write(chunk, _encoding, callback) {
+          chunks.push(Buffer.from(chunk));
+          callback();
+        }
+      });
+      stage = 'download-file';
+      await client.downloadTo(download, filename);
+      const image = Buffer.concat(chunks);
+
       response.set('Content-Type', contentTypes[extension]);
       response.set('Cache-Control', cacheControl);
-      stream.on('close', () => client.close());
-      stream.pipe(response);
-      stage = 'download-file';
-      await client.downloadTo(stream, filename);
-      stream.end();
+      response.set('Content-Length', String(image.length));
+      response.end(image);
       return true;
     } catch (error) {
-      client.close();
       const code = String(error.code || '');
       // FTP 550/450 can also mean a bad directory or insufficient permission.
       // Treat them as a 404 only after the directory was entered successfully
@@ -221,10 +229,16 @@ export class FtpService {
         console.warn('FTP image is missing from configured storage.', { filename, remotePath, stage, code });
         return false;
       }
-      console.error('FTP image read failed.', { filename, remotePath, stage, code: code || null });
-      if (!response.headersSent) throw error;
-      stream.destroy(error);
-      return true;
+      console.error('FTP image read failed.', {
+        filename,
+        remotePath,
+        stage,
+        code: code || null,
+        message: error.message || String(error)
+      });
+      throw error;
+    } finally {
+      client?.close();
     }
   }
 }

@@ -40,3 +40,56 @@ test('does not allow path traversal when streaming or deleting images', async ()
   assert.equal(await service.deleteArticleImage('../secret.jpg'), false);
   assert.equal(await service.deleteGroupCover('script.svg'), false);
 });
+
+test('downloads protected media before committing successful response headers', async () => {
+  const service = new FtpService(config());
+  let closed = 0;
+  service.connect = async () => ({
+    cd: async () => {},
+    size: async () => 4,
+    downloadTo: async (destination) => {
+      destination.write(Buffer.from([137, 80]));
+      destination.write(Buffer.from([78, 71]));
+      destination.end();
+    },
+    close: () => { closed += 1; }
+  });
+  const response = {
+    headers: {},
+    set(name, value) { this.headers[name.toLowerCase()] = value; },
+    end(body) { this.body = body; }
+  };
+
+  assert.equal(await service.streamImage('cover.png', service.config.uploadPath, response, 'private, no-store, max-age=0'), true);
+  assert.deepEqual(response.body, Buffer.from([137, 80, 78, 71]));
+  assert.equal(response.headers['content-type'], 'image/png');
+  assert.equal(response.headers['cache-control'], 'private, no-store, max-age=0');
+  assert.equal(response.headers['content-length'], '4');
+  assert.equal(closed, 1);
+});
+
+test('does not commit a 200 response when the FTP download fails', async () => {
+  const service = new FtpService(config());
+  service.connect = async () => ({
+    cd: async () => {},
+    size: async () => 4,
+    downloadTo: async () => {
+      const error = new Error('FTP data connection reset');
+      error.code = 'ECONNRESET';
+      throw error;
+    },
+    close: () => {}
+  });
+  const response = {
+    headers: {},
+    set(name, value) { this.headers[name.toLowerCase()] = value; },
+    end() { this.ended = true; }
+  };
+
+  await assert.rejects(
+    service.streamImage('cover.png', service.config.uploadPath, response),
+    /FTP data connection reset/
+  );
+  assert.deepEqual(response.headers, {});
+  assert.equal(response.ended, undefined);
+});
