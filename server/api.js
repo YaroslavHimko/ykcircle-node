@@ -211,6 +211,21 @@ export class Api {
       return res.status(404).json({ error: message });
     };
     const mediaRequestId = () => crypto.randomBytes(12).toString('hex');
+    const redactedMediaUrl = (url) => String(url || '').replace(/([?&]token=)[^&]*/gi, '$1[present]');
+    const attachMediaResponseLog = (req, res, details) => {
+      res.once('finish', () => console.info('Media response completed.', {
+        requestId: req.mediaRequestId,
+        route: req.path,
+        originalUrl: redactedMediaUrl(req.originalUrl || req.url),
+        filename: req.params.filename,
+        tokenPresent: Boolean(req.query.token),
+        status: res.statusCode,
+        location: res.getHeader('location') || null,
+        contentType: res.getHeader('content-type') || null,
+        cacheControl: res.getHeader('cache-control') || null,
+        ...details(),
+      }));
+    };
     const mediaAccess = async ({ req, tokenKind, visible, allowSignedToken }) => {
       const tokenPresent = allowSignedToken && Boolean(req.query.token);
       const token = allowSignedToken ? validateImageToken(tokenKind, req.query.token, req.params.filename) : { valid: false, expired: false };
@@ -242,8 +257,9 @@ export class Api {
       return { access, tokenPresent, token, media, allowed, authorizationReason };
     };
     const publicMediaRoute = ({ route, label, visible, stream, message }) => app.get(route, async (req, res) => {
+      req.mediaRequestId = mediaRequestId();
+      attachMediaResponseLog(req, res, () => ({ mediaType: label, authorizationSurface: 'public-uploads' }));
       try {
-        req.mediaRequestId = mediaRequestId();
         await ensureTable();
         // Do not use supplied credentials or tokens here: /uploads is public
         // only, and private media must be requested through /api/media.
@@ -267,10 +283,22 @@ export class Api {
     const protectedMediaRoute = ({ kind, tokenKind, visible, stream, message }) => app.get(`/api/media/${kind}/:filename`, optionalAuthenticate, async (req, res) => {
       req.mediaRequestId = mediaRequestId();
       const routeToken = validateImageToken(tokenKind, req.query.token, req.params.filename);
+      let result = null;
+      attachMediaResponseLog(req, res, () => ({
+        mediaType: kind,
+        authorizationSurface: 'protected-api',
+        tokenValid: result?.token.valid ?? routeToken.valid,
+        tokenExpired: result?.token.expired ?? routeToken.expired,
+        signedTokenAccess: result?.access.signedTokenAccess ?? routeToken.valid,
+        publicAccess: result?.access.publicAccess ?? false,
+        authenticatedUserAccess: result?.access.authenticatedUserAccess ?? false,
+        adminAccess: result?.access.adminAccess ?? false,
+        authorizationReason: result?.authorizationReason ?? null,
+      }));
       logProtectedMedia(req, { mediaType: kind, stage: 'route-reached', tokenValid: routeToken.valid, tokenExpired: routeToken.expired, signedTokenAccess: routeToken.valid });
       try {
         await ensureTable();
-        const result = await mediaAccess({ req, tokenKind, visible, allowSignedToken: true });
+        result = await mediaAccess({ req, tokenKind, visible, allowSignedToken: true });
         const privateResponse = result.access.signedTokenAccess || !result.access.publicAccess;
         res.set({ 'Cache-Control': privateResponse ? 'private, no-store, max-age=0' : 'public, max-age=86400', Vary: 'Authorization' });
         if (!result.allowed) {

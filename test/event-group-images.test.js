@@ -135,6 +135,8 @@ test('a valid signed token survives shared authorization and serves a private or
   const response = await fetch(`${baseUrl}/api/media/event/${filename}?token=${encodeURIComponent(mint('event-cover', filename))}`);
 
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get('location'), null);
+  assert.equal(response.headers.get('content-type'), 'image/png');
   assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
   assert.deepEqual(streamed.event, [{ filename, cacheControl: 'private, no-store, max-age=0' }]);
 });
