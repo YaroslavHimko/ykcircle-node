@@ -16,7 +16,7 @@ const mint = (namespace, filename, { expiresInMs = 60000, signNamespace, signPay
 };
 const protectedPath = (kind, filename, token) => `/api/media/${kind}/${encodeURIComponent(token)}/${encodeURIComponent(filename)}`;
 
-const startApi = async (t, { eventCoverVisible, groupForCover, user = null, initialize = async () => {} }) => {
+const startApi = async (t, { eventCoverVisible, groupForCover, user = null, initialize = async () => {}, eventStream } = {}) => {
   const streamed = { event: [], group: [] };
   const app = express();
   app.use(express.json());
@@ -33,13 +33,13 @@ const startApi = async (t, { eventCoverVisible, groupForCover, user = null, init
     ftpService: ftp('/uploads/profiles'),
     eventFtpService: {
       publicPath: () => '/uploads/event-covers',
-      streamEventCover: async (filename, response, cacheControl) => {
+      streamEventCover: eventStream || (async (filename, response, cacheControl) => {
         streamed.event.push({ filename, cacheControl });
         response.set('Content-Type', 'image/png');
         response.set('Cache-Control', cacheControl || 'public, max-age=86400');
         response.end('event-png');
         return true;
-      },
+      }),
     },
     groupFtpService: {
       publicPath: () => '/uploads/group-covers',
@@ -140,6 +140,23 @@ test('a valid signed token survives shared authorization and serves a private or
   assert.equal(response.headers.get('content-type'), 'image/png');
   assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
   assert.deepEqual(streamed.event, [{ filename, cacheControl: 'private, no-store, max-age=0' }]);
+});
+
+test('a protected FTP read failure returns a complete 502 instead of a partial 200 image', async (t) => {
+  const filename = 'event-4-1788108214313-aaaaaaaa.png';
+  const { baseUrl } = await startApi(t, {
+    initialize: async () => { throw new Error('a valid signed request must not reach visibility setup'); },
+    eventCoverVisible: async () => { throw new Error('a valid signed request must not query visibility'); },
+    groupForCover: async () => null,
+    eventStream: async () => { throw new Error('FTP data connection reset'); },
+  });
+
+  const response = await fetch(`${baseUrl}${protectedPath('event', filename, mint('event-cover', filename))}`);
+
+  assert.equal(response.status, 502);
+  assert.match(response.headers.get('content-type'), /^application\/json/);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
+  assert.deepEqual(await response.json(), { error: 'Unable to load image.' });
 });
 
 test('an event owner may retrieve a private cover through the media API without a signed URL', async (t) => {
