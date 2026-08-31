@@ -122,7 +122,7 @@ test('a private draft event tokens the bare cover filename, not the stored full 
 
   assert.equal(response.status, 200);
   const [urlPath, query] = body.coverImageUrl.split('?');
-  assert.equal(urlPath, '/uploads/event-covers/event-1-1786906288459.png');
+  assert.equal(urlPath, '/api/media/event/event-1-1786906288459.png');
   const [tokenPayload] = new URLSearchParams(query).get('token').split('.');
   assert.equal(JSON.parse(Buffer.from(tokenPayload, 'base64url').toString()).filename, 'event-1-1786906288459.png');
 });
@@ -131,11 +131,11 @@ test('a signed token serves a draft event cover without letting it be cached', a
   const filename = 'event-4-1788108214313-aaaaaaaa.png';
   const { baseUrl, streamed } = await startApi(t, { eventCoverVisible: async () => { throw new Error('must not query visibility once a token is valid'); }, groupForCover: async () => null });
 
-  const response = await fetch(`${baseUrl}/uploads/event-covers/${filename}?token=${encodeURIComponent(mint('event-cover', filename))}`);
+  const response = await fetch(`${baseUrl}/api/media/event/${filename}?token=${encodeURIComponent(mint('event-cover', filename))}`);
 
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get('cache-control'), 'private, no-store');
-  assert.deepEqual(streamed.event, [{ filename, cacheControl: 'private, no-store' }]);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
+  assert.deepEqual(streamed.event, [{ filename, cacheControl: 'private, no-store, max-age=0' }]);
 });
 
 test('a published public event cover is served without a token and stays shared-cacheable', async (t) => {
@@ -162,12 +162,9 @@ test('an event cover token minted for another event or another resource kind is 
   };
 
   for (const [reason, token] of Object.entries(rejected)) {
-    const response = await fetch(`${baseUrl}/uploads/event-covers/${filename}?token=${encodeURIComponent(token)}`);
-    assert.equal(response.status, 404, `expected 404 for ${reason}`);
-    // A CDN in front of this API caches by path and ignores the query
-    // string the token rides in, so this must say so explicitly or a later
-    // request with a valid token gets served the stale 404.
-    assert.equal(response.headers.get('cache-control'), 'no-store', `expected no-store for ${reason}`);
+    const response = await fetch(`${baseUrl}/api/media/event/${filename}?token=${encodeURIComponent(token)}`);
+    assert.equal(response.status, 403, `expected 403 for ${reason}`);
+    assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0', `expected protected no-store for ${reason}`);
   }
   assert.deepEqual(streamed.event, []);
 });
@@ -176,11 +173,11 @@ test('a signed token serves a private group cover without letting it be cached',
   const filename = 'group-2-1788108214313-cccccccc.png';
   const { baseUrl, streamed } = await startApi(t, { eventCoverVisible: async () => null, groupForCover: async () => { throw new Error('must not query visibility once a token is valid'); } });
 
-  const response = await fetch(`${baseUrl}/uploads/group-covers/${filename}?token=${encodeURIComponent(mint('group-cover', filename))}`);
+  const response = await fetch(`${baseUrl}/api/media/group/${filename}?token=${encodeURIComponent(mint('group-cover', filename))}`);
 
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get('cache-control'), 'private, no-store');
-  assert.deepEqual(streamed.group, [{ filename, cacheControl: 'private, no-store' }]);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
+  assert.deepEqual(streamed.group, [{ filename, cacheControl: 'private, no-store, max-age=0' }]);
 });
 
 test('a public group cover is served without a token and stays shared-cacheable', async (t) => {

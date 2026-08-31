@@ -16,7 +16,7 @@ const mint = (filename, { expiresInMs = 60000, namespace, signPayload = true } =
   return `${payload}.${signPayload ? sign(payload, namespace) : 'not-a-signature'}`;
 };
 
-const startApi = async (t, { visible }) => {
+const startApi = async (t, { visible, user = null }) => {
   const streamed = [];
   const visibilityCalls = [];
   const app = express();
@@ -26,7 +26,8 @@ const startApi = async (t, { visible }) => {
     database: {},
     queries: {
       initialize: async () => {},
-      venueImageVisible: async (...args) => { visibilityCalls.push(args); return visible; },
+      venueImageVisible: async (...args) => { visibilityCalls.push(args); return typeof visible === 'function' ? visible(...args) : visible; },
+      findUserById: async (id) => user?.id === id ? user : null,
     },
     emailService: {},
     ftpService: ftp('/uploads/profiles'),
@@ -54,15 +55,36 @@ test('a signed token serves an unapproved venue image without letting it be cach
   // venueImageVisible would refuse this image: a valid token is the only way in.
   const { baseUrl, streamed, visibilityCalls } = await startApi(t, { visible: null });
 
-  const response = await fetch(`${baseUrl}/uploads/venue-images/${FILENAME}?token=${encodeURIComponent(mint(FILENAME))}`);
+  const response = await fetch(`${baseUrl}/api/media/venue/${FILENAME}?token=${encodeURIComponent(mint(FILENAME))}`);
 
   assert.equal(response.status, 200);
   assert.equal(await response.text(), 'png-bytes');
-  assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
   assert.equal(response.headers.get('vary'), 'Authorization');
-  assert.deepEqual(streamed, [{ filename: FILENAME, cacheControl: 'private, no-store' }]);
+  assert.deepEqual(streamed, [{ filename: FILENAME, cacheControl: 'private, no-store, max-age=0' }]);
   // A valid token short-circuits the lookup rather than adding a query.
   assert.deepEqual(visibilityCalls, []);
+
+  // The old storage/public path ignores signed tokens. This guarantees a
+  // protected response never depends on the CDN-classified /uploads route.
+  const oldPath = await fetch(`${baseUrl}/uploads/venue-images/${FILENAME}?token=${encodeURIComponent(mint(FILENAME))}`);
+  assert.equal(oldPath.status, 404);
+  assert.deepEqual(streamed, [{ filename: FILENAME, cacheControl: 'private, no-store, max-age=0' }]);
+});
+
+test('an authorized user may retrieve private venue media through the API route without a URL token', async (t) => {
+  const user = { id: 7, role: 'venue_owner', sessionVersion: 1 };
+  const { baseUrl, streamed, visibilityCalls } = await startApi(t, { user, visible: (_filename, userId) => userId === user.id ? { id: 1, publiclyVisible: false } : null });
+  const payload = Buffer.from(JSON.stringify({ id: user.id, sessionVersion: 1, exp: Date.now() + 60000 })).toString('base64url');
+  const authorization = `${payload}.${crypto.createHmac('sha256', SECRET).update(payload).digest('base64url')}`;
+
+  const response = await fetch(`${baseUrl}/api/media/venue/${FILENAME}`, { headers: { Authorization: `Bearer ${authorization}` } });
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'png-bytes');
+  assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0');
+  assert.deepEqual(visibilityCalls, [[FILENAME, user.id, user.role]]);
+  assert.deepEqual(streamed, [{ filename: FILENAME, cacheControl: 'private, no-store, max-age=0' }]);
 });
 
 test('a public venue image is served without a token and stays shared-cacheable', async (t) => {
@@ -91,13 +113,10 @@ test('venue image tokens are rejected when replayed, tampered with, expired, or 
   };
 
   for (const [reason, token] of Object.entries(rejected)) {
-    const response = await fetch(`${baseUrl}/uploads/venue-images/${FILENAME}?token=${encodeURIComponent(token)}`);
-    assert.equal(response.status, 404, `expected 404 for ${reason}`);
-    assert.deepEqual(await response.json(), { error: 'Image not found.' });
-    // A CDN in front of this API caches by path and ignores the query
-    // string the token rides in, so an anonymous 404 must say so explicitly
-    // or a later request with a valid token gets served the stale 404.
-    assert.equal(response.headers.get('cache-control'), 'no-store', `expected no-store for ${reason}`);
+    const response = await fetch(`${baseUrl}/api/media/venue/${FILENAME}?token=${encodeURIComponent(token)}`);
+    assert.equal(response.status, 403, `expected 403 for ${reason}`);
+    assert.deepEqual(await response.json(), { error: 'Protected media access denied.' });
+    assert.equal(response.headers.get('cache-control'), 'private, no-store, max-age=0', `expected protected no-store for ${reason}`);
   }
 
   // Nothing reached storage for any rejected token.

@@ -85,8 +85,12 @@ export class Api {
     
     const ensureTable = () => this.queries.initialize();
     const articleImageUrl = (filename) => `${this.articleFtpService.publicPath()}/${encodeURIComponent(filename)}`;
-    const groupCoverUrl = (filename, token = null) => filename ? `${this.groupFtpService.publicPath()}/${encodeURIComponent(filename)}${token ? `?token=${encodeURIComponent(token)}` : ''}` : null;
-    const eventCoverUrl = (filename, token = null) => filename ? `${this.eventFtpService.publicPath()}/${encodeURIComponent(filename)}${token ? `?token=${encodeURIComponent(token)}` : ''}` : null;
+    // Public media keeps its CDN-cacheable upload URL. Protected media must
+    // always use an API route so a CDN never mistakes a tokenized request for
+    // a static asset and serves it without reaching this process.
+    const protectedMediaUrl = (kind, filename, token) => `/api/media/${kind}/${encodeURIComponent(filename)}?token=${encodeURIComponent(token)}`;
+    const groupCoverUrl = (filename, token = null) => filename ? (token ? protectedMediaUrl('group', filename, token) : `${this.groupFtpService.publicPath()}/${encodeURIComponent(filename)}`) : null;
+    const eventCoverUrl = (filename, token = null) => filename ? (token ? protectedMediaUrl('event', filename, token) : `${this.eventFtpService.publicPath()}/${encodeURIComponent(filename)}`) : null;
     // An event's cover is publicly cacheable once it is Published and Public;
     // otherwise only its manager (or a site manager/admin) gets a signed
     // token, mirroring the venue image contract. Unlike venues, an event's
@@ -184,32 +188,87 @@ export class Api {
       const payload = Buffer.from(JSON.stringify({ filename, exp: Date.now() + imageTokenTtlMs })).toString('base64url');
       return `${payload}.${signImagePayload(kind, payload)}`;
     };
-    const createImageTokenAllows = (kind) => (token, filename) => {
+    const validateImageToken = (kind, token, filename) => {
       const [payload, signature] = String(token || '').split('.');
-      if (!payload || !signature) return false;
+      if (!payload || !signature) return { valid: false, expired: false };
       const expected = signImagePayload(kind, payload);
       // timingSafeEqual throws on a length mismatch, so compare lengths first.
-      if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
-      try { const data = JSON.parse(Buffer.from(payload, 'base64url').toString()); return data.filename === filename && data.exp > Date.now(); }
-      catch { return false; }
+      if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return { valid: false, expired: false };
+      try {
+        const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+        if (data.filename !== filename) return { valid: false, expired: false };
+        return { valid: data.exp > Date.now(), expired: data.exp <= Date.now() };
+      } catch { return { valid: false, expired: false }; }
     };
     const venueImageToken = createImageToken('venue-image');
-    const venueImageTokenAllows = createImageTokenAllows('venue-image');
     const groupCoverToken = createImageToken('group-cover');
-    const groupCoverTokenAllows = createImageTokenAllows('group-cover');
     const eventCoverToken = createImageToken('event-cover');
-    const eventCoverTokenAllows = createImageTokenAllows('event-cover');
-    // A 404 here can mean "not visible to this requester" or "the DB says
-    // it's visible but the file isn't actually in storage". Keep both the
-    // response and private image reads out of shared caches, and log only the
-    // filename and storage diagnostic - never the signed token.
+    // Public upload routes deliberately do not honour image tokens. They are
+    // only storage/public-CDN endpoints; protected bytes are served below.
     const imageNotFound = (req, res, label, message, reason, extra = {}) => {
       console.warn(`${label} image request denied.`, { filename: req.params.filename, reason, hasToken: Boolean(req.query.token), userId: req.user?.id ?? null, role: req.user?.role ?? null, ...extra });
       res.set('Cache-Control', 'no-store');
       return res.status(404).json({ error: message });
     };
-    app.get(venueUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); res.set('Vary', 'Authorization'); const tokenOk = venueImageTokenAllows(req.query.token, req.params.filename); const visible = tokenOk ? { publiclyVisible: false } : await this.queries.venueImageVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null); if (!visible) return imageNotFound(req, res, 'Venue', 'Image not found.', req.query.token ? 'invalid-or-expired-token' : 'not-visible-to-requester'); if (!await this.venueFtpService.streamVenueImage(req.params.filename, res, visible.publiclyVisible ? undefined : 'private, no-store')) return imageNotFound(req, res, 'Venue', 'Image not found.', 'missing-from-storage'); } catch (error) { console.error('Venue image proxy failed:', error.message); if (!res.headersSent) { res.set('Cache-Control', 'no-store'); return res.status(502).json({ error: 'Unable to load image.' }); } } });
-    app.get(eventUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); res.set('Vary', 'Authorization'); const tokenOk = eventCoverTokenAllows(req.query.token, req.params.filename); const visible = tokenOk ? { publiclyVisible: false } : await this.queries.eventCoverVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null); if (!visible) return imageNotFound(req, res, 'Event', 'Image not found.', req.query.token ? 'invalid-or-expired-token' : 'not-visible-to-requester'); if (!await this.eventFtpService.streamEventCover(req.params.filename, res, visible.publiclyVisible ? undefined : 'private, no-store')) return imageNotFound(req, res, 'Event', 'Image not found.', 'missing-from-storage'); } catch (error) { console.error('Event image proxy failed:', error.message); if (!res.headersSent) { res.set('Cache-Control', 'no-store'); return res.status(502).json({ error: 'Unable to load image.' }); } } });
+    const publicMediaRoute = ({ route, label, visible, stream, message }) => app.get(route, async (req, res) => {
+      try {
+        await ensureTable();
+        // Do not use supplied credentials or tokens here: /uploads is public
+        // only, and private media must be requested through /api/media.
+        const media = await visible(req.params.filename, null, null);
+        if (!media?.publiclyVisible) return imageNotFound(req, res, label, message, 'not-public');
+        if (!await stream(req.params.filename, res)) return imageNotFound(req, res, label, message, 'missing-from-storage');
+      } catch (error) {
+        console.error(`${label} public image proxy failed:`, error.message);
+        if (!res.headersSent) { res.set('Cache-Control', 'no-store'); return res.status(502).json({ error: 'Unable to load image.' }); }
+      }
+    });
+    const logProtectedMedia = (req, details) => console.info('Protected media request.', {
+      route: req.path,
+      mediaType: req.params.kind,
+      filename: req.params.filename,
+      hasToken: Boolean(req.query.token),
+      userId: req.user?.id ?? null,
+      ...details,
+    });
+    const protectedMediaRoute = ({ kind, tokenKind, visible, stream, message }) => app.get(`/api/media/${kind}/:filename`, optionalAuthenticate, async (req, res) => {
+      const tokenPresent = Boolean(req.query.token);
+      const token = validateImageToken(tokenKind, req.query.token, req.params.filename);
+      logProtectedMedia(req, { mediaType: kind, stage: 'route-reached', tokenValid: token.valid, tokenExpired: token.expired });
+      res.set({ 'Cache-Control': 'private, no-store, max-age=0', Vary: 'Authorization' });
+      try {
+        if (tokenPresent && !token.valid) {
+          logProtectedMedia(req, { mediaType: kind, tokenValid: false, tokenExpired: token.expired, authorization: 'denied', status: 403 });
+          return res.status(403).json({ error: 'Protected media access denied.' });
+        }
+        await ensureTable();
+        const media = token.valid ? { publiclyVisible: false } : await visible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null);
+        // This endpoint is solely for protected media. A signed URL is an
+        // authorization grant; without it, only an authenticated caller with
+        // normal access rules may retrieve a non-public image.
+        if (!media || (!token.valid && (!req.user || media.publiclyVisible))) {
+          logProtectedMedia(req, { mediaType: kind, tokenValid: token.valid, tokenExpired: false, authorization: 'denied', status: 403 });
+          return res.status(403).json({ error: 'Protected media access denied.' });
+        }
+        if (!await stream(req.params.filename, res, 'private, no-store, max-age=0')) {
+          logProtectedMedia(req, { mediaType: kind, tokenValid: token.valid, tokenExpired: false, authorization: token.valid ? 'signed-token' : 'authenticated-user', status: 404 });
+          return res.status(404).json({ error: message });
+        }
+        logProtectedMedia(req, { mediaType: kind, tokenValid: token.valid, tokenExpired: false, authorization: token.valid ? 'signed-token' : 'authenticated-user', status: 200 });
+      } catch (error) {
+        console.error(`${kind} protected media proxy failed:`, error.message);
+        if (!res.headersSent) {
+          logProtectedMedia(req, { mediaType: kind, tokenValid: token.valid, tokenExpired: token.expired, authorization: 'error', status: 502 });
+          return res.status(502).json({ error: 'Unable to load image.' });
+        }
+      }
+    });
+    const mediaVisibility = (method) => (...args) => this.queries[method](...args);
+    const mediaStream = (service, method) => (...args) => service[method](...args);
+    publicMediaRoute({ route: venueUploadRoute, label: 'Venue', visible: mediaVisibility('venueImageVisible'), stream: mediaStream(this.venueFtpService, 'streamVenueImage'), message: 'Image not found.' });
+    publicMediaRoute({ route: eventUploadRoute, label: 'Event', visible: mediaVisibility('eventCoverVisible'), stream: mediaStream(this.eventFtpService, 'streamEventCover'), message: 'Image not found.' });
+    protectedMediaRoute({ kind: 'venue', tokenKind: 'venue-image', visible: mediaVisibility('venueImageVisible'), stream: mediaStream(this.venueFtpService, 'streamVenueImage'), message: 'Image not found.' });
+    protectedMediaRoute({ kind: 'event', tokenKind: 'event-cover', visible: mediaVisibility('eventCoverVisible'), stream: mediaStream(this.eventFtpService, 'streamEventCover'), message: 'Image not found.' });
     const anonymisedIp = (req) => crypto.createHash('sha256').update(`${this.authSecret}:${req.ip || 'unknown'}`).digest('hex').slice(0, 16);
     const writeLimitLog = (scope) => (req, { retryAfter, max, windowMs }) => console.warn('Venue/event write rate limit reached.', {
       scope,
@@ -330,7 +389,8 @@ export class Api {
         return res.status(201).json({ id, reference, status: 'submitted', message: 'Your report has been received.' });
       } catch (error) { console.error('Content report submission failed:', error.message); return res.status(500).json({ error: 'Unable to submit your report.' }); }
     });
-    app.get(groupUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); res.set('Vary', 'Authorization'); const tokenOk = groupCoverTokenAllows(req.query.token, req.params.filename); const visible = tokenOk ? { publiclyVisible: false } : await this.queries.groupForCover(req.params.filename, req.user?.id ?? null, req.user?.role ?? null); if (!visible) return imageNotFound(req, res, 'Group cover', 'Group cover not found.', req.query.token ? 'invalid-or-expired-token' : 'not-visible-to-requester'); if (!await this.groupFtpService.streamGroupCover(req.params.filename, res, visible.publiclyVisible ? undefined : 'private, no-store')) return imageNotFound(req, res, 'Group cover', 'Group cover not found.', 'missing-from-storage'); } catch (error) { console.error('Group cover proxy failed:', error.message); if (!res.headersSent) { res.set('Cache-Control', 'no-store'); return res.status(502).json({ error: 'Unable to load group cover.' }); } } });
+    publicMediaRoute({ route: groupUploadRoute, label: 'Group cover', visible: mediaVisibility('groupForCover'), stream: mediaStream(this.groupFtpService, 'streamGroupCover'), message: 'Group cover not found.' });
+    protectedMediaRoute({ kind: 'group', tokenKind: 'group-cover', visible: mediaVisibility('groupForCover'), stream: mediaStream(this.groupFtpService, 'streamGroupCover'), message: 'Group cover not found.' });
     app.get(articleUploadRoute, optionalAuthenticate, async (req, res) => { try { await ensureTable(); if (!this.articleFtpService || !await this.queries.articleImageVisible(req.params.filename, req.user?.id ?? null, req.user?.role ?? null) || !await this.articleFtpService.streamArticleImage(req.params.filename, res)) return res.status(404).json({ error: 'Article image not found.' }); } catch (error) { console.error('Article image proxy failed:', error.message); if (!res.headersSent) return res.status(502).json({ error: 'Unable to load article image.' }); } });
     const requireAdmin = (req, res, next) => req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required.' });
     // Any registered role can manage the events it owns.  Managers and admins
@@ -476,7 +536,7 @@ export class Api {
     // Venue image URLs are resolved server-side so no caller has to rebuild the
     // upload path. A venue awaiting moderation is only readable by the people
     // who manage it, so their URLs carry a signed token instead.
-    const venueImageUrl = (filename, token = null) => `${this.venueFtpService.publicPath()}/${encodeURIComponent(filename)}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const venueImageUrl = (filename, token = null) => token ? protectedMediaUrl('venue', filename, token) : `${this.venueFtpService.publicPath()}/${encodeURIComponent(filename)}`;
     const decorateVenueImages = (venue) => {
       if (!venue) return venue;
       const tokenFor = venue.canManage && !(venue.isActive && venue.moderationStatus === 'approved') ? venueImageToken : () => null;
