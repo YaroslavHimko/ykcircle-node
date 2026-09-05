@@ -772,7 +772,10 @@ export class Api {
       if (pricingType === 'free' && Number(body.fee || 0) !== 0) errors.fee = 'Free events cannot have a price.';
       if (!['Public', 'Private', 'Members', 'Unlisted'].includes(body.visibility || 'Public')) errors.visibility = 'Invalid visibility.';
       const locationType = body.locationType || 'custom';
-      const locationField = (name) => body[`custom${name[0].toUpperCase()}${name.slice(1)}`];
+      // Draft reads expose the canonical structured location object. Publishing
+      // validates that stored representation, whereas create/update requests
+      // provide the equivalent explicit custom* fields.
+      const locationField = (name) => body[`custom${name[0].toUpperCase()}${name.slice(1)}`] ?? body.location?.[name];
       const customLatitude = locationField('latitude');
       const customLongitude = locationField('longitude');
       const customFormattedAddress = locationField('formattedAddress');
