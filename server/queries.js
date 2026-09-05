@@ -742,31 +742,6 @@ export class Queries {
       FROM venue_owner_applications a LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by_user_id WHERE a.user_id = ?`, [userId]);
     return rows[0] || null;
   }
-  async businessOwnerApplication(userId) {
-    const [rows] = await this.database.execute(`SELECT a.id, a.user_id AS userId, a.message, a.status, a.created_at AS createdAt,
-      a.updated_at AS updatedAt, a.reviewed_at AS reviewedAt, reviewer.name AS reviewerName
-      FROM business_owner_applications a LEFT JOIN users reviewer ON reviewer.id=a.reviewed_by_user_id WHERE a.user_id=?`, [userId]);
-    return rows[0] || null;
-  }
-  async createBusinessOwnerApplication(userId, message = null) {
-    await this.database.execute(`INSERT INTO business_owner_applications (user_id, message, status, reviewed_by_user_id, reviewed_at)
-      VALUES (?, ?, 'pending', NULL, NULL) ON DUPLICATE KEY UPDATE message=VALUES(message), status='pending', reviewed_by_user_id=NULL, reviewed_at=NULL`, [userId, message]);
-    return this.businessOwnerApplication(userId);
-  }
-  async businessOwnerApplications(status = null) {
-    const [rows] = await this.database.execute(`SELECT a.id, a.user_id AS userId, a.message, a.status, a.created_at AS createdAt,
-      a.updated_at AS updatedAt, a.reviewed_at AS reviewedAt, u.name AS userName, u.email AS userEmail, u.role AS userRole,
-      reviewer.name AS reviewerName FROM business_owner_applications a JOIN users u ON u.id=a.user_id
-      LEFT JOIN users reviewer ON reviewer.id=a.reviewed_by_user_id${status ? ' WHERE a.status=?' : ''} ORDER BY a.created_at DESC`, status ? [status] : []);
-    return rows;
-  }
-  async reviewBusinessOwnerApplication(id, status, reviewerId) {
-    const connection = await this.database.getConnection();
-    try { await connection.beginTransaction(); const [applications] = await connection.execute('SELECT user_id AS userId FROM business_owner_applications WHERE id=? FOR UPDATE', [id]); const application = applications[0]; if (!application) { await connection.rollback(); return { error: 'NOT_FOUND' }; }
-      if (status === 'approved') { const [users] = await connection.execute('SELECT role FROM users WHERE id=? FOR UPDATE', [application.userId]); if (!users[0]) { await connection.rollback(); return { error: 'USER_NOT_FOUND' }; } if (!['customer', 'organizer', 'venue_owner', 'business_owner'].includes(users[0].role)) { await connection.rollback(); return { error: 'ROLE_NOT_ELIGIBLE' }; } await connection.execute("UPDATE users SET role='business_owner' WHERE id=?", [application.userId]); }
-      await connection.execute('UPDATE business_owner_applications SET status=?, reviewed_by_user_id=?, reviewed_at=NOW() WHERE id=?', [status, reviewerId, id]); await connection.commit(); return { userId: application.userId, status, role: status === 'approved' ? 'business_owner' : null };
-    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
-  }
   async createVenueOwnerApplication(userId, { businessName, message = null }) {
     await this.database.execute(`INSERT INTO venue_owner_applications (user_id, business_name, message, status, reviewed_by_user_id, reviewed_at)
       VALUES (?, ?, ?, 'pending', NULL, NULL)
@@ -856,179 +831,133 @@ export class Queries {
   }
   async managedOrganizations(userId, role) {
     const [rows] = await this.database.execute(`SELECT o.id, o.name, o.slug, o.description, o.website_url AS websiteUrl,
-      o.phone, o.contact_email AS contactEmail, p.business_registration_status AS businessRegistrationStatus,
-      p.legal_name AS legalName, member.role AS membershipRole
+      o.phone, o.contact_email AS contactEmail, member.role AS membershipRole
       FROM organizations o LEFT JOIN organization_members member ON member.organization_id=o.id AND member.user_id=?
-      JOIN organization_billing_profile p ON p.organization_id=o.id
       WHERE ${['manager', 'admin'].includes(role) ? 'TRUE' : "member.role IN ('owner','admin','manager')"}
       ORDER BY o.name`, [userId]);
     return rows;
   }
-  async ownedRegisteredOrganizations(userId) {
-    const [rows] = await this.database.execute(`SELECT o.id, o.name, o.slug, o.description, o.website_url AS websiteUrl,
-      o.phone, o.contact_email AS contactEmail, p.business_registration_status AS businessRegistrationStatus,
-      p.legal_name AS legalName, member.role AS membershipRole
-      FROM organizations o
-      JOIN organization_members member ON member.organization_id=o.id AND member.user_id=? AND member.role='owner'
-      JOIN organization_billing_profile p ON p.organization_id=o.id
-      ORDER BY o.name`, [userId]);
-    return rows;
+  billingProfileColumns(prefix = 'p') {
+    return `${prefix}.id, ${prefix}.owner_user_id AS ownerUserId, ${prefix}.owner_organization_id AS ownerOrganizationId,
+      ${prefix}.profile_type AS profileType, ${prefix}.legal_name AS legalName, ${prefix}.organization_number AS organizationNumber,
+      ${prefix}.vat_number AS vatNumber, ${prefix}.address_line_1 AS addressLine1, ${prefix}.address_line_2 AS addressLine2,
+      ${prefix}.postal_code AS postalCode, ${prefix}.city, ${prefix}.country, ${prefix}.billing_email AS billingEmail,
+      ${prefix}.phone, ${prefix}.default_currency AS defaultCurrency, ${prefix}.invoice_prefix AS invoicePrefix,
+      ${prefix}.invoice_due_days AS invoiceDueDays, ${prefix}.payment_instructions AS paymentInstructions,
+      ${prefix}.is_default AS isDefault, ${prefix}.is_active AS isActive, ${prefix}.created_at AS createdAt, ${prefix}.updated_at AS updatedAt`;
   }
-  async organizationBillingProfile(organizationId) {
-    const [rows] = await this.database.execute(`SELECT organization_id AS organizationId, legal_name AS legalName, registration_number AS registrationNumber,
-      legal_entity_type AS legalEntityType, country_of_registration AS countryOfRegistration, is_vat_registered AS isVatRegistered,
-      vat_number AS vatNumber, default_vat_rate AS defaultVatRate, tax_country AS taxCountry,
-      registered_address_line_1 AS registeredAddressLine1, registered_address_line_2 AS registeredAddressLine2,
-      postal_code AS postalCode, city, region, country, billing_email AS billingEmail, business_email AS businessEmail,
-      phone, website, bank_name AS bankName, bank_account AS bankAccount, iban, bic, bankgiro, plusgiro,
-      business_swish_number AS businessSwishNumber, default_currency AS defaultCurrency, invoice_prefix AS invoicePrefix,
-      next_invoice_number AS nextInvoiceNumber, invoice_due_days AS invoiceDueDays, payment_instructions AS paymentInstructions,
-      business_registration_status AS businessRegistrationStatus, submitted_at AS submittedAt, reviewed_at AS reviewedAt,
-      reviewed_by_user_id AS reviewedByUserId, review_note AS reviewNote, created_at AS createdAt, updated_at AS updatedAt
-      FROM organization_billing_profile WHERE organization_id=?`, [organizationId]);
-    return rows[0] || null;
-  }
-  async updateOrganizationBillingProfile(organizationId, userId, role, profile) {
-    if (!await this.canManageOrganization(organizationId, userId, role)) return false;
-    const fields = [organizationId, profile.legalName, profile.registrationNumber, profile.legalEntityType, profile.countryOfRegistration,
-      profile.isVatRegistered, profile.vatNumber, profile.defaultVatRate, profile.taxCountry, profile.registeredAddressLine1,
-      profile.registeredAddressLine2, profile.postalCode, profile.city, profile.region, profile.country, profile.billingEmail,
-      profile.businessEmail, profile.phone, profile.website, profile.bankName, profile.bankAccount, profile.iban, profile.bic,
-      profile.bankgiro, profile.plusgiro, profile.businessSwishNumber, profile.defaultCurrency, profile.invoicePrefix,
-      profile.invoiceDueDays, profile.paymentInstructions];
-    const [result] = await this.database.execute(`INSERT INTO organization_billing_profile (organization_id, legal_name, registration_number,
-      legal_entity_type, country_of_registration, is_vat_registered, vat_number, default_vat_rate, tax_country,
-      registered_address_line_1, registered_address_line_2, postal_code, city, region, country, billing_email, business_email,
-      phone, website, bank_name, bank_account, iban, bic, bankgiro, plusgiro, business_swish_number, default_currency,
-      invoice_prefix, invoice_due_days, payment_instructions) VALUES (${fields.map(() => '?').join(', ')})
-      ON DUPLICATE KEY UPDATE legal_name=VALUES(legal_name), registration_number=VALUES(registration_number),
-      legal_entity_type=VALUES(legal_entity_type), country_of_registration=VALUES(country_of_registration),
-      is_vat_registered=VALUES(is_vat_registered), vat_number=VALUES(vat_number), default_vat_rate=VALUES(default_vat_rate),
-      tax_country=VALUES(tax_country), registered_address_line_1=VALUES(registered_address_line_1),
-      registered_address_line_2=VALUES(registered_address_line_2), postal_code=VALUES(postal_code), city=VALUES(city),
-      region=VALUES(region), country=VALUES(country), billing_email=VALUES(billing_email), business_email=VALUES(business_email),
-      phone=VALUES(phone), website=VALUES(website), bank_name=VALUES(bank_name), bank_account=VALUES(bank_account), iban=VALUES(iban),
-      bic=VALUES(bic), bankgiro=VALUES(bankgiro), plusgiro=VALUES(plusgiro), business_swish_number=VALUES(business_swish_number),
-      default_currency=VALUES(default_currency), invoice_prefix=VALUES(invoice_prefix), invoice_due_days=VALUES(invoice_due_days),
-      payment_instructions=VALUES(payment_instructions)`, fields);
-    return result.affectedRows > 0;
-  }
-  async billingProfiles(userId) {
-    const [rows] = await this.database.execute(`SELECT id, owner_user_id AS ownerUserId, owner_organization_id AS ownerOrganizationId,
-      profile_type AS profileType, legal_name AS legalName, registration_number AS registrationNumber, vat_number AS vatNumber,
-      address_line_1 AS addressLine1, address_line_2 AS addressLine2, postal_code AS postalCode, city, region, country,
-      billing_email AS billingEmail, phone, contact_person AS contactPerson, is_default AS isDefault, created_at AS createdAt, updated_at AS updatedAt
-      FROM billing_profiles WHERE owner_user_id=? ORDER BY is_default DESC, updated_at DESC`, [userId]);
-    return rows.map((row) => ({ ...row, isDefault: Boolean(row.isDefault) }));
-  }
-  async billingProfile(profileId, userId) {
-    const [rows] = await this.database.execute(`SELECT id, owner_user_id AS ownerUserId, owner_organization_id AS ownerOrganizationId,
-      profile_type AS profileType, legal_name AS legalName, registration_number AS registrationNumber, vat_number AS vatNumber,
-      address_line_1 AS addressLine1, address_line_2 AS addressLine2, postal_code AS postalCode, city, region, country,
-      billing_email AS billingEmail, phone, contact_person AS contactPerson, is_default AS isDefault FROM billing_profiles WHERE id=? AND owner_user_id=?`, [profileId, userId]);
-    return rows[0] || null;
-  }
-  async saveBillingProfile(userId, profileId, profile) {
-    const connection = await this.database.getConnection();
-    try { await connection.beginTransaction();
-      if (profileId) { const [owned] = await connection.execute('SELECT id FROM billing_profiles WHERE id=? AND owner_user_id=? FOR UPDATE', [profileId, userId]); if (!owned[0]) { await connection.rollback(); return null; } }
-      if (profile.isDefault) await connection.execute('UPDATE billing_profiles SET is_default=FALSE WHERE owner_user_id=?', [userId]);
-      const fields = [profile.profileType, profile.legalName, profile.registrationNumber, profile.vatNumber, profile.addressLine1,
-        profile.addressLine2, profile.postalCode, profile.city, profile.region, profile.country, profile.billingEmail, profile.phone,
-        profile.contactPerson, profile.isDefault];
-      let id = profileId;
-      if (id) await connection.execute(`UPDATE billing_profiles SET profile_type=?, legal_name=?, registration_number=?, vat_number=?,
-        address_line_1=?, address_line_2=?, postal_code=?, city=?, region=?, country=?, billing_email=?, phone=?, contact_person=?, is_default=? WHERE id=?`, [...fields, id]);
-      else { const [result] = await connection.execute(`INSERT INTO billing_profiles (owner_user_id, profile_type, legal_name, registration_number,
-        vat_number, address_line_1, address_line_2, postal_code, city, region, country, billing_email, phone, contact_person, is_default)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [userId, ...fields]); id = result.insertId; }
-      await connection.commit(); return this.billingProfile(id, userId);
-    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
-  }
-  async createBusinessApplication(userId, business, profile) {
-    const connection = await this.database.getConnection();
-    try { await connection.beginTransaction();
-      const [organization] = await connection.execute('INSERT INTO organizations (name, slug, description, website_url, phone, contact_email) VALUES (?, ?, ?, ?, ?, ?)', [business.name, business.slug, business.description, profile.website, profile.phone, profile.businessEmail]);
-      const organizationId = organization.insertId;
-      await connection.execute("INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, 'owner')", [organizationId, userId]);
-      const values = [organizationId, profile.legalName, profile.registrationNumber, profile.legalEntityType, profile.countryOfRegistration,
-        profile.isVatRegistered, profile.vatNumber, profile.defaultVatRate, profile.taxCountry, profile.registeredAddressLine1,
-        profile.registeredAddressLine2, profile.postalCode, profile.city, profile.region, profile.country, profile.billingEmail,
-        profile.businessEmail, profile.phone, profile.website, profile.bankName, profile.bankAccount, profile.iban, profile.bic,
-        profile.bankgiro, profile.plusgiro, profile.businessSwishNumber, profile.defaultCurrency, profile.invoicePrefix,
-        profile.invoiceDueDays, profile.paymentInstructions];
-      await connection.execute(`INSERT INTO organization_billing_profile (organization_id, legal_name, registration_number, legal_entity_type,
-        country_of_registration, is_vat_registered, vat_number, default_vat_rate, tax_country, registered_address_line_1,
-        registered_address_line_2, postal_code, city, region, country, billing_email, business_email, phone, website, bank_name,
-        bank_account, iban, bic, bankgiro, plusgiro, business_swish_number, default_currency, invoice_prefix, invoice_due_days,
-        payment_instructions, business_registration_status, submitted_at) VALUES (${values.map(() => '?').join(', ')}, 'submitted', NOW())`, values);
-      const [application] = await connection.execute("INSERT INTO business_applications (organization_id, applicant_user_id, status, submitted_at) VALUES (?, ?, 'submitted', NOW())", [organizationId, userId]);
-      await connection.commit(); return { id: application.insertId, organizationId };
-    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
-  }
-  async businessApplication(applicationId, userId, role) {
+  async billingProfiles(userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT a.id, a.organization_id AS organizationId, a.applicant_user_id AS applicantUserId,
-      a.status, a.submitted_at AS submittedAt, a.reviewed_at AS reviewedAt, a.reviewed_by_user_id AS reviewedByUserId, a.review_note AS reviewNote,
-      o.name AS organizationName, u.name AS applicantName, u.email AS applicantEmail, p.legal_name AS legalName,
-      p.registration_number AS registrationNumber, p.country_of_registration AS countryOfRegistration, p.legal_entity_type AS legalEntityType
-      FROM business_applications a JOIN organizations o ON o.id=a.organization_id JOIN users u ON u.id=a.applicant_user_id
-      JOIN organization_billing_profile p ON p.organization_id=a.organization_id
-      WHERE a.id=? AND (${privileged ? 'TRUE' : 'a.applicant_user_id=?'})`, privileged ? [applicationId] : [applicationId, userId]);
-    return rows[0] || null;
+    const [rows] = await this.database.execute(`SELECT ${this.billingProfileColumns('p')}
+      FROM billing_profiles p LEFT JOIN organization_members member ON member.organization_id=p.owner_organization_id AND member.user_id=?
+      WHERE p.is_active=TRUE AND (p.owner_user_id=? OR member.role IN ('owner','admin') OR ${privileged ? 'TRUE' : 'FALSE'})
+      ORDER BY p.is_default DESC, p.updated_at DESC`, [userId, userId]);
+    return rows.map((row) => ({ ...row, isDefault: Boolean(row.isDefault), isActive: Boolean(row.isActive) }));
   }
-  async businessApplicationForUser(userId) {
-    const [rows] = await this.database.execute(`SELECT a.id, a.organization_id AS organizationId, a.status, a.submitted_at AS submittedAt,
-      a.reviewed_at AS reviewedAt, a.review_note AS reviewNote, o.name AS organizationName, p.legal_name AS legalName,
-      p.registration_number AS registrationNumber FROM business_applications a JOIN organizations o ON o.id=a.organization_id
-      JOIN organization_billing_profile p ON p.organization_id=a.organization_id WHERE a.applicant_user_id=? ORDER BY a.created_at DESC`, [userId]);
-    return rows;
+  async billingProfile(profileId, userId, role, connection = this.database) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await connection.execute(`SELECT ${this.billingProfileColumns('p')} FROM billing_profiles p
+      LEFT JOIN organization_members member ON member.organization_id=p.owner_organization_id AND member.user_id=?
+      WHERE p.id=? AND p.is_active=TRUE AND (p.owner_user_id=? OR member.role IN ('owner','admin') OR ${privileged ? 'TRUE' : 'FALSE'})`, [userId, profileId, userId]);
+    return rows[0] ? { ...rows[0], isDefault: Boolean(rows[0].isDefault), isActive: Boolean(rows[0].isActive) } : null;
   }
-  async businessApplications(status = null) {
-    const [rows] = await this.database.execute(`SELECT a.id, a.organization_id AS organizationId, a.applicant_user_id AS applicantUserId,
-      a.status, a.submitted_at AS submittedAt, a.reviewed_at AS reviewedAt, a.review_note AS reviewNote, o.name AS organizationName,
-      u.name AS applicantName, u.email AS applicantEmail, p.legal_name AS legalName, p.registration_number AS registrationNumber,
-      p.country_of_registration AS countryOfRegistration, p.legal_entity_type AS legalEntityType
-      FROM business_applications a JOIN organizations o ON o.id=a.organization_id JOIN users u ON u.id=a.applicant_user_id
-      JOIN organization_billing_profile p ON p.organization_id=a.organization_id${status ? ' WHERE a.status=?' : ''}
-      ORDER BY FIELD(a.status, 'submitted','under_review','changes_requested','approved','rejected','suspended'), a.submitted_at DESC`, status ? [status] : []);
-    return rows;
-  }
-  async reviewBusinessApplication(applicationId, reviewerId, status, reviewNote = null) {
+  async saveBillingProfile(userId, role, profileId, profile) {
     const connection = await this.database.getConnection();
-    try { await connection.beginTransaction(); const [rows] = await connection.execute('SELECT organization_id AS organizationId FROM business_applications WHERE id=? FOR UPDATE', [applicationId]); const application = rows[0]; if (!application) { await connection.rollback(); return false; }
-      await connection.execute('UPDATE business_applications SET status=?, reviewed_by_user_id=?, reviewed_at=NOW(), review_note=? WHERE id=?', [status, reviewerId, reviewNote, applicationId]);
-      await connection.execute('UPDATE organization_billing_profile SET business_registration_status=?, reviewed_by_user_id=?, reviewed_at=NOW(), review_note=? WHERE organization_id=?', [status, reviewerId, reviewNote, application.organizationId]);
-      await connection.commit(); return true;
+    try { await connection.beginTransaction();
+      const organizationId = profile.ownerOrganizationId ? Number(profile.ownerOrganizationId) : null;
+      // Organization billing details are financial records.  A regular
+      // organization manager can operate the organization, but cannot change
+      // its legal billing identity; that remains with an owner/admin (or a
+      // platform manager/admin).
+      if (organizationId && !['manager', 'admin'].includes(role)) {
+        const member = await this.organizationMember(organizationId, userId);
+        if (!member || !['owner', 'admin'].includes(member.role)) { await connection.rollback(); return null; }
+      }
+      if (profileId && !await this.billingProfile(profileId, userId, role, connection)) { await connection.rollback(); return null; }
+      const ownerUserId = organizationId ? null : userId;
+      if (profile.isDefault) await connection.execute(`UPDATE billing_profiles SET is_default=FALSE WHERE ${organizationId ? 'owner_organization_id=?' : 'owner_user_id=?'}`, [organizationId || userId]);
+      const fields = [profile.profileType, profile.legalName, profile.organizationNumber, profile.vatNumber, profile.addressLine1, profile.addressLine2,
+        profile.postalCode, profile.city, profile.country, profile.billingEmail, profile.phone, profile.defaultCurrency, profile.invoicePrefix, profile.invoiceDueDays,
+        profile.paymentInstructions, profile.isDefault];
+      let id = profileId;
+      if (id) await connection.execute(`UPDATE billing_profiles SET profile_type=?, legal_name=?, organization_number=?, vat_number=?, address_line_1=?, address_line_2=?, postal_code=?, city=?, country=?, billing_email=?, phone=?, default_currency=?, invoice_prefix=?, invoice_due_days=?, payment_instructions=?, is_default=? WHERE id=?`, [...fields, id]);
+      else { const [result] = await connection.execute(`INSERT INTO billing_profiles (owner_user_id, owner_organization_id, profile_type, legal_name, organization_number, vat_number, address_line_1, address_line_2, postal_code, city, country, billing_email, phone, default_currency, invoice_prefix, invoice_due_days, payment_instructions, is_default) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [ownerUserId, organizationId, ...fields]); id = result.insertId; }
+      await connection.commit(); return this.billingProfile(id, userId, role);
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async archiveBillingProfile(profileId, userId, role) {
+    const profile = await this.billingProfile(profileId, userId, role); if (!profile) return false;
+    const [references] = await this.database.execute('SELECT (SELECT COUNT(*) FROM invoices WHERE buyer_billing_profile_id=? OR seller_billing_profile_id=?) + (SELECT COUNT(*) FROM payment_accounts WHERE billing_profile_id=?) AS count', [profileId, profileId, profileId]);
+    if (Number(references[0]?.count || 0)) return { error: 'REFERENCED' };
+    await this.database.execute('UPDATE billing_profiles SET is_active=FALSE, is_default=FALSE WHERE id=?', [profileId]); return true;
+  }
+  async paymentAccounts(billingProfileId, userId, role) {
+    if (!await this.billingProfile(billingProfileId, userId, role)) return null;
+    const [rows] = await this.database.execute(`SELECT id, billing_profile_id AS billingProfileId, provider, provider_account_id AS providerAccountId,
+      onboarding_status AS onboardingStatus, charges_enabled AS chargesEnabled, payouts_enabled AS payoutsEnabled, country,
+      default_currency AS defaultCurrency, created_at AS createdAt, updated_at AS updatedAt FROM payment_accounts WHERE billing_profile_id=?`, [billingProfileId]);
+    return rows.map((row) => ({ ...row, chargesEnabled: Boolean(row.chargesEnabled), payoutsEnabled: Boolean(row.payoutsEnabled) }));
+  }
+  async eventPaymentSettings(eventId, userId, role) {
+    const scope = ['manager', 'admin'].includes(role) ? '' : ' AND e.manager_id=?';
+    const [rows] = await this.database.execute(`SELECT s.event_id AS eventId, s.seller_billing_profile_id AS sellerBillingProfileId,
+      s.payment_account_id AS paymentAccountId, s.currency, s.payments_enabled AS paymentsEnabled, s.ticket_sales_enabled AS ticketSalesEnabled,
+      account.charges_enabled AS chargesEnabled FROM event_payment_settings s JOIN events e ON e.id=s.event_id
+      LEFT JOIN payment_accounts account ON account.id=s.payment_account_id WHERE s.event_id=?${scope}`, ['manager', 'admin'].includes(role) ? [eventId] : [eventId, userId]);
+    return rows[0] ? { ...rows[0], paymentsEnabled: Boolean(rows[0].paymentsEnabled), ticketSalesEnabled: Boolean(rows[0].ticketSalesEnabled), chargesEnabled: Boolean(rows[0].chargesEnabled) } : null;
+  }
+  async saveEventPaymentSettings(eventId, userId, role, settings) {
+    const scope = ['manager', 'admin'].includes(role) ? '' : ' AND manager_id=?';
+    const [events] = await this.database.execute(`SELECT id FROM events WHERE id=?${scope}`, ['manager', 'admin'].includes(role) ? [eventId] : [eventId, userId]);
+    if (!events[0]) return { error: 'EVENT_NOT_FOUND' };
+    if (settings.sellerBillingProfileId && !await this.billingProfile(settings.sellerBillingProfileId, userId, role)) return { error: 'SELLER_PROFILE_UNAVAILABLE' };
+    if (settings.paymentAccountId) {
+      const [accounts] = await this.database.execute('SELECT billing_profile_id AS billingProfileId, charges_enabled AS chargesEnabled FROM payment_accounts WHERE id=?', [settings.paymentAccountId]);
+      if (!accounts[0] || Number(accounts[0].billingProfileId) !== Number(settings.sellerBillingProfileId)) return { error: 'PAYMENT_ACCOUNT_MISMATCH' };
+      if (settings.ticketSalesEnabled && !accounts[0].chargesEnabled) return { error: 'PAYMENT_ACCOUNT_NOT_READY' };
+    }
+    if (settings.ticketSalesEnabled && (!settings.sellerBillingProfileId || !settings.paymentAccountId)) return { error: 'PAYMENT_SETUP_REQUIRED' };
+    await this.database.execute(`INSERT INTO event_payment_settings (event_id, seller_billing_profile_id, payment_account_id, currency, payments_enabled, ticket_sales_enabled)
+      VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE seller_billing_profile_id=VALUES(seller_billing_profile_id), payment_account_id=VALUES(payment_account_id), currency=VALUES(currency), payments_enabled=VALUES(payments_enabled), ticket_sales_enabled=VALUES(ticket_sales_enabled)`, [eventId, settings.sellerBillingProfileId || null, settings.paymentAccountId || null, settings.currency || null, Boolean(settings.paymentsEnabled), Boolean(settings.ticketSalesEnabled)]);
+    return this.eventPaymentSettings(eventId, userId, role);
+  }
+  async canAcceptPaidRegistrations(eventId) {
+    const [rows] = await this.database.execute(`SELECT e.participation_fee AS fee, s.seller_billing_profile_id AS sellerBillingProfileId,
+      s.payment_account_id AS paymentAccountId, s.payments_enabled AS paymentsEnabled, s.ticket_sales_enabled AS ticketSalesEnabled,
+      account.billing_profile_id AS accountBillingProfileId, account.charges_enabled AS chargesEnabled
+      FROM events e LEFT JOIN event_payment_settings s ON s.event_id=e.id LEFT JOIN payment_accounts account ON account.id=s.payment_account_id WHERE e.id=?`, [eventId]);
+    const row = rows[0]; if (!row || Number(row.fee || 0) <= 0) return true;
+    return Boolean(row.sellerBillingProfileId && row.paymentAccountId && row.paymentsEnabled && row.ticketSalesEnabled && row.chargesEnabled && Number(row.accountBillingProfileId) === Number(row.sellerBillingProfileId));
   }
   async canAccessInvoice(userId, role, invoiceId) {
     if (['manager', 'admin'].includes(role)) return true;
-    const [rows] = await this.database.execute(`SELECT i.id FROM invoices i LEFT JOIN organization_members om
-      ON om.organization_id=i.seller_organization_id AND om.user_id=? WHERE i.id=? AND
-      (i.buyer_user_id=? OR om.role IN ('owner','admin','manager'))`, [userId, invoiceId, userId]);
+    const [rows] = await this.database.execute(`SELECT i.id FROM invoices i
+      LEFT JOIN billing_profiles seller_profile ON seller_profile.id=i.seller_billing_profile_id
+      LEFT JOIN organization_members om ON om.organization_id=i.seller_organization_id AND om.user_id=? WHERE i.id=? AND
+      (i.buyer_user_id=? OR seller_profile.owner_user_id=? OR om.role IN ('owner','admin','manager'))`, [userId, invoiceId, userId, userId]);
     return Boolean(rows[0]);
   }
   async invoicesForViewer(userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const access = privileged ? 'TRUE' : `(i.buyer_user_id=? OR EXISTS (SELECT 1 FROM organization_members seller_member
+    const access = privileged ? 'TRUE' : `(i.buyer_user_id=? OR seller_profile.owner_user_id=? OR EXISTS (SELECT 1 FROM organization_members seller_member
       WHERE seller_member.organization_id=i.seller_organization_id AND seller_member.user_id=? AND seller_member.role IN ('owner','admin','manager')))`;
-    const [rows] = await this.database.execute(`SELECT i.id, i.seller_organization_id AS sellerOrganizationId,
-      seller.name AS sellerOrganizationName, i.buyer_user_id AS buyerUserId, buyer.name AS buyerName,
+    const [rows] = await this.database.execute(`SELECT i.id, i.seller_organization_id AS sellerOrganizationId, i.seller_billing_profile_id AS sellerBillingProfileId,
+      COALESCE(seller.name, seller_profile.legal_name) AS sellerOrganizationName, i.buyer_user_id AS buyerUserId, buyer.name AS buyerName,
       i.buyer_organization_id AS buyerOrganizationId, i.booking_id AS bookingId, i.invoice_number AS invoiceNumber,
       i.status, i.delivery_status AS deliveryStatus, i.issue_date AS issueDate, i.due_date AS dueDate, i.currency,
       i.subtotal, i.tax_amount AS taxAmount, i.total_amount AS totalAmount, i.paid_at AS paidAt,
       e.id AS eventId, e.title AS eventTitle, i.created_at AS createdAt
-      FROM invoices i JOIN organizations seller ON seller.id=i.seller_organization_id
+      FROM invoices i LEFT JOIN organizations seller ON seller.id=i.seller_organization_id
+      LEFT JOIN billing_profiles seller_profile ON seller_profile.id=i.seller_billing_profile_id
       LEFT JOIN users buyer ON buyer.id=i.buyer_user_id
       LEFT JOIN venue_bookings booking ON booking.id=i.booking_id
       LEFT JOIN events e ON e.id=booking.event_id
-      WHERE ${access} ORDER BY i.created_at DESC, i.id DESC`, privileged ? [] : [userId, userId]);
+      WHERE ${access} ORDER BY i.created_at DESC, i.id DESC`, privileged ? [] : [userId, userId, userId]);
     return rows;
   }
   async invoice(invoiceId, userId, role) {
     if (!await this.canAccessInvoice(userId, role, invoiceId)) return null;
-    const [rows] = await this.database.execute(`SELECT id, seller_organization_id AS sellerOrganizationId, buyer_user_id AS buyerUserId,
+    const [rows] = await this.database.execute(`SELECT id, seller_organization_id AS sellerOrganizationId, seller_billing_profile_id AS sellerBillingProfileId, buyer_user_id AS buyerUserId,
       buyer_organization_id AS buyerOrganizationId, buyer_billing_profile_id AS buyerBillingProfileId, booking_id AS bookingId, invoice_number AS invoiceNumber, status, delivery_status AS deliveryStatus,
       issue_date AS issueDate, due_date AS dueDate, currency, subtotal, tax_amount AS taxAmount, total_amount AS totalAmount,
       pdf_generated_at AS pdfGeneratedAt, pdf_hash AS pdfHash, paid_at AS paidAt, manual_payment_reference AS manualPaymentReference,
@@ -1046,10 +975,11 @@ export class Queries {
     try { await connection.beginTransaction();
       // Lock before authorization/state transition so simultaneous manual
       // reconciliation produces one audit event.
-      const [rows] = await connection.execute(`SELECT i.id, i.status, i.seller_organization_id AS sellerOrganizationId, i.booking_id AS bookingId, i.currency, i.total_amount AS totalAmount FROM invoices i
+      const [rows] = await connection.execute(`SELECT i.id, i.status, i.seller_organization_id AS sellerOrganizationId, seller_profile.owner_user_id AS sellerProfileOwnerUserId, i.booking_id AS bookingId, i.currency, i.total_amount AS totalAmount FROM invoices i
+        LEFT JOIN billing_profiles seller_profile ON seller_profile.id=i.seller_billing_profile_id
         WHERE i.id=? FOR UPDATE`, [invoiceId]);
       const invoice = rows[0]; if (!invoice) { await connection.rollback(); return false; }
-      if (!['manager', 'admin'].includes(role)) { const [members] = await connection.execute(`SELECT role FROM organization_members
+      if (!['manager', 'admin'].includes(role) && Number(invoice.sellerProfileOwnerUserId) !== Number(userId)) { const [members] = await connection.execute(`SELECT role FROM organization_members
         WHERE organization_id=? AND user_id=? AND role IN ('owner','admin','manager')`, [invoice.sellerOrganizationId, userId]); if (!members[0]) { await connection.rollback(); return false; } }
       if (!['issued', 'sent', 'overdue'].includes(invoice.status)) { await connection.rollback(); return { error: 'INVALID_STATE' }; }
       await connection.execute(`UPDATE invoices SET status='paid', paid_at=NOW(), paid_by_user_id=?, manual_payment_reference=?, manual_payment_method=? WHERE id=?`, [userId, paymentReference, paymentMethod, invoiceId]);
@@ -1411,7 +1341,7 @@ export class Queries {
     if (!venues[0] || !venues[0].isActive) return { error: 'VENUE_NOT_FOUND' };
     return { event: events[0], venue: { ...venues[0], availability: await this.venueAvailability(venueId) } };
   }
-  async requestVenueBooking(eventId, venueId, organizerUserId) {
+  async requestVenueBooking(eventId, venueId, organizerUserId, role, buyerBillingProfileId = null) {
     const connection = await this.database.getConnection();
     try {
       await connection.beginTransaction();
@@ -1435,12 +1365,21 @@ export class Queries {
       const configuredRate = settings.hourlyRate ?? venues[0].priceFrom;
       const hourlyRate = Number.isFinite(Number(configuredRate)) && Number(configuredRate) >= 0 ? Number(configuredRate) : 0;
       const subtotal = Math.round((hourlyRate * durationMinutes / 60) * 100) / 100;
+      const paidBooking = subtotal > 0;
+      let buyerProfileId = null;
+      if (paidBooking) {
+        if (!Number.isInteger(Number(buyerBillingProfileId))) { await connection.rollback(); return { error: 'BILLING_PROFILE_REQUIRED' }; }
+        const profile = await this.billingProfile(Number(buyerBillingProfileId), organizerUserId, role, connection);
+        if (!profile) { await connection.rollback(); return { error: 'BILLING_PROFILE_UNAVAILABLE' }; }
+        buyerProfileId = profile.id;
+      }
+      const billingStatus = paidBooking ? 'complete' : 'not_required';
       let bookingId;
       if (existing[0]) {
-        await connection.execute("UPDATE venue_bookings SET venue_id=?, organizer_user_id=?, status='requested', owner_note=NULL, start_at=?, end_at=?, occupied_start_at=?, occupied_end_at=?, booking_date=?, venue_timezone=?, currency=?, subtotal=?, tax_amount=0, total_amount=? WHERE id=?", [venueId, organizerUserId, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, localStart.date, venues[0].timezone, settings.currency, subtotal, subtotal, existing[0].id]);
+        await connection.execute("UPDATE venue_bookings SET venue_id=?, organizer_user_id=?, buyer_billing_profile_id=?, billing_status=?, status='requested', owner_note=NULL, start_at=?, end_at=?, occupied_start_at=?, occupied_end_at=?, booking_date=?, venue_timezone=?, currency=?, subtotal=?, tax_amount=0, total_amount=? WHERE id=?", [venueId, organizerUserId, buyerProfileId, billingStatus, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, localStart.date, venues[0].timezone, settings.currency, subtotal, subtotal, existing[0].id]);
         bookingId = existing[0].id;
       } else {
-        const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, booking_type, booking_date, start_at, end_at, occupied_start_at, occupied_end_at, venue_timezone, currency, subtotal, tax_amount, total_amount, status) VALUES (?, ?, ?, 'hourly', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'requested')", [venueId, eventId, organizerUserId, localStart.date, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, venues[0].timezone, settings.currency, subtotal, subtotal]);
+        const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, buyer_billing_profile_id, billing_status, booking_type, booking_date, start_at, end_at, occupied_start_at, occupied_end_at, venue_timezone, currency, subtotal, tax_amount, total_amount, status) VALUES (?, ?, ?, ?, ?, 'hourly', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'requested')", [venueId, eventId, organizerUserId, buyerProfileId, billingStatus, localStart.date, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, venues[0].timezone, settings.currency, subtotal, subtotal]);
         bookingId = result.insertId;
       }
       await connection.commit();
@@ -1449,7 +1388,7 @@ export class Queries {
   }
   async eventVenueBooking(eventId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.venue_timezone AS timezone, b.booking_date AS bookingDate, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.billing_status AS billingStatus, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.venue_timezone AS timezone, b.booking_date AS bookingDate, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
       v.name AS venueName, v.formatted_address AS venueLocation, v.owner_user_id AS venueOwnerUserId
       FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id
       WHERE b.event_id = ? AND (${privileged ? 'TRUE' : 'e.manager_id = ? OR v.owner_user_id = ?'})`, privileged ? [eventId] : [eventId, userId, userId]);
@@ -1487,40 +1426,24 @@ export class Queries {
   async reviewVenueBooking(bookingId, userId, role, status, ownerNote = null) {
     const connection = await this.database.getConnection();
     try { await connection.beginTransaction();
-      const [rows] = await connection.execute(`SELECT b.venue_id AS venueId, b.organizer_user_id AS organizerUserId, b.currency, b.subtotal, b.tax_amount AS taxAmount, b.total_amount AS totalAmount,
-        b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, v.organization_id AS sellerOrganizationId,
+      const [rows] = await connection.execute(`SELECT b.venue_id AS venueId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.billing_status AS billingStatus, b.currency, b.subtotal, b.tax_amount AS taxAmount, b.total_amount AS totalAmount,
+        b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, v.organization_id AS sellerOrganizationId, v.owner_user_id AS sellerOwnerUserId,
         v.name AS venueName, v.formatted_address AS venueAddress, b.start_at AS startAt, b.end_at AS endAt, e.title AS eventTitle, settings.hourly_rate AS hourlyRate,
-        seller_profile.legal_name AS sellerLegalName, seller_profile.registration_number AS sellerRegistrationNumber,
-        seller_profile.is_vat_registered AS sellerIsVatRegistered, seller_profile.vat_number AS sellerVatNumber,
-        seller_profile.default_vat_rate AS sellerDefaultVatRate, seller_profile.registered_address_line_1 AS sellerAddressLine1,
-        seller_profile.registered_address_line_2 AS sellerAddressLine2, seller_profile.postal_code AS sellerPostalCode,
-        seller_profile.city AS sellerCity, seller_profile.region AS sellerRegion, seller_profile.country AS sellerCountry,
+        seller_profile.id AS sellerBillingProfileId, seller_profile.legal_name AS sellerLegalName, seller_profile.organization_number AS sellerRegistrationNumber,
+        seller_profile.vat_number AS sellerVatNumber, seller_profile.address_line_1 AS sellerAddressLine1,
+        seller_profile.address_line_2 AS sellerAddressLine2, seller_profile.postal_code AS sellerPostalCode,
+        seller_profile.city AS sellerCity, seller_profile.country AS sellerCountry,
         seller_profile.billing_email AS sellerBillingEmail, seller_profile.payment_instructions AS sellerPaymentInstructions,
-        seller_profile.bank_name AS sellerBankName, seller_profile.bank_account AS sellerBankAccount, seller_profile.iban AS sellerIban,
-        seller_profile.bic AS sellerBic, seller_profile.bankgiro AS sellerBankgiro, seller_profile.plusgiro AS sellerPlusgiro,
-        seller_profile.business_swish_number AS sellerSwish, seller_profile.invoice_prefix AS invoicePrefix,
-        seller_profile.next_invoice_number AS nextInvoiceNumber, seller_profile.invoice_due_days AS profileInvoiceDueDays,
-        seller_profile.business_registration_status AS sellerRegistrationStatus,
+        seller_profile.invoice_prefix AS invoicePrefix, seller_profile.invoice_due_days AS profileInvoiceDueDays,
         settings.invoice_due_days AS invoiceDueDays FROM venue_bookings b JOIN venues v ON v.id=b.venue_id
         LEFT JOIN events e ON e.id=b.event_id
-        JOIN venue_booking_settings settings ON settings.venue_id=v.id LEFT JOIN organization_billing_profile seller_profile ON seller_profile.organization_id=v.organization_id
+        JOIN venue_booking_settings settings ON settings.venue_id=v.id LEFT JOIN billing_profiles seller_profile ON seller_profile.id=(SELECT profile.id FROM billing_profiles profile WHERE profile.is_default=TRUE AND profile.is_active=TRUE AND ((v.organization_id IS NOT NULL AND profile.owner_organization_id=v.organization_id) OR (v.organization_id IS NULL AND profile.owner_user_id=v.owner_user_id)) ORDER BY profile.updated_at DESC, profile.id DESC LIMIT 1)
         LEFT JOIN organization_members om ON om.organization_id=v.organization_id AND om.user_id=?
         WHERE b.id=? AND b.status = 'requested' AND (${['manager', 'admin'].includes(role) ? 'TRUE' : "v.owner_user_id=? OR om.role IN ('owner','admin','manager')"}) FOR UPDATE`, ['manager', 'admin'].includes(role) ? [userId, bookingId] : [userId, bookingId, userId]);
       const booking = rows[0]; if (!booking) { await connection.rollback(); return false; }
       await connection.execute('SELECT id FROM venues WHERE id=? FOR UPDATE', [booking.venueId]);
       if (status === 'confirmed') { const conflict = await this.checkBookingConflict({ venueId: booking.venueId, occupiedStartAt: booking.occupiedStartAt, occupiedEndAt: booking.occupiedEndAt, excludeBookingId: bookingId }, connection); if (conflict.conflict) { await connection.rollback(); return { error: 'CONFLICT' }; } }
       let buyerProfile = null;
-      if (status === 'confirmed' && booking.sellerOrganizationId) {
-        const sellerComplete = booking.sellerRegistrationStatus === 'approved' && booking.sellerLegalName && booking.sellerRegistrationNumber && booking.sellerAddressLine1 && booking.sellerPostalCode && booking.sellerCity && booking.sellerCountry && booking.sellerBillingEmail && (!booking.sellerIsVatRegistered || booking.sellerVatNumber);
-        if (!sellerComplete) { await connection.rollback(); return { error: 'SELLER_PROFILE_INCOMPLETE' }; }
-        const [buyers] = await connection.execute(`SELECT id, profile_type AS profileType, legal_name AS legalName, registration_number AS registrationNumber,
-          vat_number AS vatNumber, address_line_1 AS addressLine1, address_line_2 AS addressLine2, postal_code AS postalCode,
-          city, region, country, billing_email AS billingEmail, phone, contact_person AS contactPerson FROM billing_profiles
-          WHERE owner_user_id=? AND is_default=TRUE ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`, [booking.organizerUserId]);
-        buyerProfile = buyers[0] || null;
-        const buyerComplete = buyerProfile && buyerProfile.legalName && buyerProfile.addressLine1 && buyerProfile.postalCode && buyerProfile.city && buyerProfile.country && buyerProfile.billingEmail && (buyerProfile.profileType !== 'company' || buyerProfile.registrationNumber);
-        if (!buyerComplete) { await connection.rollback(); return { error: 'BUYER_PROFILE_INCOMPLETE' }; }
-      }
       const confirmed = status === 'confirmed';
       const durationHours = Math.max(0, (new Date(booking.endAt).getTime() - new Date(booking.startAt).getTime()) / 3600000);
       const storedSubtotal = Number(booking.subtotal) || 0;
@@ -1531,28 +1454,35 @@ export class Queries {
       // today's configured rate when they are approved, while preserving an
       // explicitly priced booking (including a genuinely free venue).
       const subtotal = storedSubtotal > 0 || calculatedSubtotal === 0 ? storedSubtotal : calculatedSubtotal;
-      const taxRate = booking.sellerIsVatRegistered ? Number(booking.sellerDefaultVatRate || 0) : 0;
+      const taxRate = 0;
       const taxAmount = Math.round(subtotal * taxRate) / 100;
       const totalAmount = Math.round((subtotal + taxAmount) * 100) / 100;
+      if (status === 'confirmed' && totalAmount > 0) {
+        const sellerComplete = booking.sellerBillingProfileId && booking.sellerLegalName && booking.sellerAddressLine1 && booking.sellerPostalCode && booking.sellerCity && booking.sellerCountry && booking.sellerBillingEmail;
+        if (!sellerComplete) { await connection.rollback(); return { error: 'SELLER_PROFILE_INCOMPLETE' }; }
+        const [buyers] = await connection.execute(`SELECT id, profile_type AS profileType, legal_name AS legalName, organization_number AS organizationNumber,
+          vat_number AS vatNumber, address_line_1 AS addressLine1, address_line_2 AS addressLine2, postal_code AS postalCode,
+          city, country, billing_email AS billingEmail, phone FROM billing_profiles WHERE id=? AND is_active=TRUE FOR UPDATE`, [booking.buyerBillingProfileId]);
+        buyerProfile = buyers[0] || null;
+        const buyerComplete = booking.billingStatus === 'complete' && buyerProfile && buyerProfile.legalName && buyerProfile.addressLine1 && buyerProfile.postalCode && buyerProfile.city && buyerProfile.country && buyerProfile.billingEmail;
+        if (!buyerComplete) { await connection.rollback(); return { error: 'BUYER_PROFILE_INCOMPLETE' }; }
+      }
       if (confirmed && (storedSubtotal === 0 || Number(booking.taxAmount) !== taxAmount)) {
         await connection.execute('UPDATE venue_bookings SET subtotal=?, tax_amount=?, total_amount=? WHERE id=?', [subtotal, taxAmount, totalAmount, bookingId]);
       }
       await connection.execute('UPDATE venue_bookings SET status=?, owner_note=?, venue_internal_note=?, confirmed_at=CASE WHEN ? THEN NOW() ELSE confirmed_at END, confirmed_by=CASE WHEN ? THEN ? ELSE confirmed_by END WHERE id=?', [status, ownerNote, ownerNote, confirmed, confirmed, userId, bookingId]);
       let invoiceId = null;
-      if (status === 'confirmed' && booking.sellerOrganizationId) {
+      if (status === 'confirmed' && totalAmount > 0) {
         const [existingInvoice] = await connection.execute('SELECT id FROM invoices WHERE booking_id=? FOR UPDATE', [bookingId]);
         if (existingInvoice[0]) invoiceId = existingInvoice[0].id;
-        else { const [lockedProfiles] = await connection.execute('SELECT next_invoice_number AS nextInvoiceNumber, invoice_prefix AS invoicePrefix, invoice_due_days AS invoiceDueDays FROM organization_billing_profile WHERE organization_id=? FOR UPDATE', [booking.sellerOrganizationId]);
-          const profile = lockedProfiles[0];
-          if (!profile) { await connection.rollback(); return { error: 'SELLER_PROFILE_INCOMPLETE' }; }
-          const invoiceNumber = `${profile.invoicePrefix}-${new Date().getUTCFullYear()}-${String(profile.nextInvoiceNumber).padStart(4, '0')}`;
-          await connection.execute('UPDATE organization_billing_profile SET next_invoice_number=next_invoice_number+1 WHERE organization_id=?', [booking.sellerOrganizationId]);
-          const sellerSnapshot = { legalName: booking.sellerLegalName, registrationNumber: booking.sellerRegistrationNumber, vatNumber: booking.sellerIsVatRegistered ? booking.sellerVatNumber : null, addressLine1: booking.sellerAddressLine1, addressLine2: booking.sellerAddressLine2, postalCode: booking.sellerPostalCode, city: booking.sellerCity, region: booking.sellerRegion, country: booking.sellerCountry, billingEmail: booking.sellerBillingEmail };
+        else {
+          const invoiceNumber = `${booking.invoicePrefix || 'INV'}-${new Date().getUTCFullYear()}-B${bookingId}`;
+          const sellerSnapshot = { legalName: booking.sellerLegalName, organizationNumber: booking.sellerRegistrationNumber, vatNumber: booking.sellerVatNumber || null, addressLine1: booking.sellerAddressLine1, addressLine2: booking.sellerAddressLine2, postalCode: booking.sellerPostalCode, city: booking.sellerCity, country: booking.sellerCountry, billingEmail: booking.sellerBillingEmail };
           const bookingSnapshot = { venueName: booking.venueName, venueAddress: booking.venueAddress, eventTitle: booking.eventTitle, startsAt: utcTimestamp(booking.startAt), endsAt: utcTimestamp(booking.endAt) };
-          const taxSnapshot = { type: booking.sellerIsVatRegistered ? 'VAT' : 'not_applicable', rate: taxRate, taxAmount, country: booking.sellerCountry };
-          const paymentInstructions = { text: booking.sellerPaymentInstructions, bankName: booking.sellerBankName, bankAccount: booking.sellerBankAccount, iban: booking.sellerIban, bic: booking.sellerBic, bankgiro: booking.sellerBankgiro, plusgiro: booking.sellerPlusgiro, swishNumber: booking.sellerSwish };
-          const [invoice] = await connection.execute(`INSERT INTO invoices (seller_organization_id, buyer_user_id, buyer_billing_profile_id, booking_id, invoice_number, status, issue_date, due_date, currency, subtotal, tax_amount, total_amount, seller_snapshot_json, buyer_snapshot_json, booking_snapshot_json, tax_snapshot_json, payment_instructions_snapshot)
-          VALUES (?, ?, ?, ?, ?, 'issued', CURDATE(), DATE_ADD(CURDATE(), INTERVAL ? DAY), ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [booking.sellerOrganizationId, booking.organizerUserId, buyerProfile.id, bookingId, invoiceNumber, profile.invoiceDueDays, booking.currency, subtotal, taxAmount, totalAmount, JSON.stringify(sellerSnapshot), JSON.stringify(buyerProfile), JSON.stringify(bookingSnapshot), JSON.stringify(taxSnapshot), JSON.stringify(paymentInstructions)]);
+          const taxSnapshot = { type: 'not_calculated', rate: taxRate, taxAmount, country: booking.sellerCountry };
+          const paymentInstructions = { text: booking.sellerPaymentInstructions };
+          const [invoice] = await connection.execute(`INSERT INTO invoices (seller_organization_id, seller_billing_profile_id, buyer_user_id, buyer_billing_profile_id, booking_id, invoice_number, status, issue_date, due_date, currency, subtotal, tax_amount, total_amount, seller_snapshot_json, buyer_snapshot_json, booking_snapshot_json, tax_snapshot_json, payment_instructions_snapshot)
+          VALUES (?, ?, ?, ?, ?, ?, 'issued', CURDATE(), DATE_ADD(CURDATE(), INTERVAL ? DAY), ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [booking.sellerOrganizationId, booking.sellerBillingProfileId, booking.organizerUserId, buyerProfile.id, bookingId, invoiceNumber, booking.profileInvoiceDueDays || booking.invoiceDueDays, booking.currency, subtotal, taxAmount, totalAmount, JSON.stringify(sellerSnapshot), JSON.stringify(buyerProfile), JSON.stringify(bookingSnapshot), JSON.stringify(taxSnapshot), JSON.stringify(paymentInstructions)]);
           invoiceId = invoice.insertId;
           const quantity = Math.round(durationHours * 1000) / 1000;
           const unitPrice = quantity > 0 ? Math.round((subtotal / quantity) * 100) / 100 : 0;
@@ -1612,5 +1542,5 @@ export class Queries {
     return { generatedAt: new Date().toISOString(), user: user[0], legalAcceptances, marketingPreferences, eventRegistrations: registrations, groupMemberships: memberships, reports, forumMessages: { group: groupForumMessages, event: eventForumMessages } };
   }
   async users() { const [rows] = await this.database.execute('SELECT id, name, email, phone, role, isEmailConfirmed, created_at AS createdAt FROM users ORDER BY created_at DESC'); return rows; }
-  async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'venue_owner', 'business_owner', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }
+  async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'venue_owner', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }
 }

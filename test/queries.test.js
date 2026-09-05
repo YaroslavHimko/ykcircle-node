@@ -103,7 +103,7 @@ test('lists invoices only for the buyer or a managing seller member', async () =
   assert.deepEqual(await queries.invoicesForViewer(7, 'venue_owner'), [{ id: 14, status: 'issued', eventTitle: 'Autumn social' }]);
   assert.match(calls[0].sql, /i\.buyer_user_id=\?/);
   assert.match(calls[0].sql, /seller_member\.role IN \('owner','admin','manager'\)/);
-  assert.deepEqual(calls[0].parameters, [7, 7]);
+  assert.deepEqual(calls[0].parameters, [7, 7, 7]);
 });
 
 test('lists venue bookings for organization managers as well as the venue owner', async () => {
@@ -132,6 +132,7 @@ test('prorates an hourly venue rate when a booking is requested', async () => {
       if (sql.startsWith('SELECT id, timezone, price_from')) return [[{ id: 4, timezone: 'UTC', priceFrom: '1800.00', currency: 'SEK' }]];
       if (sql.startsWith('SELECT id, status FROM venue_bookings')) return [[]];
       if (sql.startsWith('SELECT buffer_before_minutes')) return [[{ beforeMinutes: 0, afterMinutes: 0, currency: 'SEK', hourlyRate: '1800.00' }]];
+      if (sql.includes('FROM billing_profiles p')) return [[{ id: 51, ownerUserId: 7, ownerOrganizationId: null, profileType: 'individual', legalName: 'Anna Example', addressLine1: 'Main 1', postalCode: '111 11', city: 'Stockholm', country: 'Sweden', billingEmail: 'anna@example.test', isDefault: true, isActive: true }]];
       if (sql.startsWith('SELECT timezone FROM venues')) return [[{ timezone: 'UTC' }]];
       if (sql.includes('SELECT id, booking_type AS bookingType')) return [[]];
       if (sql.includes('FROM venue_external_reservations')) return [[]];
@@ -141,7 +142,7 @@ test('prorates an hourly venue rate when a booking is requested', async () => {
   };
   const queries = new Queries({ execute: async () => [[]], getConnection: async () => connection });
 
-  assert.deepEqual(await queries.requestVenueBooking(12, 4, 7), { id: 22, status: 'requested' });
+  assert.deepEqual(await queries.requestVenueBooking(12, 4, 7, 'organizer', 51), { id: 22, status: 'requested' });
   const insert = calls.find((call) => call.sql.startsWith('INSERT INTO venue_bookings'));
   assert.match(insert.sql, /subtotal, tax_amount, total_amount/);
   assert.equal(insert.parameters.at(-2), 900);

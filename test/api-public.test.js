@@ -163,6 +163,6 @@ test('creates a requested venue booking with a timed venue draft', async (t) => 
   });
   assert.equal(response.status, 201);
   assert.equal(createdDraft.coverImage, 'event-12.png');
-  assert.deepEqual(bookingCalls, [[12, 4, 7]]);
+  assert.deepEqual(bookingCalls, [[12, 4, 7, 'organizer', undefined]]);
   assert.equal((await response.json()).venueBooking.status, 'requested');
 });

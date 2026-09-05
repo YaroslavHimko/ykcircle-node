@@ -12,7 +12,7 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, profile_picture VARCHAR(1024),
         name VARCHAR(160) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE,
         password_hash VARCHAR(255) NOT NULL, phone VARCHAR(40) NULL,
-        role ENUM('customer', 'organizer', 'venue_owner', 'business_owner', 'manager', 'admin') NOT NULL DEFAULT 'customer', session_version INT UNSIGNED NOT NULL DEFAULT 0,
+        role ENUM('customer', 'organizer', 'venue_owner', 'manager', 'admin') NOT NULL DEFAULT 'customer', session_version INT UNSIGNED NOT NULL DEFAULT 0,
         isEmailConfirmed BOOLEAN NOT NULL DEFAULT FALSE,
         verification_token_hash CHAR(64) NULL, verification_expires_at DATETIME NULL,
         verification_resend_available_at DATETIME NULL, deleted_at DATETIME NULL,
@@ -542,6 +542,8 @@ export class Database {
         event_id INT UNSIGNED NULL,
         organizer_user_id INT UNSIGNED NOT NULL,
         organizer_organization_id INT UNSIGNED NULL,
+        buyer_billing_profile_id INT UNSIGNED NULL,
+        billing_status ENUM('not_required','complete','incomplete') NOT NULL DEFAULT 'not_required',
         booking_source ENUM('ykcircle','external','internal') NOT NULL DEFAULT 'ykcircle',
         booking_type ENUM('hourly','daily') NOT NULL DEFAULT 'hourly',
         -- booking_date is a venue-local calendar DATE; timestamp columns are UTC instants.
@@ -630,55 +632,42 @@ export class Database {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         CONSTRAINT venue_booking_settings_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
-      await this.pool.execute(`CREATE TABLE IF NOT EXISTS organization_billing_profile (
-        organization_id INT UNSIGNED NOT NULL PRIMARY KEY, legal_name VARCHAR(255) NOT NULL, registration_number VARCHAR(100) NOT NULL,
-        legal_entity_type ENUM('limited_company','sole_trader','partnership','association','other') NULL,
-        country_of_registration VARCHAR(120) NOT NULL, is_vat_registered BOOLEAN NOT NULL DEFAULT FALSE, vat_number VARCHAR(100) NULL,
-        default_vat_rate DECIMAL(5,2) NULL, tax_country VARCHAR(120) NULL,
-        registered_address_line_1 VARCHAR(255) NOT NULL, registered_address_line_2 VARCHAR(255) NULL,
-        postal_code VARCHAR(32) NOT NULL, city VARCHAR(120) NOT NULL, region VARCHAR(120) NULL, country VARCHAR(120) NOT NULL,
-        billing_email VARCHAR(255) NOT NULL, business_email VARCHAR(255) NULL, phone VARCHAR(80) NULL, website VARCHAR(1024) NULL,
-        bank_name VARCHAR(160) NULL, bank_account VARCHAR(160) NULL, iban VARCHAR(80) NULL, bic VARCHAR(32) NULL, bankgiro VARCHAR(80) NULL,
-        plusgiro VARCHAR(80) NULL, business_swish_number VARCHAR(80) NULL,
-        default_currency CHAR(3) NOT NULL DEFAULT 'SEK', invoice_prefix VARCHAR(20) NOT NULL DEFAULT 'INV',
-        next_invoice_number INT UNSIGNED NOT NULL DEFAULT 1, invoice_due_days SMALLINT UNSIGNED NOT NULL DEFAULT 30,
-        payment_instructions TEXT NULL, business_registration_status ENUM('draft','submitted','under_review','changes_requested','approved','rejected','suspended') NOT NULL DEFAULT 'draft',
-        submitted_at DATETIME NULL, reviewed_at DATETIME NULL, reviewed_by_user_id INT UNSIGNED NULL, review_note TEXT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        CONSTRAINT organization_billing_profile_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE RESTRICT
-      )`);
-      await this.pool.execute(`CREATE TABLE IF NOT EXISTS business_applications (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, organization_id INT UNSIGNED NOT NULL UNIQUE, applicant_user_id INT UNSIGNED NOT NULL,
-        status ENUM('draft','submitted','under_review','changes_requested','approved','rejected','suspended') NOT NULL DEFAULT 'submitted',
-        submitted_at DATETIME NULL, reviewed_at DATETIME NULL, reviewed_by_user_id INT UNSIGNED NULL, review_note TEXT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX business_applications_status (status, submitted_at),
-        CONSTRAINT business_applications_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE RESTRICT,
-        CONSTRAINT business_applications_applicant_fk FOREIGN KEY (applicant_user_id) REFERENCES users(id) ON DELETE RESTRICT,
-        CONSTRAINT business_applications_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
-      )`);
-      await this.pool.execute(`CREATE TABLE IF NOT EXISTS business_owner_applications (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL UNIQUE, message TEXT NULL,
-        status ENUM('pending','approved','declined') NOT NULL DEFAULT 'pending', reviewed_by_user_id INT UNSIGNED NULL,
-        reviewed_at DATETIME NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX business_owner_application_status (status, created_at),
-        CONSTRAINT business_owner_application_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        CONSTRAINT business_owner_application_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
-      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS billing_profiles (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, owner_user_id INT UNSIGNED NOT NULL, owner_organization_id INT UNSIGNED NULL,
-        profile_type ENUM('individual','company') NOT NULL, legal_name VARCHAR(255) NOT NULL, registration_number VARCHAR(100) NULL,
-        vat_number VARCHAR(100) NULL, address_line_1 VARCHAR(255) NOT NULL, address_line_2 VARCHAR(255) NULL,
-        postal_code VARCHAR(32) NOT NULL, city VARCHAR(120) NOT NULL, region VARCHAR(120) NULL, country VARCHAR(120) NOT NULL,
-        billing_email VARCHAR(255) NOT NULL, phone VARCHAR(80) NULL, contact_person VARCHAR(160) NULL,
-        is_default BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX billing_profiles_owner (owner_user_id, is_default),
-        CONSTRAINT billing_profiles_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
-        CONSTRAINT billing_profiles_organization_fk FOREIGN KEY (owner_organization_id) REFERENCES organizations(id) ON DELETE SET NULL
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, owner_user_id INT UNSIGNED NULL, owner_organization_id INT UNSIGNED NULL,
+        profile_type ENUM('individual','organization') NOT NULL, legal_name VARCHAR(255) NOT NULL,
+        organization_number VARCHAR(100) NULL, vat_number VARCHAR(100) NULL,
+        address_line_1 VARCHAR(255) NOT NULL, address_line_2 VARCHAR(255) NULL,
+        postal_code VARCHAR(32) NOT NULL, city VARCHAR(120) NOT NULL, country VARCHAR(120) NOT NULL,
+        billing_email VARCHAR(255) NOT NULL, phone VARCHAR(80) NULL, default_currency CHAR(3) NULL,
+        invoice_prefix VARCHAR(20) NOT NULL DEFAULT 'INV', invoice_due_days SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+        payment_instructions TEXT NULL, is_default BOOLEAN NOT NULL DEFAULT FALSE, is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX billing_profiles_user (owner_user_id, is_active, is_default),
+        INDEX billing_profiles_organization (owner_organization_id, is_active, is_default),
+        CONSTRAINT billing_profiles_owner_user_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT billing_profiles_owner_organization_fk FOREIGN KEY (owner_organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+        CONSTRAINT billing_profiles_exactly_one_owner CHECK ((owner_user_id IS NULL) <> (owner_organization_id IS NULL))
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS payment_accounts (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, billing_profile_id INT UNSIGNED NOT NULL, provider VARCHAR(80) NOT NULL,
+        provider_account_id VARCHAR(255) NULL, onboarding_status ENUM('not_started','pending','restricted','ready','disabled') NOT NULL DEFAULT 'not_started',
+        charges_enabled BOOLEAN NOT NULL DEFAULT FALSE, payouts_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        country VARCHAR(120) NULL, default_currency CHAR(3) NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY payment_account_provider (provider, provider_account_id), INDEX payment_accounts_profile (billing_profile_id),
+        CONSTRAINT payment_accounts_profile_fk FOREIGN KEY (billing_profile_id) REFERENCES billing_profiles(id) ON DELETE RESTRICT
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_payment_settings (
+        event_id INT UNSIGNED NOT NULL PRIMARY KEY, seller_billing_profile_id INT UNSIGNED NULL, payment_account_id INT UNSIGNED NULL,
+        currency CHAR(3) NULL, payments_enabled BOOLEAN NOT NULL DEFAULT FALSE, ticket_sales_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT event_payment_settings_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+        CONSTRAINT event_payment_settings_seller_fk FOREIGN KEY (seller_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
+        CONSTRAINT event_payment_settings_account_fk FOREIGN KEY (payment_account_id) REFERENCES payment_accounts(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoices (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, seller_organization_id INT UNSIGNED NOT NULL, buyer_user_id INT UNSIGNED NULL,
-        buyer_organization_id INT UNSIGNED NULL, buyer_billing_profile_id INT UNSIGNED NULL, booking_id INT UNSIGNED NULL, invoice_number VARCHAR(80) NULL,
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, seller_organization_id INT UNSIGNED NULL, buyer_user_id INT UNSIGNED NULL,
+        buyer_organization_id INT UNSIGNED NULL, buyer_billing_profile_id INT UNSIGNED NULL, seller_billing_profile_id INT UNSIGNED NULL, booking_id INT UNSIGNED NULL, invoice_number VARCHAR(80) NULL,
         status ENUM('draft','issued','sent','paid','overdue','void') NOT NULL DEFAULT 'draft', delivery_status ENUM('pending','sent','failed') NULL,
         issue_date DATE NULL, due_date DATE NULL, currency CHAR(3) NOT NULL, subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
         tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -691,6 +680,7 @@ export class Database {
         CONSTRAINT invoices_seller_fk FOREIGN KEY (seller_organization_id) REFERENCES organizations(id) ON DELETE RESTRICT,
         CONSTRAINT invoices_buyer_fk FOREIGN KEY (buyer_user_id) REFERENCES users(id) ON DELETE SET NULL,
         CONSTRAINT invoices_buyer_billing_profile_fk FOREIGN KEY (buyer_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
+        CONSTRAINT invoices_seller_billing_profile_fk FOREIGN KEY (seller_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
         CONSTRAINT invoices_booking_fk FOREIGN KEY (booking_id) REFERENCES venue_bookings(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoice_items (
