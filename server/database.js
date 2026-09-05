@@ -631,21 +631,50 @@ export class Database {
         CONSTRAINT venue_booking_settings_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS organization_billing_profile (
-        organization_id INT UNSIGNED NOT NULL PRIMARY KEY, legal_name VARCHAR(255) NOT NULL, organization_number VARCHAR(100) NOT NULL,
-        vat_number VARCHAR(100) NULL, billing_address_line_1 VARCHAR(255) NOT NULL, billing_address_line_2 VARCHAR(255) NULL,
-        postal_code VARCHAR(32) NOT NULL, city VARCHAR(120) NOT NULL, country VARCHAR(120) NOT NULL, billing_email VARCHAR(255) NOT NULL,
+        organization_id INT UNSIGNED NOT NULL PRIMARY KEY, legal_name VARCHAR(255) NOT NULL, registration_number VARCHAR(100) NOT NULL,
+        legal_entity_type ENUM('limited_company','sole_trader','partnership','association','other') NULL,
+        country_of_registration VARCHAR(120) NOT NULL, is_vat_registered BOOLEAN NOT NULL DEFAULT FALSE, vat_number VARCHAR(100) NULL,
+        default_vat_rate DECIMAL(5,2) NULL, tax_country VARCHAR(120) NULL,
+        registered_address_line_1 VARCHAR(255) NOT NULL, registered_address_line_2 VARCHAR(255) NULL,
+        postal_code VARCHAR(32) NOT NULL, city VARCHAR(120) NOT NULL, region VARCHAR(120) NULL, country VARCHAR(120) NOT NULL,
+        billing_email VARCHAR(255) NOT NULL, business_email VARCHAR(255) NULL, phone VARCHAR(80) NULL, website VARCHAR(1024) NULL,
         bank_name VARCHAR(160) NULL, bank_account VARCHAR(160) NULL, iban VARCHAR(80) NULL, bic VARCHAR(32) NULL, bankgiro VARCHAR(80) NULL,
-        default_currency CHAR(3) NOT NULL DEFAULT 'SEK', default_vat_rate DECIMAL(5,2) NULL, invoice_prefix VARCHAR(20) NOT NULL DEFAULT 'INV',
-        next_invoice_number INT UNSIGNED NOT NULL DEFAULT 1, payment_instructions TEXT NULL,
+        plusgiro VARCHAR(80) NULL, business_swish_number VARCHAR(80) NULL,
+        default_currency CHAR(3) NOT NULL DEFAULT 'SEK', invoice_prefix VARCHAR(20) NOT NULL DEFAULT 'INV',
+        next_invoice_number INT UNSIGNED NOT NULL DEFAULT 1, invoice_due_days SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+        payment_instructions TEXT NULL, business_registration_status ENUM('draft','submitted','under_review','changes_requested','approved','rejected','suspended') NOT NULL DEFAULT 'draft',
+        submitted_at DATETIME NULL, reviewed_at DATETIME NULL, reviewed_by_user_id INT UNSIGNED NULL, review_note TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         CONSTRAINT organization_billing_profile_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE RESTRICT
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS business_applications (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, organization_id INT UNSIGNED NOT NULL UNIQUE, applicant_user_id INT UNSIGNED NOT NULL,
+        status ENUM('draft','submitted','under_review','changes_requested','approved','rejected','suspended') NOT NULL DEFAULT 'submitted',
+        submitted_at DATETIME NULL, reviewed_at DATETIME NULL, reviewed_by_user_id INT UNSIGNED NULL, review_note TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX business_applications_status (status, submitted_at),
+        CONSTRAINT business_applications_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE RESTRICT,
+        CONSTRAINT business_applications_applicant_fk FOREIGN KEY (applicant_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+        CONSTRAINT business_applications_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS billing_profiles (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, owner_user_id INT UNSIGNED NOT NULL, owner_organization_id INT UNSIGNED NULL,
+        profile_type ENUM('individual','company') NOT NULL, legal_name VARCHAR(255) NOT NULL, registration_number VARCHAR(100) NULL,
+        vat_number VARCHAR(100) NULL, address_line_1 VARCHAR(255) NOT NULL, address_line_2 VARCHAR(255) NULL,
+        postal_code VARCHAR(32) NOT NULL, city VARCHAR(120) NOT NULL, region VARCHAR(120) NULL, country VARCHAR(120) NOT NULL,
+        billing_email VARCHAR(255) NOT NULL, phone VARCHAR(80) NULL, contact_person VARCHAR(160) NULL,
+        is_default BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX billing_profiles_owner (owner_user_id, is_default),
+        CONSTRAINT billing_profiles_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT billing_profiles_organization_fk FOREIGN KEY (owner_organization_id) REFERENCES organizations(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoices (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, seller_organization_id INT UNSIGNED NOT NULL, buyer_user_id INT UNSIGNED NULL,
-        buyer_organization_id INT UNSIGNED NULL, booking_id INT UNSIGNED NULL, invoice_number VARCHAR(80) NULL,
+        buyer_organization_id INT UNSIGNED NULL, buyer_billing_profile_id INT UNSIGNED NULL, booking_id INT UNSIGNED NULL, invoice_number VARCHAR(80) NULL,
         status ENUM('draft','issued','sent','paid','overdue','void') NOT NULL DEFAULT 'draft', delivery_status ENUM('pending','sent','failed') NULL,
         issue_date DATE NULL, due_date DATE NULL, currency CHAR(3) NOT NULL, subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
         tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
-        seller_snapshot_json JSON NULL, buyer_snapshot_json JSON NULL, booking_snapshot_json JSON NULL, payment_instructions_snapshot TEXT NULL,
+        seller_snapshot_json JSON NULL, buyer_snapshot_json JSON NULL, booking_snapshot_json JSON NULL, tax_snapshot_json JSON NULL, payment_instructions_snapshot TEXT NULL,
         pdf_storage_key VARCHAR(1024) NULL, pdf_generated_at DATETIME NULL, pdf_hash CHAR(64) NULL, sent_at DATETIME NULL,
         paid_at DATETIME NULL, paid_by_user_id INT UNSIGNED NULL, manual_payment_reference VARCHAR(255) NULL,
         manual_payment_method ENUM('bank_transfer','swish','cash','other') NULL, voided_at DATETIME NULL, voided_by INT UNSIGNED NULL, void_reason TEXT NULL,
@@ -653,6 +682,7 @@ export class Database {
         UNIQUE KEY invoice_number_per_seller (seller_organization_id, invoice_number), INDEX invoices_booking (booking_id),
         CONSTRAINT invoices_seller_fk FOREIGN KEY (seller_organization_id) REFERENCES organizations(id) ON DELETE RESTRICT,
         CONSTRAINT invoices_buyer_fk FOREIGN KEY (buyer_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT invoices_buyer_billing_profile_fk FOREIGN KEY (buyer_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
         CONSTRAINT invoices_booking_fk FOREIGN KEY (booking_id) REFERENCES venue_bookings(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoice_items (
@@ -668,6 +698,16 @@ export class Database {
         INDEX invoice_history_invoice (invoice_id, created_at),
         CONSTRAINT invoice_history_invoice_fk FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE RESTRICT,
         CONSTRAINT invoice_history_user_fk FOREIGN KEY (performed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS payments (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, invoice_id INT UNSIGNED NOT NULL, booking_id INT UNSIGNED NULL,
+        provider VARCHAR(80) NOT NULL, provider_payment_id VARCHAR(255) NULL, status ENUM('pending','requires_action','succeeded','failed','cancelled') NOT NULL,
+        currency CHAR(3) NOT NULL, amount DECIMAL(12,2) NOT NULL, payment_method_type VARCHAR(40) NULL,
+        payment_method_brand VARCHAR(80) NULL, payment_method_last4 CHAR(4) NULL, metadata_json JSON NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, authorized_at DATETIME NULL, paid_at DATETIME NULL, failed_at DATETIME NULL, cancelled_at DATETIME NULL,
+        INDEX payments_invoice (invoice_id, created_at),
+        CONSTRAINT payments_invoice_fk FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE RESTRICT,
+        CONSTRAINT payments_booking_fk FOREIGN KEY (booking_id) REFERENCES venue_bookings(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_types (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, slug VARCHAR(100) NOT NULL UNIQUE, name VARCHAR(120) NOT NULL, sort_order INT NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT TRUE

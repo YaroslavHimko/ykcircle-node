@@ -10,6 +10,7 @@ import { EMAIL_UNSUBSCRIBE_REASONS } from './email-unsubscribe-reasons.js';
 import { legalDocument, legalDocumentIndex, currentLegalDocument } from './legal-documents.js';
 import { createRateLimiter } from './rate-limit.js';
 import { isValidIanaTimezone, localDateTimeToUtc, mysqlUtc, parseUtcInstant, zonedDateTime } from './time.js';
+import { renderInvoicePdf } from './invoice-pdf.js';
 
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const legalHtml = (markdown) => escapeHtml(markdown).split(/\r?\n/).map((line) => {
@@ -656,15 +657,27 @@ export class Api {
       if (!/^[A-Z]{3}$/.test(data.currency)) errors.currency = 'Currency must be a three-letter ISO code.';
       return { data, errors };
     };
-    const billingProfileData = (body) => {
-      const required = ['legalName', 'organizationNumber', 'billingAddressLine1', 'postalCode', 'city', 'country', 'billingEmail'];
-      const data = Object.fromEntries(['legalName', 'organizationNumber', 'vatNumber', 'billingAddressLine1', 'billingAddressLine2', 'postalCode', 'city', 'country', 'billingEmail', 'bankName', 'bankAccount', 'iban', 'bic', 'bankgiro', 'paymentInstructions'].map((key) => [key, body[key] == null ? null : String(body[key]).trim() || null]));
-      data.defaultCurrency = String(body.defaultCurrency || 'SEK').trim().toUpperCase(); data.defaultVatRate = body.defaultVatRate == null || body.defaultVatRate === '' ? null : Number(body.defaultVatRate); data.invoicePrefix = String(body.invoicePrefix || 'INV').trim().toUpperCase();
-      const errors = {}; for (const key of required) if (!data[key] || data[key].length > 255) errors[key] = 'This billing field is required and must be at most 255 characters.';
-      if (data.billingEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.billingEmail)) errors.billingEmail = 'A valid billing email is required.';
+    const textField = (body, key, max = 255) => body[key] == null ? null : String(body[key]).trim().slice(0, max) || null;
+    const businessBillingProfileData = (body) => {
+      const data = Object.fromEntries(['legalName', 'registrationNumber', 'legalEntityType', 'countryOfRegistration', 'vatNumber', 'taxCountry', 'registeredAddressLine1', 'registeredAddressLine2', 'postalCode', 'city', 'region', 'country', 'billingEmail', 'businessEmail', 'phone', 'website', 'bankName', 'bankAccount', 'iban', 'bic', 'bankgiro', 'plusgiro', 'businessSwishNumber', 'paymentInstructions'].map((key) => [key, textField(body, key, key === 'paymentInstructions' ? 5000 : key === 'website' ? 1024 : 255)]));
+      data.isVatRegistered = body.isVatRegistered === true || body.isVatRegistered === 'true'; data.defaultCurrency = String(body.defaultCurrency || 'SEK').trim().toUpperCase(); data.defaultVatRate = body.defaultVatRate == null || body.defaultVatRate === '' ? null : Number(body.defaultVatRate); data.invoicePrefix = String(body.invoicePrefix || 'INV').trim().toUpperCase(); data.invoiceDueDays = Number(body.invoiceDueDays ?? 30);
+      const errors = {}; for (const key of ['legalName', 'registrationNumber', 'countryOfRegistration', 'registeredAddressLine1', 'postalCode', 'city', 'country', 'billingEmail']) if (!data[key]) errors[key] = 'This field is required.';
+      if (data.legalEntityType && !['limited_company', 'sole_trader', 'partnership', 'association', 'other'].includes(data.legalEntityType)) errors.legalEntityType = 'Select a legal entity type.';
+      if (data.isVatRegistered && !data.vatNumber) errors.vatNumber = 'VAT number is required when VAT registered.';
+      for (const key of ['billingEmail', 'businessEmail']) if (data[key] && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data[key])) errors[key] = 'Enter a valid email address.';
+      if (data.website && !/^https:\/\//i.test(data.website)) errors.website = 'Website must use HTTPS.';
       if (!/^[A-Z]{3}$/.test(data.defaultCurrency)) errors.defaultCurrency = 'Currency must be a three-letter ISO code.';
-      if (!/^[A-Z0-9_-]{1,20}$/.test(data.invoicePrefix)) errors.invoicePrefix = 'Invoice prefix may contain up to 20 letters, numbers, dashes, or underscores.';
+      if (!/^[A-Z0-9-]{1,20}$/.test(data.invoicePrefix)) errors.invoicePrefix = 'Invoice prefix must use 1-20 letters, digits, or hyphens.';
       if (data.defaultVatRate !== null && (!Number.isFinite(data.defaultVatRate) || data.defaultVatRate < 0 || data.defaultVatRate > 100)) errors.defaultVatRate = 'VAT rate must be between 0 and 100.';
+      if (!Number.isInteger(data.invoiceDueDays) || data.invoiceDueDays < 0 || data.invoiceDueDays > 365) errors.invoiceDueDays = 'Invoice due days must be 0-365.';
+      return { data, errors };
+    };
+    const buyerBillingProfileData = (body) => {
+      const data = Object.fromEntries(['legalName', 'registrationNumber', 'vatNumber', 'addressLine1', 'addressLine2', 'postalCode', 'city', 'region', 'country', 'billingEmail', 'phone', 'contactPerson'].map((key) => [key, textField(body, key)])); data.profileType = String(body.profileType || 'individual'); data.isDefault = Boolean(body.isDefault);
+      const errors = {}; for (const key of ['legalName', 'addressLine1', 'postalCode', 'city', 'country', 'billingEmail']) if (!data[key]) errors[key] = 'This field is required.';
+      if (!['individual', 'company'].includes(data.profileType)) errors.profileType = 'Profile type must be individual or company.';
+      if (data.profileType === 'company' && !data.registrationNumber) errors.registrationNumber = 'Registration number is required for a company.';
+      if (data.billingEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.billingEmail)) errors.billingEmail = 'Enter a valid billing email address.';
       return { data, errors };
     };
     const availabilityOverrides = (value) => {
@@ -848,6 +861,10 @@ export class Api {
       catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That organization slug is already in use.' }); console.error('Organization creation failed:', error.message); return res.status(500).json({ error: 'Unable to create organization.' }); }
     });
     app.get('/api/organizations/:id', optionalAuthenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid organization id is required.' }); try { await ensureTable(); const organization = await this.queries.organization(id, req.user?.id ?? null, req.user?.role ?? null); return organization ? res.json(organization) : res.status(404).json({ error: 'Organization not found.' }); } catch (error) { console.error('Organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load organization.' }); } });
+    app.get('/api/organizations/mine', authenticate, async (req, res) => {
+      try { await ensureTable(); return res.json(await this.queries.managedOrganizations(req.user.id, req.user.role)); }
+      catch (error) { console.error('Managed organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load businesses.' }); }
+    });
     app.put('/api/organizations/:id/members/:userId', authenticate, requireVerifiedUser, async (req, res) => { const organizationId = Number(req.params.id); const userId = Number(req.params.userId); const role = String(req.body.role || ''); if (!Number.isInteger(organizationId) || !Number.isInteger(userId) || !['owner', 'admin', 'manager', 'staff'].includes(role)) return res.status(422).json({ error: 'A valid organization member and role are required.' }); try { await ensureTable(); if (!await this.queries.setOrganizationMember(organizationId, req.user.id, req.user.role, userId, role)) return res.status(403).json({ error: 'Organization owner or admin access is required.' }); return res.json({ organizationId, userId, role }); } catch (error) { console.error('Organization member update failed:', error.message); return res.status(500).json({ error: 'Unable to update organization member.' }); } });
     app.get('/api/organizations/:id/billing-profile', authenticate, async (req, res) => {
       const organizationId = Number(req.params.id); if (!Number.isInteger(organizationId) || organizationId < 1) return res.status(422).json({ error: 'A valid organization id is required.' });
@@ -855,9 +872,23 @@ export class Api {
       catch (error) { console.error('Billing profile lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load billing profile.' }); }
     });
     app.put('/api/organizations/:id/billing-profile', authenticate, requireVerifiedUser, async (req, res) => {
-      const organizationId = Number(req.params.id); const { data, errors } = billingProfileData(req.body); if (!Number.isInteger(organizationId) || organizationId < 1 || Object.keys(errors).length) return res.status(422).json({ error: 'Billing profile is invalid.', fields: errors });
+      const organizationId = Number(req.params.id); const { data, errors } = businessBillingProfileData(req.body); if (!Number.isInteger(organizationId) || organizationId < 1 || Object.keys(errors).length) return res.status(422).json({ error: 'Billing profile is invalid.', fields: errors });
       try { await ensureTable(); if (!await this.queries.updateOrganizationBillingProfile(organizationId, req.user.id, req.user.role, data)) return res.status(403).json({ error: 'Organization manager access is required.' }); return res.json(await this.queries.organizationBillingProfile(organizationId)); }
       catch (error) { console.error('Billing profile update failed:', error.message); return res.status(500).json({ error: 'Unable to update billing profile.' }); }
+    });
+    app.get('/api/billing-profiles', authenticate, async (req, res) => {
+      try { await ensureTable(); return res.json(await this.queries.billingProfiles(req.user.id)); }
+      catch (error) { console.error('Buyer billing profile lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load billing profiles.' }); }
+    });
+    app.post('/api/billing-profiles', authenticate, requireVerifiedUser, async (req, res) => {
+      const { data, errors } = buyerBillingProfileData(req.body); if (Object.keys(errors).length) return res.status(422).json({ error: 'Billing profile is invalid.', fields: errors });
+      try { await ensureTable(); return res.status(201).json(await this.queries.saveBillingProfile(req.user.id, null, data)); }
+      catch (error) { console.error('Buyer billing profile creation failed:', error.message); return res.status(500).json({ error: 'Unable to save billing profile.' }); }
+    });
+    app.put('/api/billing-profiles/:id', authenticate, requireVerifiedUser, async (req, res) => {
+      const id = Number(req.params.id); const { data, errors } = buyerBillingProfileData(req.body); if (!Number.isInteger(id) || id < 1 || Object.keys(errors).length) return res.status(422).json({ error: 'Billing profile is invalid.', fields: errors });
+      try { await ensureTable(); const profile = await this.queries.saveBillingProfile(req.user.id, id, data); return profile ? res.json(profile) : res.status(403).json({ error: 'Billing profile not found or not available to you.' }); }
+      catch (error) { console.error('Buyer billing profile update failed:', error.message); return res.status(500).json({ error: 'Unable to update billing profile.' }); }
     });
     app.get('/api/invoices', authenticate, async (req, res) => {
       try { await ensureTable(); return res.json(await this.queries.invoicesForViewer(req.user.id, req.user.role)); }
@@ -867,6 +898,18 @@ export class Api {
       const invoiceId = Number(req.params.id); if (!Number.isInteger(invoiceId) || invoiceId < 1) return res.status(422).json({ error: 'A valid invoice id is required.' });
       try { await ensureTable(); const invoice = await this.queries.invoice(invoiceId, req.user.id, req.user.role); return invoice ? res.json(invoice) : res.status(403).json({ error: 'Invoice not found or not available to you.' }); }
       catch (error) { console.error('Invoice lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load invoice.' }); }
+    });
+    app.get('/api/invoices/:id/download', authenticate, async (req, res) => {
+      const invoiceId = Number(req.params.id); if (!Number.isInteger(invoiceId) || invoiceId < 1) return res.status(422).json({ error: 'A valid invoice id is required.' });
+      try { await ensureTable(); const invoice = await this.queries.invoice(invoiceId, req.user.id, req.user.role); if (!invoice) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); const pdf = renderInvoicePdf(invoice); await this.queries.recordInvoicePdf(invoiceId, crypto.createHash('sha256').update(pdf).digest('hex')); res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="invoice-${invoice.invoiceNumber || invoiceId}.pdf"`, 'Cache-Control': 'private, no-store' }); return res.send(pdf); }
+      catch (error) { console.error('Invoice PDF generation failed:', error.message); return res.status(500).json({ error: 'Unable to download invoice.' }); }
+    });
+    const testPaymentsEnabled = process.env.NODE_ENV !== 'production' || process.env.PAYMENTS_TEST_MODE === 'true';
+    app.post('/api/test-payments', authenticate, async (req, res) => {
+      if (!testPaymentsEnabled) return res.status(404).json({ error: 'Test payments are unavailable.' });
+      const invoiceId = Number(req.body.invoiceId); const outcome = String(req.body.outcome || 'succeeded'); if (!Number.isInteger(invoiceId) || invoiceId < 1 || !['succeeded', 'failed'].includes(outcome)) return res.status(422).json({ error: 'A valid invoice and test outcome are required.' });
+      try { await ensureTable(); const result = await this.queries.simulatePayment(invoiceId, req.user.id, req.user.role, outcome === 'succeeded'); if (result?.error === 'INVALID_STATE') return res.status(409).json({ error: 'Only issued invoices can be simulated.' }); if (!result) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); return res.status(201).json(result); }
+      catch (error) { console.error('Test payment simulation failed:', error.message); return res.status(500).json({ error: 'Unable to simulate payment.' }); }
     });
     app.post('/api/invoices/:id/mark-paid', authenticate, requireVenueOwner, async (req, res) => {
       const invoiceId = Number(req.params.id); const paymentMethod = String(req.body.paymentMethod || ''); const paymentReference = req.body.paymentReference == null ? null : String(req.body.paymentReference).trim() || null;
@@ -1090,7 +1133,7 @@ export class Api {
       const status = String(req.body.status || '');
       const ownerNote = req.body.ownerNote == null ? null : String(req.body.ownerNote).trim() || null;
       if (!Number.isInteger(bookingId) || bookingId < 1 || !['confirmed', 'declined'].includes(status)) return res.status(422).json({ error: 'A booking id and status of confirmed or declined are required.' });
-      try { await ensureTable(); const result = await this.queries.reviewVenueBooking(bookingId, req.user.id, req.user.role, status, ownerNote); if (result?.error === 'CONFLICT') return res.status(409).json({ error: 'The venue is already occupied for this time.' }); if (!result) return res.status(404).json({ error: 'Pending venue booking not found or not managed by you.' }); return res.json({ id: bookingId, status, ownerNote, invoiceId: result.invoiceId || null }); }
+      try { await ensureTable(); const result = await this.queries.reviewVenueBooking(bookingId, req.user.id, req.user.role, status, ownerNote); if (result?.error === 'CONFLICT') return res.status(409).json({ error: 'The venue is already occupied for this time.' }); if (result?.error === 'SELLER_PROFILE_INCOMPLETE') return res.status(422).json({ code: result.error, error: 'Your business billing profile is incomplete or not approved. Complete business details before issuing invoices.' }); if (result?.error === 'BUYER_PROFILE_INCOMPLETE') return res.status(422).json({ code: result.error, error: 'The organizer must complete billing details before this invoice can be issued.' }); if (!result) return res.status(404).json({ error: 'Pending venue booking not found or not managed by you.' }); return res.json({ id: bookingId, status, ownerNote, invoiceId: result.invoiceId || null }); }
       catch (error) { console.error('Venue booking review failed:', error.message); return res.status(500).json({ error: 'Unable to review venue booking.' }); }
     });
     app.get('/api/venue-bookings/:id/messages', authenticate, async (req, res) => {
@@ -1226,6 +1269,27 @@ export class Api {
         await ensureTable();
       return res.json(await this.queries.applicationsForUser(req.user.email));
       } catch (error) { console.error('Application lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load applications.' }); }
+    });
+    app.post('/api/business-applications', authenticate, requireVerifiedUser, async (req, res) => {
+      const name = String(req.body.organizationName || req.body.name || '').trim(); const slug = venueSlug(req.body.slug || name); const { data: profile, errors } = businessBillingProfileData(req.body);
+      if (name.length < 2 || name.length > 160 || !slug || slug.length > 180 || Object.keys(errors).length) return res.status(422).json({ error: 'Business application is invalid.', fields: { ...errors, ...(name.length < 2 || name.length > 160 ? { organizationName: 'Business name must be 2-160 characters.' } : {}) } });
+      try { await ensureTable(); const application = await this.queries.createBusinessApplication(req.user.id, { name, slug, description: textField(req.body, 'description', 5000) }, profile); return res.status(201).json(await this.queries.businessApplication(application.id, req.user.id, req.user.role)); }
+      catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That business already exists.' }); console.error('Business application creation failed:', error.message); return res.status(500).json({ error: 'Unable to submit business application.' }); }
+    });
+    app.get('/api/business-applications/me', authenticate, async (req, res) => {
+      try { await ensureTable(); return res.json(await this.queries.businessApplicationForUser(req.user.id)); }
+      catch (error) { console.error('Business application lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load business applications.' }); }
+    });
+    app.get('/api/admin/business-applications', authenticate, requireAdmin, async (req, res) => {
+      const status = req.query.status == null ? null : String(req.query.status); if (status && !['draft', 'submitted', 'under_review', 'changes_requested', 'approved', 'rejected', 'suspended'].includes(status)) return res.status(422).json({ error: 'Invalid business application status.' });
+      try { await ensureTable(); return res.json(await this.queries.businessApplications(status)); }
+      catch (error) { console.error('Business application admin lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load business applications.' }); }
+    });
+    app.patch('/api/admin/business-applications/:id/review', authenticate, requireAdmin, async (req, res) => {
+      const id = Number(req.params.id); const status = String(req.body.status || ''); const reviewNote = textField(req.body, 'reviewNote', 5000);
+      if (!Number.isInteger(id) || id < 1 || !['approved', 'changes_requested', 'rejected', 'suspended'].includes(status)) return res.status(422).json({ error: 'A valid review action is required.' });
+      try { await ensureTable(); if (!await this.queries.reviewBusinessApplication(id, req.user.id, status, reviewNote)) return res.status(404).json({ error: 'Business application not found.' }); return res.json(await this.queries.businessApplication(id, req.user.id, req.user.role)); }
+      catch (error) { console.error('Business application review failed:', error.message); return res.status(500).json({ error: 'Unable to review business application.' }); }
     });
     app.get('/api/venue-owner-applications/me', authenticate, async (req, res) => {
       try { await ensureTable(); const application = await this.queries.venueOwnerApplication(req.user.id); return application ? res.json(application) : res.status(404).json({ error: 'Venue-owner application not found.' }); }
