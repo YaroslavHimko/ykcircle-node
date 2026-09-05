@@ -92,6 +92,102 @@ test('lets a site manager reach any event cover without an owner parameter', asy
   assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png', 'event-1-1786906288459.png']);
 });
 
+test('lists invoices only for the buyer or a managing seller member', async () => {
+  const calls = [];
+  const queries = new Queries({
+    execute: async (sql, parameters) => {
+      calls.push({ sql, parameters });
+      return [[{ id: 14, status: 'issued', eventTitle: 'Autumn social' }]];
+    },
+  });
+
+  assert.deepEqual(await queries.invoicesForViewer(7, 'venue_owner'), [{ id: 14, status: 'issued', eventTitle: 'Autumn social' }]);
+  assert.match(calls[0].sql, /i\.buyer_user_id=\?/);
+  assert.match(calls[0].sql, /seller_member\.role IN \('owner','admin','manager'\)/);
+  assert.deepEqual(calls[0].parameters, [7, 7]);
+});
+
+test('lists venue bookings for organization managers as well as the venue owner', async () => {
+  const calls = [];
+  const queries = new Queries({
+    execute: async (sql, parameters) => {
+      calls.push({ sql, parameters });
+      return [[{ id: 22, status: 'requested' }]];
+    },
+  });
+
+  assert.deepEqual(await queries.venueBookings(7, 15, 'venue_owner'), [{ id: 22, status: 'requested' }]);
+  assert.match(calls[0].sql, /LEFT JOIN organization_members venue_member/);
+  assert.match(calls[0].sql, /venue_member\.role IN \('owner','admin','manager'\)/);
+  assert.match(calls[0].sql, /ORDER BY CASE WHEN b\.status IN \('requested','pending'\) THEN 0 ELSE 1 END, b\.created_at DESC/);
+  assert.deepEqual(calls[0].parameters, [15, 7, 15]);
+});
+
+test('prorates an hourly venue rate when a booking is requested', async () => {
+  const calls = [];
+  const connection = {
+    beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {},
+    execute: async (sql, parameters = []) => {
+      calls.push({ sql, parameters });
+      if (sql.startsWith('SELECT starts_at AS startsAt')) return [[{ startsAt: '2026-10-10T10:00:00Z', endsAt: '2026-10-10T10:30:00Z' }]];
+      if (sql.startsWith('SELECT id, timezone, price_from')) return [[{ id: 4, timezone: 'UTC', priceFrom: '1800.00', currency: 'SEK' }]];
+      if (sql.startsWith('SELECT id, status FROM venue_bookings')) return [[]];
+      if (sql.startsWith('SELECT buffer_before_minutes')) return [[]];
+      if (sql.startsWith('SELECT timezone FROM venues')) return [[{ timezone: 'UTC' }]];
+      if (sql.includes('SELECT id, booking_type AS bookingType')) return [[]];
+      if (sql.includes('FROM venue_external_reservations')) return [[]];
+      if (sql.startsWith('INSERT INTO venue_bookings')) return [{ insertId: 22 }];
+      return [{ affectedRows: 1 }];
+    },
+  };
+  const queries = new Queries({ execute: async () => [[]], getConnection: async () => connection });
+
+  assert.deepEqual(await queries.requestVenueBooking(12, 4, 7), { id: 22, status: 'requested' });
+  const insert = calls.find((call) => call.sql.startsWith('INSERT INTO venue_bookings'));
+  assert.match(insert.sql, /subtotal, tax_amount, total_amount/);
+  assert.equal(insert.parameters.at(-2), 900);
+  assert.equal(insert.parameters.at(-1), 900);
+});
+
+test('uses boolean confirmation flags when reviewing a venue booking', async () => {
+  const calls = [];
+  const connection = {
+    beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {},
+    execute: async (sql, parameters = []) => {
+      calls.push({ sql, parameters });
+      if (sql.includes('FROM venue_bookings b JOIN venues')) return [[{ venueId: 4, organizerUserId: 9, sellerOrganizationId: null, occupiedStartAt: '2026-10-10T10:00:00Z', occupiedEndAt: '2026-10-10T12:00:00Z' }]];
+      if (sql.startsWith('SELECT id FROM venues')) return [[{ id: 4 }]];
+      if (sql.startsWith('SELECT timezone FROM venues')) return [[{ timezone: 'UTC' }]];
+      if (sql.includes('SELECT id, booking_type AS bookingType')) return [[]];
+      if (sql.includes('FROM venue_external_reservations')) return [[]];
+      return [{ affectedRows: 1 }];
+    },
+  };
+  const queries = new Queries({ execute: async () => [[]], getConnection: async () => connection });
+
+  assert.deepEqual(await queries.reviewVenueBooking(22, 15, 'venue_owner', 'confirmed', 'Approved'), { invoiceId: null });
+  const update = calls.find((call) => call.sql.startsWith('UPDATE venue_bookings SET status='));
+  assert.doesNotMatch(update.sql, /\?='confirmed'/);
+  assert.deepEqual(update.parameters, ['confirmed', 'Approved', 'Approved', true, true, 15, 22]);
+});
+
+test('returns booking messages only after verifying conversation access', async () => {
+  const calls = [];
+  const queries = new Queries({
+    execute: async (sql, parameters) => {
+      calls.push({ sql, parameters });
+      if (sql.includes('SELECT b.id FROM venue_bookings')) return [[{ id: 22 }]];
+      return [[{ id: 3, bookingId: 22, senderUserId: 15, senderName: 'Venue owner', body: 'Can we discuss setup?', createdAt: '2026-10-10 10:00:00' }]];
+    },
+  });
+
+  const messages = await queries.venueBookingMessages(22, 15, 'venue_owner');
+  assert.equal(messages[0].body, 'Can we discuss setup?');
+  assert.match(calls[0].sql, /organizer_user_id=\?/);
+  assert.match(calls[0].sql, /venue_member\.role IN \('owner','admin','manager'\)/);
+  assert.deepEqual(calls[0].parameters, [15, 22, 15, 15]);
+});
+
 test('keeps rich event location columns and values aligned', async () => {
   const queries = new Queries({ execute: async () => [[]] });
   let insert;

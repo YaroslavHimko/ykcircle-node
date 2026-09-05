@@ -43,7 +43,7 @@ test('each confirmed booking splits the day into additional free intervals', () 
   ]);
 });
 
-test('a pending booking reserves its interval and exposes only a generic unavailable range', () => {
+test('a requested booking reserves its interval and exposes only a generic unavailable range', () => {
   const dates = calculateAvailability({
     from: '2026-09-14', to: '2026-09-14', timezone: 'Europe/Stockholm',
     rules: [{ weekday: 1, startTime: '09:00', endTime: '17:00', isActive: true }],
@@ -53,6 +53,18 @@ test('a pending booking reserves its interval and exposes only a generic unavail
 
   assert.deepEqual(dates[0].availableIntervals, [{ start: '09:00', end: '10:00' }, { start: '11:00', end: '17:00' }]);
   assert.deepEqual(dates[0].unavailableIntervals, [{ start: '10:00', end: '11:00' }]);
+});
+
+test('a declined booking releases its interval', () => {
+  const [date] = calculateAvailability({
+    from: '2026-09-14', to: '2026-09-14', timezone: 'Europe/Stockholm',
+    rules: [{ weekday: 1, startTime: '09:00', endTime: '17:00', isActive: true }],
+    overrides: [], blocks: [], externalReservations: [],
+    bookings: [{ status: 'declined', startAt: '2026-09-14T08:00:00.000Z', endAt: '2026-09-14T09:00:00.000Z' }],
+  });
+
+  assert.deepEqual(date.availableIntervals, [{ start: '09:00', end: '17:00' }]);
+  assert.deepEqual(date.unavailableIntervals, []);
 });
 
 test('unavailable ranges are expressed in the venue timezone, not the browser or UTC', () => {

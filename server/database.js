@@ -578,6 +578,13 @@ export class Database {
         CONSTRAINT venue_booking_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
         CONSTRAINT venue_booking_organizer_fk FOREIGN KEY (organizer_user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_booking_messages (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, booking_id INT UNSIGNED NOT NULL, sender_user_id INT UNSIGNED NOT NULL,
+        body TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX venue_booking_messages_booking (booking_id, created_at),
+        CONSTRAINT venue_booking_messages_booking_fk FOREIGN KEY (booking_id) REFERENCES venue_bookings(id) ON DELETE CASCADE,
+        CONSTRAINT venue_booking_messages_sender_fk FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS organizations (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(160) NOT NULL, slug VARCHAR(180) NOT NULL UNIQUE,
         description TEXT NULL, website_url VARCHAR(1024) NULL, phone VARCHAR(80) NULL, contact_email VARCHAR(255) NULL,
@@ -794,20 +801,27 @@ export class Database {
     for (const [column, definition] of Object.entries(columns)) await this.addColumnIfMissing('venue_bookings', column, definition);
     await this.pool.execute("UPDATE venue_bookings SET status = 'requested' WHERE status = 'pending'");
     await this.pool.execute("ALTER TABLE venue_bookings MODIFY COLUMN status ENUM('requested','confirmed','declined','cancelled','completed','pending') NOT NULL DEFAULT 'requested'");
+    // Versions before owner review backfilled published events as confirmed.
+    // Those rows have no reviewer or owner note, unlike a real confirmation;
+    // reopen only that unambiguous legacy shape for owner review.
+    await this.pool.execute("UPDATE venue_bookings SET status='requested', confirmed_at=NULL, confirmed_by=NULL WHERE booking_source='ykcircle' AND status='confirmed' AND confirmed_by IS NULL AND owner_note IS NULL");
     await this.pool.execute('ALTER TABLE venue_bookings MODIFY COLUMN event_id INT UNSIGNED NULL');
     await this.pool.execute(`UPDATE venue_bookings b JOIN events e ON e.id = b.event_id JOIN venues v ON v.id = b.venue_id
       SET b.start_at = COALESCE(b.start_at, e.starts_at), b.end_at = COALESCE(b.end_at, e.ends_at),
       b.occupied_start_at = COALESCE(b.occupied_start_at, e.starts_at), b.occupied_end_at = COALESCE(b.occupied_end_at, e.ends_at),
       b.booking_date = COALESCE(b.booking_date, DATE(e.starts_at)), b.venue_timezone = COALESCE(b.venue_timezone, v.timezone, 'UTC')
       WHERE b.event_id IS NOT NULL`);
-    // Before venue_bookings existed, a published event's venue_id itself was
-    // the reservation. Backfill those legacy reservations once so occupancy
-    // has a single, transaction-safe source of truth going forward.
+    // A timed draft with a selected venue is an owner-reviewable booking
+    // request. Publishing must never turn it into a confirmed reservation.
+    // INSERT IGNORE makes this safe to run on every startup and preserves any
+    // manual review that has already happened.
     await this.pool.execute(`INSERT IGNORE INTO venue_bookings
-      (venue_id, event_id, organizer_user_id, booking_source, booking_type, booking_date, venue_timezone, start_at, end_at, occupied_start_at, occupied_end_at, status, currency, confirmed_at)
-      SELECT e.venue_id, e.id, e.manager_id, 'ykcircle', 'hourly', DATE(e.starts_at), v.timezone, e.starts_at, e.ends_at, e.starts_at, e.ends_at, 'confirmed', COALESCE(v.currency, 'SEK'), NOW()
-      FROM events e JOIN venues v ON v.id=e.venue_id LEFT JOIN venue_bookings b ON b.event_id=e.id
-      WHERE e.venue_id IS NOT NULL AND e.deleted_at IS NULL AND e.status='Published'
+      (venue_id, event_id, organizer_user_id, booking_source, booking_type, booking_date, venue_timezone, start_at, end_at, occupied_start_at, occupied_end_at, status, currency)
+      SELECT e.venue_id, e.id, e.manager_id, 'ykcircle', 'hourly', DATE(e.starts_at), v.timezone, e.starts_at, e.ends_at,
+        DATE_SUB(e.starts_at, INTERVAL COALESCE(settings.buffer_before_minutes, 0) MINUTE), DATE_ADD(e.ends_at, INTERVAL COALESCE(settings.buffer_after_minutes, 0) MINUTE),
+        'requested', COALESCE(settings.currency, v.currency, 'SEK')
+      FROM events e JOIN venues v ON v.id=e.venue_id LEFT JOIN venue_booking_settings settings ON settings.venue_id=v.id LEFT JOIN venue_bookings b ON b.event_id=e.id
+      WHERE e.venue_id IS NOT NULL AND e.deleted_at IS NULL AND e.status='Draft'
         AND e.starts_at IS NOT NULL AND e.ends_at IS NOT NULL AND e.ends_at > e.starts_at AND b.id IS NULL`);
     await this.pool.execute(`INSERT IGNORE INTO venue_availability_rules (venue_id, day_of_week, start_time, end_time)
       SELECT venue_id, weekday, start_time, end_time FROM venue_availability`);

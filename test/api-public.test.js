@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import test from 'node:test';
 import express from 'express';
 import { Api } from '../server/api.js';
@@ -81,4 +82,85 @@ test('returns a backend-selected next available interval for an unavailable date
   assert.deepEqual(availability.slots, []);
   assert.deepEqual(availability.unavailableSlots, [{ startTime: '10:00', endTime: '11:00' }]);
   assert.deepEqual(availability.nextAvailable, { date: '2026-09-15', startTime: '10:00', endTime: '12:00' });
+});
+
+test('returns invoices available to the signed-in user', async (t) => {
+  const secret = 'a sufficiently random test secret that exceeds thirty two characters';
+  const queries = {
+    initialize: async () => {},
+    findUserById: async () => ({ id: 7, role: 'venue_owner', sessionVersion: 1, isEmailConfirmed: true }),
+    invoicesForViewer: async (userId, role) => [{ id: 19, sellerOrganizationName: 'Harbor Hall', status: 'issued', requestedBy: { userId, role } }],
+  };
+  const app = express();
+  app.use(express.json());
+  new Api({
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
+    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+  }).register(app);
+  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/invoices`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), [{ id: 19, sellerOrganizationName: 'Harbor Hall', status: 'issued', requestedBy: { userId: 7, role: 'venue_owner' } }]);
+});
+
+test('does not publish an event until its selected venue confirms the booking', async (t) => {
+  const secret = 'a sufficiently random test secret that exceeds thirty two characters';
+  let publishCalled = false;
+  const queries = {
+    initialize: async () => {},
+    findUserById: async () => ({ id: 7, role: 'manager', sessionVersion: 1, isEmailConfirmed: true }),
+    richEvent: async () => ({ id: 12, venue: { id: 4 }, venueBookingStatus: 'requested' }),
+    publishRichEvent: async () => { publishCalled = true; },
+  };
+  const app = express();
+  app.use(express.json());
+  new Api({
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
+    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+  }).register(app);
+  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events/12/publish`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { code: 'VENUE_BOOKING_NOT_CONFIRMED', error: 'The venue owner must confirm the booking before this event can be published.' });
+  assert.equal(publishCalled, false);
+});
+
+test('creates a requested venue booking with a timed venue draft', async (t) => {
+  const secret = 'a sufficiently random test secret that exceeds thirty two characters';
+  const bookingCalls = [];
+  const queries = {
+    initialize: async () => {},
+    findUserById: async () => ({ id: 7, role: 'organizer', sessionVersion: 1, isEmailConfirmed: true }),
+    eventLocationVenue: async () => ({ id: 4, timezone: 'UTC' }),
+    createRichEventSeries: async () => ({ seriesId: null, eventIds: [12] }),
+    requestVenueBooking: async (...args) => { bookingCalls.push(args); return { id: 22, status: 'requested' }; },
+    richEvent: async () => ({ id: 12, title: 'Venue draft', coverImage: null }),
+    eventVenueBooking: async () => ({ id: 22, venueId: 4, status: 'requested' }),
+  };
+  const app = express();
+  app.use(express.json());
+  new Api({
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
+    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+  }).register(app);
+  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events/drafts`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z', endsAtUtc: '2026-10-10T12:00:00Z' }),
+  });
+  assert.equal(response.status, 201);
+  assert.deepEqual(bookingCalls, [[12, 4, 7]]);
+  assert.equal((await response.json()).venueBooking.status, 'requested');
 });
