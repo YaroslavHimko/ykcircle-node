@@ -16,6 +16,7 @@ export class Database {
         isEmailConfirmed BOOLEAN NOT NULL DEFAULT FALSE,
         verification_token_hash CHAR(64) NULL, verification_expires_at DATETIME NULL,
         verification_resend_available_at DATETIME NULL, deleted_at DATETIME NULL,
+        timezone_display_mode ENUM('device','fixed') NOT NULL DEFAULT 'device', preferred_timezone VARCHAR(64) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS password_reset_tokens (
@@ -555,9 +556,19 @@ export class Database {
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_bookings (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         venue_id INT UNSIGNED NOT NULL,
-        event_id INT UNSIGNED NOT NULL,
+        event_id INT UNSIGNED NULL,
         organizer_user_id INT UNSIGNED NOT NULL,
-        status ENUM('pending','confirmed','declined','cancelled') NOT NULL DEFAULT 'pending',
+        organizer_organization_id INT UNSIGNED NULL,
+        booking_source ENUM('ykcircle','external','internal') NOT NULL DEFAULT 'ykcircle',
+        booking_type ENUM('hourly','daily') NOT NULL DEFAULT 'hourly',
+        -- booking_date is a venue-local calendar DATE; timestamp columns are UTC instants.
+        booking_date DATE NULL, venue_timezone VARCHAR(64) NULL, start_at DATETIME NULL, end_at DATETIME NULL,
+        occupied_start_at DATETIME NULL, occupied_end_at DATETIME NULL,
+        status ENUM('requested','confirmed','declined','cancelled','completed','pending') NOT NULL DEFAULT 'requested',
+        payment_status ENUM('unpaid','paid') NOT NULL DEFAULT 'unpaid', currency CHAR(3) NOT NULL DEFAULT 'SEK',
+        subtotal DECIMAL(12,2) NOT NULL DEFAULT 0, tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+        organizer_message TEXT NULL, venue_internal_note TEXT NULL,
+        confirmed_at DATETIME NULL, confirmed_by INT UNSIGNED NULL, cancelled_at DATETIME NULL,
         owner_note TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -578,6 +589,95 @@ export class Database {
         PRIMARY KEY (organization_id, user_id), INDEX organization_members_user (user_id, organization_id),
         CONSTRAINT organization_members_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
         CONSTRAINT organization_members_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_availability_rules (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, venue_id INT UNSIGNED NOT NULL,
+        day_of_week TINYINT UNSIGNED NOT NULL, start_time TIME NOT NULL, end_time TIME NOT NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY venue_availability_rule (venue_id, day_of_week, start_time, end_time),
+        INDEX venue_availability_rules_day (venue_id, day_of_week),
+        CONSTRAINT venue_availability_rules_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_availability_overrides (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, venue_id INT UNSIGNED NOT NULL, date DATE NOT NULL,
+        override_type ENUM('closed','custom') NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY venue_availability_override (venue_id, date),
+        CONSTRAINT venue_availability_overrides_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_availability_override_windows (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, override_id INT UNSIGNED NOT NULL,
+        start_time TIME NOT NULL, end_time TIME NOT NULL,
+        UNIQUE KEY venue_availability_override_window (override_id, start_time, end_time),
+        CONSTRAINT venue_availability_override_windows_override_fk FOREIGN KEY (override_id) REFERENCES venue_availability_overrides(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_availability_blocks (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, venue_id INT UNSIGNED NOT NULL,
+        start_at DATETIME NOT NULL, end_at DATETIME NOT NULL, reason TEXT NULL, created_by_user_id INT UNSIGNED NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX venue_availability_blocks_range (venue_id, start_at, end_at),
+        CONSTRAINT venue_availability_blocks_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE,
+        CONSTRAINT venue_availability_blocks_creator_fk FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_external_reservations (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, venue_id INT UNSIGNED NOT NULL,
+        start_at DATETIME NOT NULL, end_at DATETIME NOT NULL,
+        source ENUM('external','internal','phone','email','other_platform','other') NOT NULL DEFAULT 'external',
+        title VARCHAR(255) NULL, notes TEXT NULL, created_by_user_id INT UNSIGNED NULL, cancelled_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX venue_external_reservations_range (venue_id, cancelled_at, start_at, end_at),
+        CONSTRAINT venue_external_reservations_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE,
+        CONSTRAINT venue_external_reservations_creator_fk FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_booking_settings (
+        venue_id INT UNSIGNED NOT NULL PRIMARY KEY, booking_mode ENUM('hourly','daily','both','inquiry_only') NOT NULL DEFAULT 'hourly',
+        slot_increment_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 30, minimum_booking_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+        maximum_booking_minutes SMALLINT UNSIGNED NULL, buffer_before_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        buffer_after_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 0, minimum_notice_hours SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        maximum_advance_days SMALLINT UNSIGNED NOT NULL DEFAULT 365, currency CHAR(3) NOT NULL DEFAULT 'SEK',
+        hourly_rate DECIMAL(12,2) NULL, daily_rate DECIMAL(12,2) NULL, invoice_due_days SMALLINT UNSIGNED NOT NULL DEFAULT 30,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT venue_booking_settings_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS organization_billing_profile (
+        organization_id INT UNSIGNED NOT NULL PRIMARY KEY, legal_name VARCHAR(255) NOT NULL, organization_number VARCHAR(100) NOT NULL,
+        vat_number VARCHAR(100) NULL, billing_address_line_1 VARCHAR(255) NOT NULL, billing_address_line_2 VARCHAR(255) NULL,
+        postal_code VARCHAR(32) NOT NULL, city VARCHAR(120) NOT NULL, country VARCHAR(120) NOT NULL, billing_email VARCHAR(255) NOT NULL,
+        bank_name VARCHAR(160) NULL, bank_account VARCHAR(160) NULL, iban VARCHAR(80) NULL, bic VARCHAR(32) NULL, bankgiro VARCHAR(80) NULL,
+        default_currency CHAR(3) NOT NULL DEFAULT 'SEK', default_vat_rate DECIMAL(5,2) NULL, invoice_prefix VARCHAR(20) NOT NULL DEFAULT 'INV',
+        next_invoice_number INT UNSIGNED NOT NULL DEFAULT 1, payment_instructions TEXT NULL,
+        CONSTRAINT organization_billing_profile_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE RESTRICT
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoices (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, seller_organization_id INT UNSIGNED NOT NULL, buyer_user_id INT UNSIGNED NULL,
+        buyer_organization_id INT UNSIGNED NULL, booking_id INT UNSIGNED NULL, invoice_number VARCHAR(80) NULL,
+        status ENUM('draft','issued','sent','paid','overdue','void') NOT NULL DEFAULT 'draft', delivery_status ENUM('pending','sent','failed') NULL,
+        issue_date DATE NULL, due_date DATE NULL, currency CHAR(3) NOT NULL, subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
+        tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+        seller_snapshot_json JSON NULL, buyer_snapshot_json JSON NULL, booking_snapshot_json JSON NULL, payment_instructions_snapshot TEXT NULL,
+        pdf_storage_key VARCHAR(1024) NULL, pdf_generated_at DATETIME NULL, pdf_hash CHAR(64) NULL, sent_at DATETIME NULL,
+        paid_at DATETIME NULL, paid_by_user_id INT UNSIGNED NULL, manual_payment_reference VARCHAR(255) NULL,
+        manual_payment_method ENUM('bank_transfer','swish','cash','other') NULL, voided_at DATETIME NULL, voided_by INT UNSIGNED NULL, void_reason TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY invoice_number_per_seller (seller_organization_id, invoice_number), INDEX invoices_booking (booking_id),
+        CONSTRAINT invoices_seller_fk FOREIGN KEY (seller_organization_id) REFERENCES organizations(id) ON DELETE RESTRICT,
+        CONSTRAINT invoices_buyer_fk FOREIGN KEY (buyer_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT invoices_booking_fk FOREIGN KEY (booking_id) REFERENCES venue_bookings(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoice_items (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, invoice_id INT UNSIGNED NOT NULL, description VARCHAR(500) NOT NULL,
+        quantity DECIMAL(12,3) NOT NULL, unit VARCHAR(40) NOT NULL, unit_price DECIMAL(12,2) NOT NULL, tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+        subtotal DECIMAL(12,2) NOT NULL, tax_amount DECIMAL(12,2) NOT NULL, total DECIMAL(12,2) NOT NULL,
+        CONSTRAINT invoice_items_invoice_fk FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE RESTRICT
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoice_history (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, invoice_id INT UNSIGNED NOT NULL, action VARCHAR(40) NOT NULL,
+        previous_status VARCHAR(20) NULL, new_status VARCHAR(20) NULL, performed_by_user_id INT UNSIGNED NULL,
+        metadata_json JSON NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX invoice_history_invoice (invoice_id, created_at),
+        CONSTRAINT invoice_history_invoice_fk FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE RESTRICT,
+        CONSTRAINT invoice_history_user_fk FOREIGN KEY (performed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_types (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, slug VARCHAR(100) NOT NULL UNIQUE, name VARCHAR(120) NOT NULL, sort_order INT NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT TRUE
@@ -619,6 +719,8 @@ export class Database {
         INDEX venue_promotions_active (status, starts_at, ends_at), CONSTRAINT venue_promotions_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
       await this.migrateLocationSchema();
+      await this.migrateTimezonePreferences();
+      await this.migrateVenueBookingSchema();
     })();
     return this.initialized;
   }
@@ -667,6 +769,48 @@ export class Database {
     if (!await this.constraintExists('events_venue_location_fk')) {
       await this.pool.execute('ALTER TABLE events ADD CONSTRAINT events_venue_location_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE SET NULL');
     }
+  }
+
+  async migrateTimezonePreferences() {
+    // A profile city is for discovery, never a source of time interpretation.
+    // Device mode is the privacy-preserving default for travelling users.
+    await this.addColumnIfMissing('users', 'timezone_display_mode', "ENUM('device','fixed') NOT NULL DEFAULT 'device'");
+    await this.addColumnIfMissing('users', 'preferred_timezone', 'VARCHAR(64) NULL');
+  }
+
+  async migrateVenueBookingSchema() {
+    // Existing installations used `pending` and derive times from events. Keep
+    // those records valid while adding the independent booking representation.
+    const columns = {
+      organizer_organization_id: 'INT UNSIGNED NULL', booking_source: "ENUM('ykcircle','external','internal') NOT NULL DEFAULT 'ykcircle'",
+      booking_type: "ENUM('hourly','daily') NOT NULL DEFAULT 'hourly'", booking_date: 'DATE NULL', start_at: 'DATETIME NULL', end_at: 'DATETIME NULL',
+      // Snapshot the venue zone used to interpret booking_date. Historical
+      // instants stay immutable if a venue later moves timezones.
+      venue_timezone: 'VARCHAR(64) NULL',
+      occupied_start_at: 'DATETIME NULL', occupied_end_at: 'DATETIME NULL', payment_status: "ENUM('unpaid','paid') NOT NULL DEFAULT 'unpaid'",
+      currency: "CHAR(3) NOT NULL DEFAULT 'SEK'", subtotal: 'DECIMAL(12,2) NOT NULL DEFAULT 0', tax_amount: 'DECIMAL(12,2) NOT NULL DEFAULT 0', total_amount: 'DECIMAL(12,2) NOT NULL DEFAULT 0',
+      organizer_message: 'TEXT NULL', venue_internal_note: 'TEXT NULL', confirmed_at: 'DATETIME NULL', confirmed_by: 'INT UNSIGNED NULL', cancelled_at: 'DATETIME NULL',
+    };
+    for (const [column, definition] of Object.entries(columns)) await this.addColumnIfMissing('venue_bookings', column, definition);
+    await this.pool.execute("UPDATE venue_bookings SET status = 'requested' WHERE status = 'pending'");
+    await this.pool.execute("ALTER TABLE venue_bookings MODIFY COLUMN status ENUM('requested','confirmed','declined','cancelled','completed','pending') NOT NULL DEFAULT 'requested'");
+    await this.pool.execute('ALTER TABLE venue_bookings MODIFY COLUMN event_id INT UNSIGNED NULL');
+    await this.pool.execute(`UPDATE venue_bookings b JOIN events e ON e.id = b.event_id JOIN venues v ON v.id = b.venue_id
+      SET b.start_at = COALESCE(b.start_at, e.starts_at), b.end_at = COALESCE(b.end_at, e.ends_at),
+      b.occupied_start_at = COALESCE(b.occupied_start_at, e.starts_at), b.occupied_end_at = COALESCE(b.occupied_end_at, e.ends_at),
+      b.booking_date = COALESCE(b.booking_date, DATE(e.starts_at)), b.venue_timezone = COALESCE(b.venue_timezone, v.timezone, 'UTC')
+      WHERE b.event_id IS NOT NULL`);
+    // Before venue_bookings existed, a published event's venue_id itself was
+    // the reservation. Backfill those legacy reservations once so occupancy
+    // has a single, transaction-safe source of truth going forward.
+    await this.pool.execute(`INSERT IGNORE INTO venue_bookings
+      (venue_id, event_id, organizer_user_id, booking_source, booking_type, booking_date, venue_timezone, start_at, end_at, occupied_start_at, occupied_end_at, status, currency, confirmed_at)
+      SELECT e.venue_id, e.id, e.manager_id, 'ykcircle', 'hourly', DATE(e.starts_at), v.timezone, e.starts_at, e.ends_at, e.starts_at, e.ends_at, 'confirmed', COALESCE(v.currency, 'SEK'), NOW()
+      FROM events e JOIN venues v ON v.id=e.venue_id LEFT JOIN venue_bookings b ON b.event_id=e.id
+      WHERE e.venue_id IS NOT NULL AND e.deleted_at IS NULL AND e.status='Published'
+        AND e.starts_at IS NOT NULL AND e.ends_at IS NOT NULL AND e.ends_at > e.starts_at AND b.id IS NULL`);
+    await this.pool.execute(`INSERT IGNORE INTO venue_availability_rules (venue_id, day_of_week, start_time, end_time)
+      SELECT venue_id, weekday, start_time, end_time FROM venue_availability`);
   }
 
   execute(...args) { return this.pool.execute(...args); }

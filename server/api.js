@@ -9,6 +9,7 @@ import multer from 'multer';
 import { EMAIL_UNSUBSCRIBE_REASONS } from './email-unsubscribe-reasons.js';
 import { legalDocument, legalDocumentIndex, currentLegalDocument } from './legal-documents.js';
 import { createRateLimiter } from './rate-limit.js';
+import { isValidIanaTimezone, localDateTimeToUtc, mysqlUtc, parseUtcInstant, zonedDateTime } from './time.js';
 
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const legalHtml = (markdown) => escapeHtml(markdown).split(/\r?\n/).map((line) => {
@@ -515,7 +516,7 @@ export class Api {
     // venue_owner role remains accepted for existing accounts, but is not a
     // separate authentication system for new venue organizations.
     const requireVenueOwner = (req, res, next) => req.user.isEmailConfirmed ? next() : res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Verify your email before managing venues.' });
-    const supportedTimezone = (timezone) => timezone === 'UTC' || (typeof Intl.supportedValuesOf === 'function' && Intl.supportedValuesOf('timeZone').includes(timezone));
+    const supportedTimezone = isValidIanaTimezone;
     const venueSlug = (value) => String(value || '').trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     const venueData = (body, existing = {}) => {
       const nullableNumber = (value, fallback = null) => value === '' || value === null ? null : (value === undefined ? fallback : Number(value));
@@ -620,26 +621,90 @@ export class Api {
       const daysAhead = Math.floor((requestedUtc - todayUtc) / (24 * 60 * 60 * 1000));
       return daysAhead >= 0 && daysAhead <= 366 ? date : null;
     };
-    const asUtcDate = (value) => {
-      if (value instanceof Date) return value;
-      const text = String(value).replace(' ', 'T');
-      return new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : `${text}Z`);
+    const availabilityRange = (from, to) => {
+      const valid = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) && !Number.isNaN(Date.parse(`${value}T12:00:00Z`));
+      if (!valid(from) || !valid(to) || from > to) return null;
+      const days = (Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86400000;
+      return days <= 93 ? { from, to } : null;
     };
-    const eventFitsVenueAvailability = (event, venue) => {
+    const addDateDays = (date, days) => {
+      const value = new Date(`${date}T12:00:00Z`);
+      value.setUTCDate(value.getUTCDate() + days);
+      return value.toISOString().slice(0, 10);
+    };
+    const utcDateTime = mysqlUtc;
+    // Owner calendars submit a venue-local date and clock time. Convert that
+    // once at the API boundary; raw UTC fields remain accepted for API clients.
+    const venueInterval = async (venueId, body) => {
+      const directStart = utcDateTime(body.startAt);
+      const directEnd = utcDateTime(body.endAt);
+      if (directStart && directEnd) return { startAt: directStart, endAt: directEnd };
+      const date = String(body.date || '');
+      const venue = await this.queries.venueTimezone(venueId);
+      if (!venue || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+      const startTime = body.allDay ? '00:00' : String(body.startTime || '');
+      const endDate = body.allDay ? addDateDays(date, 1) : date;
+      const endTime = body.allDay ? '00:00' : String(body.endTime || '');
+      const start = localDateTimeToUtc(date, startTime, venue.timezone, 'start');
+      const end = localDateTimeToUtc(endDate, endTime, venue.timezone, 'end');
+      return start && end ? { startAt: mysqlUtc(start), endAt: mysqlUtc(end), timezone: venue.timezone } : null;
+    };
+    const bookingSettingsData = (body, existing = {}) => {
+      const number = (key, fallback, nullable = false) => body[key] === undefined ? fallback : (body[key] === null || body[key] === '' ? (nullable ? null : NaN) : Number(body[key]));
+      const data = { bookingMode: String(body.bookingMode ?? existing.bookingMode ?? 'hourly'), slotIncrementMinutes: number('slotIncrementMinutes', existing.slotIncrementMinutes ?? 30), minimumBookingMinutes: number('minimumBookingMinutes', existing.minimumBookingMinutes ?? 30), maximumBookingMinutes: number('maximumBookingMinutes', existing.maximumBookingMinutes ?? null, true), bufferBeforeMinutes: number('bufferBeforeMinutes', existing.bufferBeforeMinutes ?? 0), bufferAfterMinutes: number('bufferAfterMinutes', existing.bufferAfterMinutes ?? 0), minimumNoticeHours: number('minimumNoticeHours', existing.minimumNoticeHours ?? 0), maximumAdvanceDays: number('maximumAdvanceDays', existing.maximumAdvanceDays ?? 365), currency: String(body.currency ?? existing.currency ?? 'SEK').toUpperCase(), hourlyRate: number('hourlyRate', existing.hourlyRate ?? null, true), dailyRate: number('dailyRate', existing.dailyRate ?? null, true), invoiceDueDays: number('invoiceDueDays', existing.invoiceDueDays ?? 30) };
+      const errors = {};
+      if (!['hourly', 'daily', 'both', 'inquiry_only'].includes(data.bookingMode)) errors.bookingMode = 'Invalid booking mode.';
+      for (const key of ['slotIncrementMinutes', 'minimumBookingMinutes', 'bufferBeforeMinutes', 'bufferAfterMinutes', 'minimumNoticeHours', 'maximumAdvanceDays', 'invoiceDueDays']) if (!Number.isInteger(data[key]) || data[key] < 0) errors[key] = 'Must be a non-negative whole number.';
+      if (data.slotIncrementMinutes < 1 || 1440 % data.slotIncrementMinutes) errors.slotIncrementMinutes = 'Slot increment must divide a day.';
+      if (data.minimumBookingMinutes < 1) errors.minimumBookingMinutes = 'Minimum booking duration must be positive.';
+      if (data.maximumBookingMinutes !== null && (!Number.isInteger(data.maximumBookingMinutes) || data.maximumBookingMinutes < data.minimumBookingMinutes)) errors.maximumBookingMinutes = 'Maximum booking duration must be at least the minimum.';
+      for (const key of ['hourlyRate', 'dailyRate']) if (data[key] !== null && (!Number.isFinite(data[key]) || data[key] < 0)) errors[key] = 'Rate must be zero or positive.';
+      if (!/^[A-Z]{3}$/.test(data.currency)) errors.currency = 'Currency must be a three-letter ISO code.';
+      return { data, errors };
+    };
+    const billingProfileData = (body) => {
+      const required = ['legalName', 'organizationNumber', 'billingAddressLine1', 'postalCode', 'city', 'country', 'billingEmail'];
+      const data = Object.fromEntries(['legalName', 'organizationNumber', 'vatNumber', 'billingAddressLine1', 'billingAddressLine2', 'postalCode', 'city', 'country', 'billingEmail', 'bankName', 'bankAccount', 'iban', 'bic', 'bankgiro', 'paymentInstructions'].map((key) => [key, body[key] == null ? null : String(body[key]).trim() || null]));
+      data.defaultCurrency = String(body.defaultCurrency || 'SEK').trim().toUpperCase(); data.defaultVatRate = body.defaultVatRate == null || body.defaultVatRate === '' ? null : Number(body.defaultVatRate); data.invoicePrefix = String(body.invoicePrefix || 'INV').trim().toUpperCase();
+      const errors = {}; for (const key of required) if (!data[key] || data[key].length > 255) errors[key] = 'This billing field is required and must be at most 255 characters.';
+      if (data.billingEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.billingEmail)) errors.billingEmail = 'A valid billing email is required.';
+      if (!/^[A-Z]{3}$/.test(data.defaultCurrency)) errors.defaultCurrency = 'Currency must be a three-letter ISO code.';
+      if (!/^[A-Z0-9_-]{1,20}$/.test(data.invoicePrefix)) errors.invoicePrefix = 'Invoice prefix may contain up to 20 letters, numbers, dashes, or underscores.';
+      if (data.defaultVatRate !== null && (!Number.isFinite(data.defaultVatRate) || data.defaultVatRate < 0 || data.defaultVatRate > 100)) errors.defaultVatRate = 'VAT rate must be between 0 and 100.';
+      return { data, errors };
+    };
+    const availabilityOverrides = (value) => {
+      if (!Array.isArray(value) || value.length > 366) return { error: 'overrides must contain at most 366 dates.' };
+      const seen = new Set(); const overrides = [];
+      for (const item of value) { const date = String(item?.date || ''); const overrideType = String(item?.overrideType || ''); const windows = Array.isArray(item?.windows) ? item.windows.map((window) => ({ startTime: String(window?.startTime || ''), endTime: String(window?.endTime || '') })) : [];
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T12:00:00Z`)) || seen.has(date) || !['closed', 'custom'].includes(overrideType) || (overrideType === 'closed' && windows.length) || (overrideType === 'custom' && !windows.length)) return { error: 'Each override must be a unique closed date or a custom date with valid windows.' };
+        const checked = venueAvailability(windows.map((window) => ({ weekday: 0, ...window }))); if (checked.error || checked.errors) return { error: 'Override windows must be non-overlapping HH:mm intervals.' };
+        seen.add(date); overrides.push({ date, overrideType, windows }); }
+      return { overrides };
+    };
+    const asStoredUtcDate = (value) => value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T').replace(/Z$/i, '')}Z`);
+    const eventFitsVenueAvailability = async (event, venue) => {
       if (!event.startsAt || !event.endsAt) return { error: 'The event must have both a start and end time before it can be booked.' };
-      const start = asUtcDate(event.startsAt);
-      const end = asUtcDate(event.endsAt);
+      const start = asStoredUtcDate(event.startsAt);
+      const end = asStoredUtcDate(event.endsAt);
       if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return { error: 'The event has an invalid booking time.' };
-      const formatter = new Intl.DateTimeFormat('en-US', { timeZone: venue.timezone, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-      const local = (value) => Object.fromEntries(formatter.formatToParts(value).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
-      const starts = local(start);
-      const ends = local(end);
-      const dayNumbers = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-      if (starts.weekday !== ends.weekday) return { error: 'The event must start and end on the same local day at this venue.' };
-      const startTime = `${starts.hour}:${starts.minute}`;
-      const endTime = `${ends.hour}:${ends.minute}`;
-      const available = venue.availability.some((slot) => slot.weekday === dayNumbers[starts.weekday] && slot.startTime <= startTime && slot.endTime >= endTime);
-      return available ? {} : { error: 'The venue is not available for the full event time.' };
+      const starts = zonedDateTime(start, venue.timezone);
+      const ends = zonedDateTime(end, venue.timezone);
+      if (!starts || !ends) return { error: 'The venue timezone is invalid.' };
+      if (starts.date !== ends.date) return { error: 'The event must start and end on the same local day at this venue.' };
+      const startTime = starts.time;
+      const endTime = ends.time;
+      if (starts.seconds !== '00' || ends.seconds !== '00') return { error: 'Venue bookings must start and end on a whole minute.' };
+      const date = starts.date;
+      const availability = await this.queries.calculateVenueAvailability(venue.id, date, date);
+      if (!availability || !['hourly', 'both'].includes(availability.bookingMode)) return { error: 'This venue does not accept hourly bookings.' };
+      const durationMinutes = (end.getTime() - start.getTime()) / 60000;
+      if (durationMinutes < availability.minimumBookingMinutes) return { error: `This venue requires bookings of at least ${availability.minimumBookingMinutes} minutes.` };
+      if (availability.maximumBookingMinutes !== null && durationMinutes > availability.maximumBookingMinutes) return { error: `This venue allows bookings of at most ${availability.maximumBookingMinutes} minutes.` };
+      const localStartMinutes = Number(starts.hour) * 60 + Number(starts.minute);
+      if (durationMinutes % availability.slotIncrementMinutes || localStartMinutes % availability.slotIncrementMinutes) return { error: `Bookings must use ${availability.slotIncrementMinutes}-minute time slots.` };
+      const available = availability.dates[0]?.availableIntervals.some((slot) => slot.start <= startTime && slot.end >= endTime);
+      return available ? {} : { error: 'The venue is not available for the full event time.', unavailable: true };
     };
     // Collection endpoints always return an array. An empty collection is a
     // successful lookup, not a missing resource.
@@ -687,10 +752,12 @@ export class Api {
       if (publishing || title) { if (title.length < 5 || title.length > 100) errors.title = 'Title must be between 5 and 100 characters.'; }
       if (publishing || body.categoryId) { if (!Number.isInteger(Number(body.categoryId))) errors.categoryId = 'A valid category is required.'; }
       if (publishing || body.typeId) { if (!Number.isInteger(Number(body.typeId))) errors.typeId = 'A valid event type is required.'; }
-      if (publishing || startsAt) { if (!startsAt || Number.isNaN(Date.parse(startsAt))) errors.startsAt = 'A valid start date and time is required.'; }
-      if (recurrenceResult.recurrence?.frequency !== 'none' && (!startsAt || Number.isNaN(Date.parse(startsAt)))) errors.recurrence = 'Recurring events require a valid start date and time.';
-      if (endsAt && Number.isNaN(Date.parse(endsAt))) errors.endsAt = 'End date and time must be valid.';
-      if (startsAt && endsAt && Date.parse(endsAt) <= Date.parse(startsAt)) errors.endsAt = 'End must be after start.';
+      const startInstant = parseUtcInstant(startsAt);
+      const endInstant = endsAt ? parseUtcInstant(endsAt) : null;
+      if (publishing || startsAt) { if (!startInstant) errors.startsAt = 'A start timestamp with UTC Z or an offset is required.'; }
+      if (recurrenceResult.recurrence?.frequency !== 'none' && !startInstant) errors.recurrence = 'Recurring events require a UTC start timestamp.';
+      if (endsAt && !endInstant) errors.endsAt = 'End must be a timestamp with UTC Z or an offset.';
+      if (startInstant && endInstant && endInstant <= startInstant) errors.endsAt = 'End must be after start.';
       if (body.capacity !== null && body.capacity !== '' && body.capacity !== undefined && (!Number.isInteger(Number(body.capacity)) || Number(body.capacity) < 1)) errors.capacity = 'Capacity must be a positive integer or null.';
       const pricingType = body.pricingType || (Number(body.fee || 0) > 0 ? 'paid' : 'free');
       if (!['free', 'paid'].includes(pricingType)) errors.pricingType = 'Pricing type must be free or paid.';
@@ -704,10 +771,11 @@ export class Api {
       const customLongitude = locationField('longitude', body.longitude);
       const customFormattedAddress = locationField('formattedAddress', typeof body.location === 'string' ? body.location : null);
       if (!['venue', 'custom', 'online'].includes(locationType)) errors.locationType = 'Location type must be venue, custom, or online.';
+      let selectedVenue = null;
       if (locationType === 'venue') {
         const venueId = Number(body.venueId ?? body.venue?.id);
         if (!Number.isInteger(venueId) || venueId < 1) errors.venueId = 'A valid venue is required.';
-        else if (!await this.queries.eventLocationVenue(venueId)) errors.venueId = 'The selected venue is unavailable.';
+        else { selectedVenue = await this.queries.eventLocationVenue(venueId); if (!selectedVenue) errors.venueId = 'The selected venue is unavailable.'; }
       }
       if (locationType === 'custom') {
         if (!customFormattedAddress || String(customFormattedAddress).trim().length > 500) errors.formattedAddress = 'A formatted address of up to 500 characters is required.';
@@ -726,7 +794,9 @@ export class Api {
       const countryCode = locationField('countryCode');
       if (countryCode && !/^[A-Za-z]{2}$/.test(String(countryCode).trim())) errors.countryCode = 'Country code must be a two-letter ISO code.';
       if (publishing && !body.description?.trim()) errors.description = 'Description is required before publication.';
-      const timezone = body.timezone || 'UTC';
+      // A venue owns booking/event wall time. A client-provided timezone is
+      // ignored for venue events so a travelling organizer cannot shift it.
+      const timezone = selectedVenue?.timezone || body.timezone || 'UTC';
       if (typeof Intl.supportedValuesOf !== 'function' || (timezone !== 'UTC' && !Intl.supportedValuesOf('timeZone').includes(timezone))) errors.timezone = 'Select a timezone returned by GET /api/timezones.';
       return { errors, title, startsAt, endsAt, pricingType, timezone, locationType, recurrence: recurrenceResult.recurrence || { frequency: 'none', interval: 1, count: 1 } };
     };
@@ -740,13 +810,25 @@ export class Api {
         locality: text(locationField('locality', body.city), 120), municipality: text(locationField('municipality'), 120), region: text(locationField('region'), 120), country: text(locationField('country', body.country), 120), countryCode: text(locationField('countryCode'), 2)?.toUpperCase() || null,
         latitude: Number(locationField('latitude', body.latitude)), longitude: Number(locationField('longitude', body.longitude)), googlePlaceId: text(locationField('googlePlaceId'), 255), formattedAddress: text(locationField('formattedAddress', typeof body.location === 'string' ? body.location : null), 500),
       } : {};
-      return { managerId: userId, title: validation.title, shortDescription: body.shortDescription?.trim() || null, description: body.description?.trim() || null, coverImage: body.coverImage || null, categoryId: body.categoryId ? Number(body.categoryId) : null, typeId: body.typeId ? Number(body.typeId) : null, country: custom.country || null, city: custom.locality || null, location: custom.formattedAddress || null, address: custom.addressLine1 || null, latitude: custom.latitude ?? null, longitude: custom.longitude ?? null, locationType: validation.locationType, locationVisibility: body.locationVisibility || 'public', startsAt: validation.startsAt ? new Date(validation.startsAt).toISOString().slice(0, 19).replace('T', ' ') : null, endsAt: validation.endsAt ? new Date(validation.endsAt).toISOString().slice(0, 19).replace('T', ' ') : null, timezone: validation.timezone, capacity: body.capacity === '' || body.capacity === undefined ? null : body.capacity, minimumAttendees: body.minimumAttendees || null, registrationDeadline: body.registrationDeadline || null, minimumAge: body.minimumAge || null, languageCode: body.languageCode || null, whatToBring: body.whatToBring || null, meetingInstructions: body.meetingInstructions || null, cancellationPolicy: body.cancellationPolicy || null, pricingType: validation.pricingType, fee: validation.pricingType === 'free' ? 0 : Number(body.fee || 0), currency: body.currency || 'SEK', registrationType: body.registrationType || 'yaroko', externalRegistrationUrl: body.externalRegistrationUrl || null, visibility: body.visibility || 'Public', groupId: body.groupId ? Number(body.groupId) : null, recurrence: validation.recurrence, venueId: validation.locationType === 'venue' ? Number(body.venueId ?? body.venue?.id) : null, customAddressLine1: custom.addressLine1 || null, customAddressLine2: custom.addressLine2 || null, customPostalCode: custom.postalCode || null, customLocality: custom.locality || null, customMunicipality: custom.municipality || null, customRegion: custom.region || null, customCountry: custom.country || null, customCountryCode: custom.countryCode || null, customLatitude: custom.latitude ?? null, customLongitude: custom.longitude ?? null, customGooglePlaceId: custom.googlePlaceId || null, customFormattedAddress: custom.formattedAddress || null, onlineUrl: validation.locationType === 'online' ? text(body.onlineUrl, 1024) : null, onlinePlatform: validation.locationType === 'online' ? text(body.onlinePlatform, 120) : null };
+      return { managerId: userId, title: validation.title, shortDescription: body.shortDescription?.trim() || null, description: body.description?.trim() || null, coverImage: body.coverImage || null, categoryId: body.categoryId ? Number(body.categoryId) : null, typeId: body.typeId ? Number(body.typeId) : null, country: custom.country || null, city: custom.locality || null, location: custom.formattedAddress || null, address: custom.addressLine1 || null, latitude: custom.latitude ?? null, longitude: custom.longitude ?? null, locationType: validation.locationType, locationVisibility: body.locationVisibility || 'public', startsAt: mysqlUtc(validation.startsAt), endsAt: validation.endsAt ? mysqlUtc(validation.endsAt) : null, timezone: validation.timezone, capacity: body.capacity === '' || body.capacity === undefined ? null : body.capacity, minimumAttendees: body.minimumAttendees || null, registrationDeadline: body.registrationDeadline ? mysqlUtc(body.registrationDeadline) : null, minimumAge: body.minimumAge || null, languageCode: body.languageCode || null, whatToBring: body.whatToBring || null, meetingInstructions: body.meetingInstructions || null, cancellationPolicy: body.cancellationPolicy || null, pricingType: validation.pricingType, fee: validation.pricingType === 'free' ? 0 : Number(body.fee || 0), currency: body.currency || 'SEK', registrationType: body.registrationType || 'yaroko', externalRegistrationUrl: body.externalRegistrationUrl || null, visibility: body.visibility || 'Public', groupId: body.groupId ? Number(body.groupId) : null, recurrence: validation.recurrence, venueId: validation.locationType === 'venue' ? Number(body.venueId ?? body.venue?.id) : null, customAddressLine1: custom.addressLine1 || null, customAddressLine2: custom.addressLine2 || null, customPostalCode: custom.postalCode || null, customLocality: custom.locality || null, customMunicipality: custom.municipality || null, customRegion: custom.region || null, customCountry: custom.country || null, customCountryCode: custom.countryCode || null, customLatitude: custom.latitude ?? null, customLongitude: custom.longitude ?? null, customGooglePlaceId: custom.googlePlaceId || null, customFormattedAddress: custom.formattedAddress || null, onlineUrl: validation.locationType === 'online' ? text(body.onlineUrl, 1024) : null, onlinePlatform: validation.locationType === 'online' ? text(body.onlinePlatform, 120) : null };
     };
     const notifyGroupEventMembers = async (eventId) => { const members = await this.queries.pendingGroupEventNotifications(eventId); await Promise.all(members.map(async (member) => { if (!await this.queries.claimGroupEventNotification(eventId, member.userId)) return; try { await this.emailService.sendGroupEventNotification(member.email, member.name, { id: member.groupId, name: member.groupName }, member); } catch (emailError) { try { await this.queries.releaseGroupEventNotification(eventId, member.userId); } catch (releaseError) { console.error(`Unable to release group event notification for ${member.email}:`, releaseError.message); } console.error(`Group event notification failed for ${member.email}:`, emailError.message); } })); };
     const createRichDraft = async (req, res, groupId = req.body.groupId) => { try { await ensureTable(); if (groupId && (!Number.isInteger(Number(groupId)) || !await this.queries.canManageGroup(Number(groupId), req.user.id, req.user.role))) return res.status(403).json({ error: 'You can only post events in groups you manage.' }); const validation = await validateRichEvent(req.body); if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors }); const series = await this.queries.createRichEventSeries(richEventData({ ...req.body, groupId }, req.user.id, validation)); const event = await this.queries.richEvent(series.eventIds[0], req.user.id, req.user.role); return res.status(201).json({ ...decorateEventImage(event, { userId: req.user.id, role: req.user.role }), seriesId: series.seriesId, occurrenceIds: series.eventIds }); } catch (error) { console.error('Rich event creation failed:', error); return res.status(500).json({ error: 'Unable to create event draft.' }); } };
     app.post('/api/events/drafts', authenticate, requireVerifiedUser, ...creationGuards, (req, res) => createRichDraft(req, res));
     app.post('/api/groups/:id/events/drafts', authenticate, ...creationGuards, (req, res) => createRichDraft(req, res, req.params.id));
     app.post('/api/events/:id/cover', authenticate, parseEventCover, async (req, res) => { if (!req.file) return res.status(400).json({ error: 'A JPEG, PNG, or WebP cover image is required.' }); try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event) return res.status(404).json({ error: 'Event not found or not managed by you.' }); const coverImage = await this.eventFtpService.uploadEventCover(req.params.id, req.file); if (!await this.queries.setEventCover(req.params.id, req.user.id, req.user.role, coverImage)) return res.status(404).json({ error: 'Event not found or not managed by you.' }); return res.json({ coverImage }); } catch (error) { if (error.code === 'INVALID_IMAGE') return res.status(400).json({ error: error.message }); if (error.code === 'FTP_NOT_CONFIGURED') return res.status(503).json({ error: 'Event image storage is not configured.' }); console.error('Event cover upload failed:', error); return res.status(502).json({ error: 'Unable to upload event cover.' }); } });
+    app.patch('/api/events/:id/schedule', authenticate, async (req, res) => {
+      const eventId = Number(req.params.id); const venueId = Number(req.body.venueId);
+      const startsAt = utcDateTime(req.body.startsAtUtc); const endsAt = utcDateTime(req.body.endsAtUtc);
+      if (!Number.isInteger(eventId) || eventId < 1 || !Number.isInteger(venueId) || venueId < 1 || !startsAt || !endsAt || startsAt >= endsAt) return res.status(422).json({ error: 'Venue schedule requires UTC start/end timestamps and a venue.' });
+      try {
+        await ensureTable();
+        const venue = await this.queries.eventLocationVenue(venueId);
+        if (!venue) return res.status(404).json({ error: 'Venue not found or unavailable.' });
+        if (!await this.queries.updateEventSchedule(eventId, req.user.id, req.user.role, { startsAt, endsAt, venueId, timezone: venue.timezone })) return res.status(404).json({ error: 'Event not found or not managed by you.' });
+        return res.json(decorateEventImage(await this.queries.richEvent(eventId, req.user.id, req.user.role), { userId: req.user.id, role: req.user.role }));
+      } catch (error) { console.error('Event schedule update failed:', error.message); return res.status(500).json({ error: 'Unable to update the event schedule.' }); }
+    });
     app.patch('/api/events/:id', authenticate, ...updateGuards, async (req, res) => { try { await ensureTable(); const validation = await validateRichEvent(req.body); if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors }); if (!await this.queries.updateRichEvent(req.params.id, req.user.id, req.user.role, richEventData(req.body, req.user.id, validation))) return res.status(404).json({ error: 'Event not found or not managed by you.' }); return res.json(decorateEventImage(await this.queries.richEvent(req.params.id, req.user.id, req.user.role), { userId: req.user.id, role: req.user.role })); } catch (error) { console.error('Rich event update failed:', error.message); return res.status(500).json({ error: 'Unable to update event.' }); } });
     app.post('/api/events/:id/publish', authenticate, async (req, res) => { try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event) return res.status(404).json({ error: 'Event not found or not managed by you.' }); if (!this.config.runtime.paidEventsEnabled && Number(event.fee) > 0) return res.status(422).json({ error: 'Paid events are disabled during the pre-company beta.' }); const validation = await validateRichEvent(event, { publishing: true }); if (!event.coverImage) validation.errors.coverImage = 'A cover image is required before publication.'; if (!event.categoryId || !event.typeId) validation.errors.taxonomy = 'Category and event type are required before publication.'; if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event cannot be published.', fields: validation.errors }); await this.queries.publishRichEvent(req.params.id, req.user.id, req.user.role); if (event.groupId && event.status !== 'Published') await notifyGroupEventMembers(req.params.id); return res.json(decorateEventImage(await this.queries.richEvent(req.params.id, req.user.id, req.user.role), { userId: req.user.id, role: req.user.role })); } catch (error) { console.error('Rich event publication failed:', error.message); return res.status(500).json({ error: 'Unable to publish event.' }); } });
     app.post('/api/events', authenticate, requireVerifiedUser, ...creationGuards, (req, res, next) => { const fee = req.body.fee ?? 0; const startsAtUtc = req.body.startsAtUtc ?? req.body.startsAt; const endsAtUtc = req.body.endsAtUtc ?? req.body.endsAt ?? null; if (!startsAtUtc || Number.isNaN(Date.parse(startsAtUtc)) || (endsAtUtc && Number.isNaN(Date.parse(endsAtUtc)))) return res.status(400).json({ error: 'Valid startsAtUtc and endsAtUtc timestamps are required.' }); if (!Number.isFinite(Number(fee)) || Number(fee) < 0) return res.status(400).json({ error: 'Fee must be a non-negative number.' }); if (!this.config.runtime.paidEventsEnabled && Number(fee) > 0) return res.status(422).json({ error: 'Paid events are disabled during the pre-company beta.' }); req.body.startsAt = new Date(startsAtUtc).toISOString().slice(0, 19).replace('T', ' '); req.body.endsAt = endsAtUtc ? new Date(endsAtUtc).toISOString().slice(0, 19).replace('T', ' ') : null; req.body.fee = Number(fee).toFixed(2); next(); });
@@ -764,6 +846,27 @@ export class Api {
     });
     app.get('/api/organizations/:id', optionalAuthenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid organization id is required.' }); try { await ensureTable(); const organization = await this.queries.organization(id, req.user?.id ?? null, req.user?.role ?? null); return organization ? res.json(organization) : res.status(404).json({ error: 'Organization not found.' }); } catch (error) { console.error('Organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load organization.' }); } });
     app.put('/api/organizations/:id/members/:userId', authenticate, requireVerifiedUser, async (req, res) => { const organizationId = Number(req.params.id); const userId = Number(req.params.userId); const role = String(req.body.role || ''); if (!Number.isInteger(organizationId) || !Number.isInteger(userId) || !['owner', 'admin', 'manager', 'staff'].includes(role)) return res.status(422).json({ error: 'A valid organization member and role are required.' }); try { await ensureTable(); if (!await this.queries.setOrganizationMember(organizationId, req.user.id, req.user.role, userId, role)) return res.status(403).json({ error: 'Organization owner or admin access is required.' }); return res.json({ organizationId, userId, role }); } catch (error) { console.error('Organization member update failed:', error.message); return res.status(500).json({ error: 'Unable to update organization member.' }); } });
+    app.get('/api/organizations/:id/billing-profile', authenticate, async (req, res) => {
+      const organizationId = Number(req.params.id); if (!Number.isInteger(organizationId) || organizationId < 1) return res.status(422).json({ error: 'A valid organization id is required.' });
+      try { await ensureTable(); if (!await this.queries.canManageOrganization(organizationId, req.user.id, req.user.role)) return res.status(403).json({ error: 'Organization manager access is required.' }); const profile = await this.queries.organizationBillingProfile(organizationId); return profile ? res.json(profile) : res.status(404).json({ error: 'Billing profile not found.' }); }
+      catch (error) { console.error('Billing profile lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load billing profile.' }); }
+    });
+    app.put('/api/organizations/:id/billing-profile', authenticate, requireVerifiedUser, async (req, res) => {
+      const organizationId = Number(req.params.id); const { data, errors } = billingProfileData(req.body); if (!Number.isInteger(organizationId) || organizationId < 1 || Object.keys(errors).length) return res.status(422).json({ error: 'Billing profile is invalid.', fields: errors });
+      try { await ensureTable(); if (!await this.queries.updateOrganizationBillingProfile(organizationId, req.user.id, req.user.role, data)) return res.status(403).json({ error: 'Organization manager access is required.' }); return res.json(await this.queries.organizationBillingProfile(organizationId)); }
+      catch (error) { console.error('Billing profile update failed:', error.message); return res.status(500).json({ error: 'Unable to update billing profile.' }); }
+    });
+    app.get('/api/invoices/:id', authenticate, async (req, res) => {
+      const invoiceId = Number(req.params.id); if (!Number.isInteger(invoiceId) || invoiceId < 1) return res.status(422).json({ error: 'A valid invoice id is required.' });
+      try { await ensureTable(); const invoice = await this.queries.invoice(invoiceId, req.user.id, req.user.role); return invoice ? res.json(invoice) : res.status(403).json({ error: 'Invoice not found or not available to you.' }); }
+      catch (error) { console.error('Invoice lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load invoice.' }); }
+    });
+    app.post('/api/invoices/:id/mark-paid', authenticate, requireVenueOwner, async (req, res) => {
+      const invoiceId = Number(req.params.id); const paymentMethod = String(req.body.paymentMethod || ''); const paymentReference = req.body.paymentReference == null ? null : String(req.body.paymentReference).trim() || null;
+      if (!Number.isInteger(invoiceId) || invoiceId < 1 || !['bank_transfer', 'swish', 'cash', 'other'].includes(paymentMethod) || paymentReference?.length > 255) return res.status(422).json({ error: 'A valid payment method and optional reference are required.' });
+      try { await ensureTable(); const result = await this.queries.markInvoicePaid(invoiceId, req.user.id, req.user.role, { paymentMethod, paymentReference }); if (result?.error === 'INVALID_STATE') return res.status(409).json({ error: 'Only issued invoices can be marked paid.' }); if (!result) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); return res.json({ id: invoiceId, status: 'paid' }); }
+      catch (error) { console.error('Invoice payment update failed:', error.message); return res.status(500).json({ error: 'Unable to mark invoice paid.' }); }
+    });
     app.get('/api/venues', optionalAuthenticate, async (req, res) => {
       const number = (value, name) => value == null || value === '' ? null : (Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : name);
       const minCapacity = number(req.query.minCapacity, 'minCapacity'); const maxCapacity = number(req.query.maxCapacity, 'maxCapacity'); const maxPrice = number(req.query.maxPrice, 'maxPrice');
@@ -810,15 +913,97 @@ export class Api {
     });
     // Event editors request one date at a time. This intentionally never
     // expands a recurring schedule into months or years of future slots.
-    app.get('/api/venues/:id/availability', authenticate, async (req, res) => {
+    app.get('/api/venues/:id/availability', optionalAuthenticate, async (req, res) => {
       const venueId = Number(req.params.id);
+      const range = availabilityRange(req.query.from, req.query.to);
+      if (req.query.from !== undefined || req.query.to !== undefined) {
+        if (!Number.isInteger(venueId) || venueId < 1 || !range) return res.status(422).json({ error: 'Provide a valid date range of at most 94 days.' });
+        try { await ensureTable(); const availability = await this.queries.calculateVenueAvailability(venueId, range.from, range.to); if (!availability) return res.status(404).json({ error: 'Venue not found or unavailable.' }); res.set('Cache-Control', 'public, max-age=60'); return res.json(availability); }
+        catch (error) { console.error('Venue availability lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue availability.' }); }
+      }
       const date = requestedAvailabilityDate(req.query.date);
       if (!Number.isInteger(venueId) || venueId < 1 || !date) return res.status(422).json({ error: 'Provide a valid availability date between today and one year from today.' });
       try {
         await ensureTable();
-        const availability = await this.queries.venueAvailabilityForDate(venueId, date);
-        return availability ? res.json(availability) : res.status(404).json({ error: 'Venue not found or unavailable.' });
+        const availability = await this.queries.calculateVenueAvailability(venueId, date, date);
+        if (!availability) return res.status(404).json({ error: 'Venue not found or unavailable.' });
+        const day = availability.dates[0];
+        let nextAvailable = null;
+        if (!day.availableIntervals.length) {
+          const nextDates = await this.queries.calculateVenueAvailability(venueId, addDateDays(date, 1), addDateDays(date, 14));
+          const nextDay = nextDates?.dates.find((item) => item.availableIntervals.length);
+          if (nextDay) {
+            const interval = nextDay.availableIntervals[0];
+            nextAvailable = { date: nextDay.date, startTime: interval.start, endTime: interval.end };
+          }
+        }
+        // Keep the original `slots` shape for existing event editors, but make
+        // it represent bookable intervals rather than the venue's opening hours.
+        return res.json({ venueId, date, timezone: availability.timezone, slots: day.availableIntervals.map((slot) => ({ startTime: slot.start, endTime: slot.end })), unavailableSlots: (day.unavailableIntervals || []).map((slot) => ({ startTime: slot.start, endTime: slot.end })), nextAvailable, availabilityStatus: day.availabilityStatus, bookingMode: availability.bookingMode, slotIncrementMinutes: availability.slotIncrementMinutes, minimumBookingMinutes: availability.minimumBookingMinutes, maximumBookingMinutes: availability.maximumBookingMinutes, bufferBeforeMinutes: availability.bufferBeforeMinutes, bufferAfterMinutes: availability.bufferAfterMinutes });
       } catch (error) { console.error('Venue availability lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue availability.' }); }
+    });
+    app.get('/api/venues/:id/calendar', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const range = availabilityRange(req.query.from ?? req.query.startDate, req.query.to ?? req.query.endDate);
+      if (!Number.isInteger(venueId) || venueId < 1 || !range) return res.status(422).json({ error: 'Provide a valid date range of at most 94 days.' });
+      try { await ensureTable(); const calendar = await this.queries.venueCalendar(venueId, req.user.id, req.user.role, range.from, range.to); if (!calendar) return res.status(403).json({ error: 'Venue manager access is required.' }); res.set('Cache-Control', 'private, no-store'); return res.json(calendar); }
+      catch (error) { console.error('Venue calendar lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue calendar.' }); }
+    });
+    app.get('/api/venues/:id/booking-settings', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try { await ensureTable(); if (!await this.queries.canManageVenue(venueId, req.user.id, req.user.role)) return res.status(403).json({ error: 'Venue manager access is required.' }); return res.json(await this.queries.venueBookingSettings(venueId)); }
+      catch (error) { console.error('Booking settings lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load booking settings.' }); }
+    });
+    app.put('/api/venues/:id/booking-settings', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try { await ensureTable(); const existing = await this.queries.venueBookingSettings(venueId); const { data, errors } = bookingSettingsData(req.body, existing || {}); if (Object.keys(errors).length) return res.status(422).json({ error: 'Booking settings are invalid.', fields: errors }); if (!await this.queries.updateVenueBookingSettings(venueId, req.user.id, req.user.role, data)) return res.status(403).json({ error: 'Venue manager access is required.' }); return res.json(data); }
+      catch (error) { console.error('Booking settings update failed:', error.message); return res.status(500).json({ error: 'Unable to update booking settings.' }); }
+    });
+    app.put('/api/venues/:id/availability-overrides', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const validated = availabilityOverrides(req.body.overrides);
+      if (!Number.isInteger(venueId) || venueId < 1 || validated.error) return res.status(422).json({ error: validated.error || 'A valid venue id is required.' });
+      try { await ensureTable(); if (!await this.queries.replaceVenueAvailabilityOverrides(venueId, req.user.id, req.user.role, validated.overrides)) return res.status(403).json({ error: 'Venue manager access is required.' }); return res.json({ venueId, overrides: validated.overrides }); }
+      catch (error) { console.error('Availability override update failed:', error.message); return res.status(500).json({ error: 'Unable to update availability overrides.' }); }
+    });
+    // Frontend contract alias. Keep the original PUT route for existing clients.
+    app.post('/api/venues/:id/availability/overrides', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const validated = availabilityOverrides(req.body.overrides);
+      if (!Number.isInteger(venueId) || venueId < 1 || validated.error) return res.status(422).json({ error: validated.error || 'A valid venue id is required.' });
+      try { await ensureTable(); if (!await this.queries.replaceVenueAvailabilityOverrides(venueId, req.user.id, req.user.role, validated.overrides)) return res.status(403).json({ error: 'Venue manager access is required.' }); return res.json({ venueId, overrides: validated.overrides }); }
+      catch (error) { console.error('Availability override update failed:', error.message); return res.status(500).json({ error: 'Unable to update availability overrides.' }); }
+    });
+    app.post('/api/venues/:id/availability-blocks', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const interval = await venueInterval(venueId, req.body); const startAt = interval?.startAt; const endAt = interval?.endAt; const reason = req.body.reason == null ? null : String(req.body.reason).trim() || null;
+      if (!Number.isInteger(venueId) || venueId < 1 || !startAt || !endAt || startAt >= endAt || reason?.length > 5000) return res.status(422).json({ error: 'A valid future block interval is required.' });
+      try { await ensureTable(); const id = await this.queries.createVenueAvailabilityBlock(venueId, req.user.id, req.user.role, { startAt, endAt, reason }); if (!id) return res.status(403).json({ error: 'Venue manager access is required.' }); return res.status(201).json({ id, venueId, startAt, endAt }); }
+      catch (error) { console.error('Availability block creation failed:', error.message); return res.status(500).json({ error: 'Unable to create availability block.' }); }
+    });
+    app.post('/api/venues/:id/blocks', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const interval = await venueInterval(venueId, req.body); const startAt = interval?.startAt; const endAt = interval?.endAt; const reason = req.body.reason == null ? null : String(req.body.reason).trim() || null;
+      if (!Number.isInteger(venueId) || venueId < 1 || !startAt || !endAt || startAt >= endAt || reason?.length > 5000) return res.status(422).json({ error: 'A valid future block interval is required.' });
+      try { await ensureTable(); const id = await this.queries.createVenueAvailabilityBlock(venueId, req.user.id, req.user.role, { startAt, endAt, reason }); if (!id) return res.status(403).json({ error: 'Venue manager access is required.' }); return res.status(201).json({ id, venueId, startAt, endAt }); }
+      catch (error) { console.error('Availability block creation failed:', error.message); return res.status(500).json({ error: 'Unable to create availability block.' }); }
+    });
+    app.delete('/api/venues/:id/availability-blocks/:blockId', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const blockId = Number(req.params.blockId); if (!Number.isInteger(venueId) || !Number.isInteger(blockId)) return res.status(422).json({ error: 'Valid venue and block ids are required.' });
+      try { await ensureTable(); if (!await this.queries.deleteVenueAvailabilityBlock(venueId, blockId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Block not found or not managed by you.' }); return res.status(204).send(); }
+      catch (error) { console.error('Availability block deletion failed:', error.message); return res.status(500).json({ error: 'Unable to delete availability block.' }); }
+    });
+    app.post('/api/venues/:id/external-reservations', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const interval = await venueInterval(venueId, req.body); const startAt = interval?.startAt; const endAt = interval?.endAt; const source = String(req.body.source || 'external'); const title = req.body.title == null ? null : String(req.body.title).trim() || null; const notes = req.body.notes == null ? null : String(req.body.notes).trim() || null;
+      if (!Number.isInteger(venueId) || venueId < 1 || !startAt || !endAt || startAt >= endAt || !['external', 'internal', 'phone', 'email', 'other_platform', 'other'].includes(source) || title?.length > 255 || notes?.length > 5000) return res.status(422).json({ error: 'External reservation is invalid.' });
+      try { await ensureTable(); const result = await this.queries.createExternalReservation(venueId, req.user.id, req.user.role, { startAt, endAt, source, title, notes }); if (result.error === 'CONFLICT') return res.status(409).json({ error: 'The venue is already occupied for this time.' }); if (result.error) return res.status(result.error === 'FORBIDDEN' ? 403 : 404).json({ error: 'Venue not found or not managed by you.' }); return res.status(201).json({ id: result.id, venueId, startAt, endAt, source, title }); }
+      catch (error) { console.error('External reservation creation failed:', error.message); return res.status(500).json({ error: 'Unable to create external reservation.' }); }
+    });
+    app.post('/api/venues/:id/reservations', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const interval = await venueInterval(venueId, req.body); const startAt = interval?.startAt; const endAt = interval?.endAt; const source = String(req.body.source || 'external'); const title = req.body.title == null ? null : String(req.body.title).trim() || null; const notes = req.body.notes == null ? null : String(req.body.notes).trim() || null;
+      if (!Number.isInteger(venueId) || venueId < 1 || !startAt || !endAt || startAt >= endAt || !['external', 'internal', 'phone', 'email', 'other_platform', 'other'].includes(source) || title?.length > 255 || notes?.length > 5000) return res.status(422).json({ error: 'External reservation is invalid.' });
+      try { await ensureTable(); const result = await this.queries.createExternalReservation(venueId, req.user.id, req.user.role, { startAt, endAt, source, title, notes }); if (result.error === 'CONFLICT') return res.status(409).json({ error: 'The venue is already occupied for this time.' }); if (result.error) return res.status(result.error === 'FORBIDDEN' ? 403 : 404).json({ error: 'Venue not found or not managed by you.' }); return res.status(201).json({ id: result.id, venueId, startAt, endAt, source, title }); }
+      catch (error) { console.error('External reservation creation failed:', error.message); return res.status(500).json({ error: 'Unable to create external reservation.' }); }
+    });
+    app.post('/api/venues/:id/external-reservations/:reservationId/cancel', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); const reservationId = Number(req.params.reservationId); if (!Number.isInteger(venueId) || !Number.isInteger(reservationId)) return res.status(422).json({ error: 'Valid venue and reservation ids are required.' });
+      try { await ensureTable(); if (!await this.queries.cancelExternalReservation(venueId, reservationId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Future external reservation not found or not managed by you.' }); return res.status(204).send(); }
+      catch (error) { console.error('External reservation cancellation failed:', error.message); return res.status(500).json({ error: 'Unable to cancel external reservation.' }); }
     });
     app.put('/api/venues/:id/availability', authenticate, requireVenueOwner, async (req, res) => {
       const venueId = Number(req.params.id);
@@ -883,8 +1068,8 @@ export class Api {
         const context = await this.queries.venueBookingContext(eventId, venueId, req.user.id, req.user.role);
         if (context.error === 'EVENT_NOT_FOUND') return res.status(404).json({ error: 'Event not found or not managed by you.' });
         if (context.error === 'VENUE_NOT_FOUND') return res.status(404).json({ error: 'Venue not found or inactive.' });
-        const availability = eventFitsVenueAvailability(context.event, context.venue);
-        if (availability.error) return res.status(422).json({ error: availability.error });
+        const availability = await eventFitsVenueAvailability(context.event, context.venue);
+        if (availability.error) return res.status(availability.unavailable ? 409 : 422).json({ error: availability.error });
         const result = await this.queries.requestVenueBooking(eventId, venueId, context.event.managerId);
         if (result.error === 'EVENT_ALREADY_BOOKED') return res.status(409).json({ error: 'This event already has an active venue booking.' });
         if (result.error === 'VENUE_UNAVAILABLE') return res.status(409).json({ error: 'The venue is already booked for this time.' });
@@ -905,7 +1090,7 @@ export class Api {
       const status = String(req.body.status || '');
       const ownerNote = req.body.ownerNote == null ? null : String(req.body.ownerNote).trim() || null;
       if (!Number.isInteger(bookingId) || bookingId < 1 || !['confirmed', 'declined'].includes(status)) return res.status(422).json({ error: 'A booking id and status of confirmed or declined are required.' });
-      try { await ensureTable(); if (!await this.queries.reviewVenueBooking(bookingId, req.user.id, req.user.role, status, ownerNote)) return res.status(404).json({ error: 'Pending venue booking not found or not managed by you.' }); return res.json({ id: bookingId, status, ownerNote }); }
+      try { await ensureTable(); const result = await this.queries.reviewVenueBooking(bookingId, req.user.id, req.user.role, status, ownerNote); if (result?.error === 'CONFLICT') return res.status(409).json({ error: 'The venue is already occupied for this time.' }); if (!result) return res.status(404).json({ error: 'Pending venue booking not found or not managed by you.' }); return res.json({ id: bookingId, status, ownerNote, invoiceId: result.invoiceId || null }); }
       catch (error) { console.error('Venue booking review failed:', error.message); return res.status(500).json({ error: 'Unable to review venue booking.' }); }
     });
     app.post('/api/events/:id/registrations', authenticate, async (req, res, next) => { try { await ensureTable(); if (await this.queries.eventVisibility(req.params.id) === 'Private' && !await this.queries.privateInvitationExists(req.params.id, req.user.id) && req.user.id !== (await this.queries.eventManagerId(req.params.id))) return res.status(403).json({ code: 'INVITATION_REQUIRED', error: 'A direct invitation is required to register for this private event.' }); return next(); } catch (error) { return res.status(500).json({ error: 'Unable to validate event access.' }); } });
@@ -989,6 +1174,13 @@ export class Api {
     });
     app.post('/api/auth/profile/picture', authenticate, parseProfilePicture, async (req, res) => { if (!req.file) return res.status(400).json({ error: 'A JPEG, PNG, GIF, or WebP image is required.' }); try { await ensureTable(); const profilePicture = await this.ftpService.uploadProfilePicture(req.user.id, req.file); if (!await this.queries.updateProfilePicture(req.user.id, profilePicture)) return res.status(404).json({ error: 'User profile not found.' }); return res.json({ profilePicture }); } catch (error) { if (error.code === 'INVALID_IMAGE') return res.status(400).json({ error: error.message }); if (error.code === 'FTP_NOT_CONFIGURED') return res.status(503).json({ error: 'Profile picture storage is not configured.' }); console.error('Profile picture upload failed:', error.message); return res.status(502).json({ error: 'Unable to upload profile picture.' }); } });
     app.patch('/api/auth/profile/marketing-preferences', authenticate, async (req, res) => { if (typeof req.body.marketingConsent !== 'boolean') return res.status(400).json({ error: 'marketingConsent must be a boolean.' }); try { await ensureTable(); const profile = await this.queries.profile(req.user.id); if (!profile) return res.status(404).json({ error: 'User profile not found.' }); const marketingConsent = await this.queries.setMarketingEmailPreference(profile.email, req.body.marketingConsent, '2026-08-26'); await this.queries.audit(req.user.id, 'marketing_consent_changed', 'user', req.user.id, { marketingConsent }); return res.json({ marketingConsent }); } catch (error) { return res.status(500).json({ error: 'Unable to update marketing preferences.' }); } });
+    app.patch('/api/auth/profile/timezone-preference', authenticate, async (req, res) => {
+      const timezoneDisplayMode = String(req.body.timezoneDisplayMode || 'device');
+      const preferredTimezone = req.body.preferredTimezone == null || req.body.preferredTimezone === '' ? null : String(req.body.preferredTimezone);
+      if (!['device', 'fixed'].includes(timezoneDisplayMode) || (timezoneDisplayMode === 'fixed' && !isValidIanaTimezone(preferredTimezone))) return res.status(422).json({ error: 'Use device mode or a valid fixed IANA timezone.' });
+      try { await ensureTable(); if (!await this.queries.updateTimezonePreference(req.user.id, timezoneDisplayMode, timezoneDisplayMode === 'fixed' ? preferredTimezone : null)) return res.status(404).json({ error: 'User profile not found.' }); return res.json({ timezoneDisplayMode, preferredTimezone: timezoneDisplayMode === 'fixed' ? preferredTimezone : null }); }
+      catch (error) { return res.status(500).json({ error: 'Unable to update timezone preference.' }); }
+    });
     app.patch('/api/auth/profile/email-preferences', authenticate, async (req, res) => { if (typeof req.body.receiveEmailNotifications !== 'boolean') return res.status(400).json({ error: 'receiveEmailNotifications must be a boolean.' }); try { await ensureTable(); const profile = await this.queries.profile(req.user.id); if (!profile) return res.status(404).json({ error: 'User profile not found.' }); const marketingConsent = await this.queries.setMarketingEmailPreference(profile.email, req.body.receiveEmailNotifications, '2026-08-26', 'legacy-settings'); return res.json({ marketingConsent, deprecated: true }); } catch (error) { return res.status(500).json({ error: 'Unable to update marketing preferences.' }); } });
     
     app.get('/api/auth/export', authenticate, async (req, res) => {

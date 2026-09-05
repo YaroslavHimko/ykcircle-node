@@ -4,7 +4,11 @@ import crypto from 'node:crypto';
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const eventFee = (event) => Number(event.fee) > 0 ? `\nFee: ${Number(event.fee).toFixed(2)} SEK` : '';
 const eventFeeHtml = (event) => Number(event.fee) > 0 ? `<br><strong>Fee:</strong> ${escapeHtml(Number(event.fee).toFixed(2))} SEK` : '';
-const formatEventDate = (date, timezone = 'UTC') => new Date(date).toLocaleString(undefined, { timeZone: timezone || 'UTC', timeZoneName: 'short' });
+const formatEventDate = (date, timezone = 'UTC') => {
+  const text = String(date || '').replace(' ', 'T');
+  const instant = date instanceof Date ? date : new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : `${text}Z`);
+  return Number.isNaN(instant.getTime()) ? 'To be announced' : instant.toLocaleString(undefined, { timeZone: timezone || 'UTC', timeZoneName: 'short' });
+};
 const brandEmailHtml = (html = '') => {
   const colors = {
     '#f5f7fb': '#f8f5f1', '#172033': '#251e18', '#e7ebf3': '#dfd2c7',
@@ -92,8 +96,8 @@ export class EmailService {
   }
 
   sendRegistrationConfirmation(email, name, event) {
-    const start = new Date(event.startsAt).toLocaleString();
-    const end = event.endsAt ? new Date(event.endsAt).toLocaleString() : null;
+    const start = formatEventDate(event.startsAt, event.timezone);
+    const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
     const details = `Event: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\nCapacity: ${event.capacity ?? 'Unlimited'}${eventFee(event)}\nRegistration status: Pending`;
     return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Registration received: ${event.title}`,
       text: `Hi ${name},\n\nYour registration has been received and is pending manager confirmation.\n\n${details}`,
@@ -101,8 +105,8 @@ export class EmailService {
   }
 
   sendRegistrationApproved(email, name, event) {
-    const start = new Date(event.startsAt).toLocaleString();
-    const end = event.endsAt ? new Date(event.endsAt).toLocaleString() : null;
+    const start = formatEventDate(event.startsAt, event.timezone);
+    const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
     const details = `Event: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\nCapacity: ${event.capacity ?? 'Unlimited'}${eventFee(event)}\nRegistration status: Confirmed`;
     return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Registration confirmed: ${event.title}`,
       text: `Hi ${name},\n\nYour registration has been confirmed by the event manager.\n\n${details}`,
@@ -110,8 +114,8 @@ export class EmailService {
   }
 
   sendRegistrationWithdrawal(email, name, event) {
-    const start = new Date(event.startsAt).toLocaleString();
-    const end = event.endsAt ? new Date(event.endsAt).toLocaleString() : null;
+    const start = formatEventDate(event.startsAt, event.timezone);
+    const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
     return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Withdrawal received: ${event.title}`,
       text: `Hi ${name},\n\nYour withdrawal from ${event.title} has been received.\n\nEvent: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\nStatus: Withdrawn`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Withdrawal received</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your withdrawal from this event has been received successfully.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}<br><strong>Status:</strong> Withdrawn</div>`) });
@@ -138,8 +142,8 @@ export class EmailService {
 
   sendGroupEventNotification(email, name, group, event) {
     const eventUrl = `${this.eventDetailsUrl.replace(/\/$/, '')}/${event.eventId || event.id}`;
-    const start = new Date(event.startsAt).toLocaleString();
-    const end = event.endsAt ? new Date(event.endsAt).toLocaleString() : null;
+    const start = formatEventDate(event.startsAt, event.timezone);
+    const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
     return this.notificationMailer.sendMail({ from: this.notificationFrom, to: email, subject: `New event in ${group.name}: ${event.title}`,
       text: `Hi ${name},\n\n${group.name} has posted a new event: ${event.title}.\n\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\n\nView event: ${eventUrl}`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>New group event</h1><p style="font-size:16px;line-height:1.6;color:#526078"><strong>${escapeHtml(group.name)}</strong> has posted a new event for its members.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><span style="color:#526078">${escapeHtml(event.description || 'Event details are available on the event page.')}</span><br><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}</div><p style="margin:28px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event</a></p>`, 'Group update') });

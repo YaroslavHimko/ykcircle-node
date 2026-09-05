@@ -54,3 +54,31 @@ test('serves public API resources and validates unsubscribe requests', async (t)
   const retiredContentType = await fetch(`${baseUrl}/api/reports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entityType: 'community_post' }) });
   assert.equal(retiredContentType.status, 422);
 });
+
+test('returns a backend-selected next available interval for an unavailable date', async (t) => {
+  const queries = {
+    initialize: async () => {},
+    calculateVenueAvailability: async (_venueId, from, to) => ({
+      venueId: 9, timezone: 'Europe/Stockholm', bookingMode: 'hourly', slotIncrementMinutes: 30,
+      minimumBookingMinutes: 60, maximumBookingMinutes: null, bufferBeforeMinutes: 0, bufferAfterMinutes: 0,
+      dates: from === to
+        ? [{ date: from, availabilityStatus: 'unavailable', availableIntervals: [], unavailableIntervals: [{ start: '10:00', end: '11:00' }] }]
+        : [{ date: '2026-09-15', availabilityStatus: 'available', availableIntervals: [{ start: '10:00', end: '12:00' }] }],
+    }),
+  };
+  const app = express();
+  app.use(express.json());
+  new Api({
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: 'a sufficiently random test secret that exceeds thirty two characters', maps: {} } },
+    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+  }).register(app);
+  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/venues/9/availability?date=2026-09-14`);
+  assert.equal(response.status, 200);
+  const availability = await response.json();
+  assert.deepEqual(availability.slots, []);
+  assert.deepEqual(availability.unavailableSlots, [{ startTime: '10:00', endTime: '11:00' }]);
+  assert.deepEqual(availability.nextAvailable, { date: '2026-09-15', startTime: '10:00', endTime: '12:00' });
+});

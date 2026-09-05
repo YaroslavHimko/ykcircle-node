@@ -1,5 +1,14 @@
 ﻿import crypto from 'node:crypto';
 
+import { addDays, calculateAvailability, isDateOnly, localDateTimeToUtc } from './venue-availability.js';
+import { zonedDateTime } from './time.js';
+
+const utcTimestamp = (value) => {
+  if (!value) return value;
+  const instant = value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T').replace(/Z$/i, '')}Z`);
+  return Number.isNaN(instant.getTime()) ? value : instant.toISOString();
+};
+
 export class Queries {
   async createContentReport(report) {
     const [result] = await this.database.execute(
@@ -94,13 +103,14 @@ export class Queries {
       return true;
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
-  async profile(id) { const [rows] = await this.database.execute("SELECT u.id, u.profile_picture AS profilePicture, u.name, u.email, u.phone, u.role, u.isEmailConfirmed, u.created_at AS createdAt, COALESCE((SELECT marketing_opt_in FROM marketing_email_preferences p WHERE LOWER(p.email) = LOWER(u.email)), FALSE) AS marketingConsent FROM users u WHERE u.id = ? AND u.deleted_at IS NULL", [id]); return rows[0]; }
+  async profile(id) { const [rows] = await this.database.execute("SELECT u.id, u.profile_picture AS profilePicture, u.name, u.email, u.phone, u.role, u.isEmailConfirmed, u.timezone_display_mode AS timezoneDisplayMode, u.preferred_timezone AS preferredTimezone, u.created_at AS createdAt, COALESCE((SELECT marketing_opt_in FROM marketing_email_preferences p WHERE LOWER(p.email) = LOWER(u.email)), FALSE) AS marketingConsent FROM users u WHERE u.id = ? AND u.deleted_at IS NULL", [id]); return rows[0]; }
   async setMarketingEmailPreference(email, enabled, policyVersion = null, source = 'settings') {
     await this.database.execute('INSERT INTO marketing_email_preferences (email, marketing_opt_in, policy_version, source) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE marketing_opt_in = VALUES(marketing_opt_in), policy_version = VALUES(policy_version), source = VALUES(source), changed_at = CURRENT_TIMESTAMP', [email.toLowerCase(), enabled, policyVersion, source]);
     return enabled;
   }
   async marketingEmailPreference(email) { const [rows] = await this.database.execute('SELECT marketing_opt_in AS marketingOptIn FROM marketing_email_preferences WHERE LOWER(email) = LOWER(?)', [email]); return Boolean(rows[0]?.marketingOptIn); }
   async updateProfilePicture(id, profilePicture) { const [result] = await this.database.execute('UPDATE users SET profile_picture = ? WHERE id = ?', [profilePicture, id]); return result.affectedRows > 0; }
+  async updateTimezonePreference(id, timezoneDisplayMode, preferredTimezone) { const [result] = await this.database.execute('UPDATE users SET timezone_display_mode=?, preferred_timezone=? WHERE id=? AND deleted_at IS NULL', [timezoneDisplayMode, preferredTimezone, id]); return result.affectedRows > 0; }
   async deleteUser(id) {
     const connection = await this.database.getConnection();
     try {
@@ -333,7 +343,7 @@ export class Queries {
   }
   async groupExists(id) { const [rows] = await this.database.execute('SELECT id FROM event_groups WHERE id = ?', [id]); return rows.length > 0; }
   async pendingGroupEventNotifications(eventId) {
-    const [rows] = await this.database.execute(`SELECT u.id AS userId, u.name, u.email, g.id AS groupId, g.name AS groupName, e.id AS eventId, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt
+    const [rows] = await this.database.execute(`SELECT u.id AS userId, u.name, u.email, g.id AS groupId, g.name AS groupName, e.id AS eventId, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone
       FROM events e JOIN event_groups g ON g.id = e.group_id JOIN group_memberships gm ON gm.group_id = g.id AND gm.role = 'member' AND gm.status = 'active' JOIN users u ON u.id = gm.user_id
       LEFT JOIN group_event_notifications n ON n.event_id = e.id AND n.user_id = u.id
       WHERE e.id = ? AND n.user_id IS NULL`, [eventId]);
@@ -346,8 +356,8 @@ export class Queries {
   async eventTypes() { const [rows] = await this.database.execute('SELECT id, name, slug, description FROM event_types WHERE is_active = TRUE ORDER BY name'); return rows; }
   async taxonomyExists(categoryId, typeId) { const [categories] = await this.database.execute('SELECT id FROM event_categories WHERE id = ? AND is_active = TRUE', [categoryId]); const [types] = await this.database.execute('SELECT id FROM event_types WHERE id = ? AND is_active = TRUE', [typeId]); return categories.length > 0 && types.length > 0; }
   async eventLocationVenue(id) {
-    const [rows] = await this.database.execute("SELECT id FROM venues WHERE id = ? AND COALESCE(is_active, TRUE) = TRUE AND moderation_status = 'approved'", [id]);
-    return Boolean(rows[0]);
+    const [rows] = await this.database.execute("SELECT id, timezone FROM venues WHERE id = ? AND COALESCE(is_active, TRUE) = TRUE AND moderation_status = 'approved'", [id]);
+    return rows[0] || null;
   }
   richEventInsertValues(data, occurrenceNumber = 1) {
     const recurrence = data.recurrence || { frequency: 'none', interval: 1, count: 1 };
@@ -402,12 +412,15 @@ export class Queries {
       const startsAt = new Date(`${data.startsAt.replace(' ', 'T')}Z`);
       const endsAt = data.endsAt ? new Date(`${data.endsAt.replace(' ', 'T')}Z`) : null;
       const duration = endsAt ? endsAt.getTime() - startsAt.getTime() : null;
+      const localStart = zonedDateTime(startsAt, data.timezone);
+      if (!localStart) throw new Error('Recurring event requires a valid IANA timezone.');
       const eventIds = [];
-      let occurrenceStart = startsAt;
       for (let occurrenceNumber = 1; occurrenceNumber <= count; occurrenceNumber += 1) {
+        const occurrenceDate = occurrenceNumber === 1 ? localStart.date : this.recurringDate(new Date(`${localStart.date}T12:00:00Z`), recurrence.frequency, recurrence.interval * (occurrenceNumber - 1)).toISOString().slice(0, 10);
+        const occurrenceStart = occurrenceNumber === 1 ? startsAt : localDateTimeToUtc(occurrenceDate, localStart.time, data.timezone, 'start');
+        if (!occurrenceStart) throw new Error('A recurring event falls on a non-existent local time due to daylight saving time.');
         const occurrence = { ...data, startsAt: occurrenceStart.toISOString().slice(0, 19).replace('T', ' '), endsAt: duration === null ? null : new Date(occurrenceStart.getTime() + duration).toISOString().slice(0, 19).replace('T', ' ') };
         eventIds.push(await this.insertRichEvent(connection, occurrence, occurrenceNumber));
-        occurrenceStart = this.recurringDate(startsAt, recurrence.frequency, recurrence.interval * occurrenceNumber);
       }
       const seriesId = count > 1 ? eventIds[0] : null;
       if (seriesId) await connection.query(`UPDATE events SET series_id = ? WHERE id IN (${eventIds.map(() => '?').join(', ')})`, [seriesId, ...eventIds]);
@@ -430,6 +443,14 @@ export class Queries {
     const [result] = await this.database.query(`UPDATE events SET title=?, short_description=?, description=?, cover_image=?, category_id=?, type_id=?, country=?, city=?, location=?, address=?, latitude=?, longitude=?, location_type=?, location_visibility=?, starts_at=?, ends_at=?, timezone=?, capacity=?, minimum_attendees=?, registration_deadline=?, minimum_age=?, language_code=?, what_to_bring=?, meeting_instructions=?, cancellation_policy=?, pricing_type=?, participation_fee=?, currency=?, registration_type=?, external_registration_url=?, visibility=?, venue_id=?, custom_address_line_1=?, custom_address_line_2=?, custom_postal_code=?, custom_locality=?, custom_municipality=?, custom_region=?, custom_country=?, custom_country_code=?, custom_latitude=?, custom_longitude=?, custom_google_place_id=?, custom_formatted_address=?, online_url=?, online_platform=? WHERE id=? AND deleted_at IS NULL${scope}`, params);
     return result.affectedRows > 0;
   }
+  async updateEventSchedule(id, managerId, role, { startsAt, endsAt, venueId, timezone }) {
+    const scope = ['manager', 'admin'].includes(role) ? '' : ' AND manager_id = ?';
+    const params = [startsAt, endsAt, timezone, venueId, id];
+    if (!['manager', 'admin'].includes(role)) params.push(managerId);
+    const [result] = await this.database.execute(`UPDATE events SET starts_at=?, ends_at=?, timezone=?, venue_id=?, location_type='venue'
+      WHERE id=? AND deleted_at IS NULL${scope}`, params);
+    return result.affectedRows > 0;
+  }
   async setEventCover(id, managerId, role, coverImage) {
     const globalAccess = ['manager', 'admin'].includes(role);
     const [events] = await this.database.execute(`SELECT COALESCE(series_id, id) AS seriesId FROM events WHERE id = ? AND deleted_at IS NULL${globalAccess ? '' : ' AND manager_id = ?'}`, globalAccess ? [id] : [id, managerId]);
@@ -449,6 +470,9 @@ export class Queries {
   normalizeRichEventLocation(event, { publicView = false } = {}) {
     if (!event) return null;
     const normalized = { ...event };
+    // All occurrence fields exposed by the API are unambiguous UTC instants.
+    // The event timezone remains the canonical local-time context.
+    for (const key of ['startsAt', 'endsAt', 'registrationDeadline', 'publishedAt', 'createdAt', 'updatedAt']) normalized[key] = utcTimestamp(normalized[key]);
     if (normalized.locationType === 'physical' || normalized.locationType === 'tba') normalized.locationType = 'custom';
     for (const key of ['latitude', 'longitude', 'customLatitude', 'customLongitude']) if (normalized[key] != null) normalized[key] = Number(normalized[key]);
     const customLocation = {
@@ -470,9 +494,9 @@ export class Queries {
         id: normalized.venueId, name: normalized.venueName, addressLine1: normalized.venueAddressLine1, addressLine2: normalized.venueAddressLine2,
         postalCode: normalized.venuePostalCode, city: normalized.venueCity, municipality: normalized.venueMunicipality, region: normalized.venueRegion,
         country: normalized.venueCountry, countryCode: normalized.venueCountryCode, latitude: normalized.venueLatitude, longitude: normalized.venueLongitude,
-        googlePlaceId: normalized.venueGooglePlaceId, formattedAddress: normalized.venueFormattedAddress, locationVisibility: normalized.venueLocationVisibility,
+        googlePlaceId: normalized.venueGooglePlaceId, formattedAddress: normalized.venueFormattedAddress, locationVisibility: normalized.venueLocationVisibility, timezone: normalized.venueTimezone,
       }, { publicView });
-      normalized.venue = venue?.id ? { id: venue.id, name: venue.name, location: venue.location } : null;
+      normalized.venue = venue?.id ? { id: venue.id, name: venue.name, location: venue.location, timezone: venue.timezone } : null;
       normalized.location = null;
     } else if (normalized.locationType === 'online') {
       normalized.venue = null;
@@ -485,7 +509,7 @@ export class Queries {
     // The legacy flat event fields are retained in storage only for backwards
     // compatibility. API consumers use one structured location source.
     for (const key of ['country', 'city', 'address', 'latitude', 'longitude']) delete normalized[key];
-    for (const key of ['customAddressLine1', 'customAddressLine2', 'customPostalCode', 'customLocality', 'customMunicipality', 'customRegion', 'customCountry', 'customCountryCode', 'customLatitude', 'customLongitude', 'customGooglePlaceId', 'customFormattedAddress', 'venueId', 'venueName', 'venueBusinessName', 'venueLocation', 'venueAddressLine1', 'venueAddressLine2', 'venuePostalCode', 'venueCity', 'venueMunicipality', 'venueRegion', 'venueCountry', 'venueCountryCode', 'venueLatitude', 'venueLongitude', 'venueGooglePlaceId', 'venueFormattedAddress', 'venueLocationVisibility']) delete normalized[key];
+    for (const key of ['customAddressLine1', 'customAddressLine2', 'customPostalCode', 'customLocality', 'customMunicipality', 'customRegion', 'customCountry', 'customCountryCode', 'customLatitude', 'customLongitude', 'customGooglePlaceId', 'customFormattedAddress', 'venueId', 'venueName', 'venueBusinessName', 'venueLocation', 'venueAddressLine1', 'venueAddressLine2', 'venuePostalCode', 'venueCity', 'venueMunicipality', 'venueRegion', 'venueCountry', 'venueCountryCode', 'venueLatitude', 'venueLongitude', 'venueGooglePlaceId', 'venueFormattedAddress', 'venueLocationVisibility', 'venueTimezone']) delete normalized[key];
     return normalized;
   }
   async richEvent(id, userId = null, role = null) {
@@ -498,7 +522,7 @@ export class Queries {
       e.pricing_type AS pricingType, e.participation_fee AS fee, e.currency, e.registration_type AS registrationType, e.external_registration_url AS externalRegistrationUrl,
       e.visibility, e.status, e.published_at AS publishedAt, e.created_at AS createdAt, e.updated_at AS updatedAt, u.name AS managerName,
       e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber,
-      e.venue_id AS venueId, e.custom_address_line_1 AS customAddressLine1, e.custom_address_line_2 AS customAddressLine2, e.custom_postal_code AS customPostalCode, e.custom_locality AS customLocality, e.custom_municipality AS customMunicipality, e.custom_region AS customRegion, e.custom_country AS customCountry, e.custom_country_code AS customCountryCode, e.custom_latitude AS customLatitude, e.custom_longitude AS customLongitude, e.custom_google_place_id AS customGooglePlaceId, e.custom_formatted_address AS customFormattedAddress, e.online_url AS onlineUrl, e.online_platform AS onlinePlatform,
+      e.venue_id AS venueId, v.timezone AS venueTimezone, e.custom_address_line_1 AS customAddressLine1, e.custom_address_line_2 AS customAddressLine2, e.custom_postal_code AS customPostalCode, e.custom_locality AS customLocality, e.custom_municipality AS customMunicipality, e.custom_region AS customRegion, e.custom_country AS customCountry, e.custom_country_code AS customCountryCode, e.custom_latitude AS customLatitude, e.custom_longitude AS customLongitude, e.custom_google_place_id AS customGooglePlaceId, e.custom_formatted_address AS customFormattedAddress, e.online_url AS onlineUrl, e.online_platform AS onlinePlatform,
       vb.id AS venueBookingId, vb.status AS venueBookingStatus, v.name AS venueName, v.business_name AS venueBusinessName, v.location AS venueLocation, v.address_line_1 AS venueAddressLine1, v.address_line_2 AS venueAddressLine2, v.postal_code AS venuePostalCode, v.city AS venueCity, v.municipality AS venueMunicipality, v.region AS venueRegion, v.country AS venueCountry, v.country_code AS venueCountryCode, v.latitude AS venueLatitude, v.longitude AS venueLongitude, v.google_place_id AS venueGooglePlaceId, v.formatted_address AS venueFormattedAddress, v.location_visibility AS venueLocationVisibility,
       (SELECT ROUND(AVG(rating), 2) FROM event_ratings WHERE event_id = e.id) AS ratingAverage, (SELECT COUNT(*) FROM event_ratings WHERE event_id = e.id) AS ratingCount,
       (SELECT rating FROM event_ratings WHERE event_id = e.id AND user_id = ?) AS myRating
@@ -510,7 +534,7 @@ export class Queries {
   async updateEventStatus(id, userId, status, role) { const globalAccess = ['manager', 'admin'].includes(role); const ownership = globalAccess ? '' : ' AND manager_id = ?'; const params = globalAccess ? [status, id] : [status, id, userId]; const [result] = await this.database.execute(`UPDATE events SET status = ? WHERE id = ?${ownership}`, params); return result.affectedRows > 0; }
   async registrations(eventId, managerId, isAdmin = false) { await this.database.execute("UPDATE event_registrations r JOIN events e ON e.id = r.event_id SET r.payment_status = CASE WHEN e.participation_fee > 0 THEN 'Payment Required' ELSE 'Not Required' END WHERE r.event_id = ? AND r.status <> 'Withdrawn' AND r.payment_status <> 'Paid'", [eventId]); const ownership = isAdmin ? '' : ' AND e.manager_id = ?'; const params = isAdmin ? [eventId] : [eventId, managerId]; const [rows] = await this.database.execute(`SELECT r.id, r.event_id AS eventId, r.user_id AS userId, r.status, r.payment_status AS paymentStatus, r.created_at AS createdAt, COALESCE(u.name, r.attendee_name) AS name, COALESCE(r.attendee_email, u.email) AS email, COALESCE(r.attendee_phone, u.phone) AS phone FROM event_registrations r JOIN events e ON e.id = r.event_id LEFT JOIN users u ON u.id = r.user_id WHERE r.event_id = ? AND r.status <> 'Withdrawn'${ownership} ORDER BY r.created_at DESC`, params); return rows; }
   async userRegistrations(userId) { const [rows] = await this.database.execute('SELECT r.id, r.event_id AS eventId, r.status, r.created_at AS createdAt, e.title, e.location, e.starts_at AS startsAt FROM event_registrations r JOIN events e ON e.id = r.event_id WHERE r.user_id = ? ORDER BY r.created_at DESC', [userId]); return rows; }
-  async registration(id, managerId) { const [rows] = await this.database.execute("SELECT r.id, r.event_id AS eventId, r.user_id AS userId, r.status, COALESCE(r.attendee_email, u.email) AS email, COALESCE(u.name, r.attendee_name) AS name, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity FROM event_registrations r JOIN events e ON e.id = r.event_id LEFT JOIN users u ON u.id = r.user_id WHERE r.id = ? AND r.status <> 'Withdrawn' AND e.manager_id = ?", [id, managerId]); return rows[0]; }
+  async registration(id, managerId) { const [rows] = await this.database.execute("SELECT r.id, r.event_id AS eventId, r.user_id AS userId, r.status, COALESCE(r.attendee_email, u.email) AS email, COALESCE(u.name, r.attendee_name) AS name, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone, e.capacity FROM event_registrations r JOIN events e ON e.id = r.event_id LEFT JOIN users u ON u.id = r.user_id WHERE r.id = ? AND r.status <> 'Withdrawn' AND e.manager_id = ?", [id, managerId]); return rows[0]; }
   async existingEventRegistration(eventId, userId = null, email = null) {
     const normalizedEmail = String(email || '').trim().toLowerCase();
     const lookupByUser = Number.isInteger(userId) && userId > 0;
@@ -535,12 +559,12 @@ export class Queries {
     );
     return rows[0] || null;
   }
-  async registerForEvent(eventId, userId, email) { const [event] = await this.database.execute('SELECT e.id, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity, e.status, manager.email AS managerEmail, manager.name AS managerName, (SELECT COUNT(*) FROM event_registrations WHERE event_id = ? AND status IN (\'Pending\', \'Confirmed\')) AS registered FROM events e JOIN users manager ON manager.id = e.manager_id WHERE e.id = ?', [eventId, eventId]); if (!event[0] || event[0].status !== 'Published') return { error: 'EVENT_UNAVAILABLE' }; const existing = await this.existingEventRegistration(eventId, userId, email); if (existing && !(existing.source === 'registration' && existing.status === 'Withdrawn')) return { error: 'ALREADY_REGISTERED' }; if (event[0].capacity !== null && event[0].registered >= event[0].capacity) return { error: 'EVENT_FULL' }; const normalizedEmail = String(email || '').trim().toLowerCase() || null; const id = existing ? existing.id : (await this.database.execute('INSERT INTO event_registrations (event_id, user_id, attendee_email, status) VALUES (?, ?, ?, \'Pending\')', [eventId, userId, normalizedEmail]))[0].insertId; if (existing) await this.database.execute("UPDATE event_registrations SET user_id = COALESCE(user_id, ?), attendee_email = ?, status = 'Pending', payment_status = CASE WHEN payment_status = 'Paid' THEN 'Paid' ELSE 'Payment Required' END WHERE id = ?", [userId, normalizedEmail, id]); await this.database.execute('DELETE i FROM event_invitations i JOIN users u ON LOWER(u.email) = LOWER(i.email) WHERE i.event_id = ? AND u.id = ? AND i.status = \'Pending\'', [eventId, userId]); return { id, ...event[0] }; }
+  async registerForEvent(eventId, userId, email) { const [event] = await this.database.execute('SELECT e.id, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone, e.capacity, e.status, manager.email AS managerEmail, manager.name AS managerName, (SELECT COUNT(*) FROM event_registrations WHERE event_id = ? AND status IN (\'Pending\', \'Confirmed\')) AS registered FROM events e JOIN users manager ON manager.id = e.manager_id WHERE e.id = ?', [eventId, eventId]); if (!event[0] || event[0].status !== 'Published') return { error: 'EVENT_UNAVAILABLE' }; const existing = await this.existingEventRegistration(eventId, userId, email); if (existing && !(existing.source === 'registration' && existing.status === 'Withdrawn')) return { error: 'ALREADY_REGISTERED' }; if (event[0].capacity !== null && event[0].registered >= event[0].capacity) return { error: 'EVENT_FULL' }; const normalizedEmail = String(email || '').trim().toLowerCase() || null; const id = existing ? existing.id : (await this.database.execute('INSERT INTO event_registrations (event_id, user_id, attendee_email, status) VALUES (?, ?, ?, \'Pending\')', [eventId, userId, normalizedEmail]))[0].insertId; if (existing) await this.database.execute("UPDATE event_registrations SET user_id = COALESCE(user_id, ?), attendee_email = ?, status = 'Pending', payment_status = CASE WHEN payment_status = 'Paid' THEN 'Paid' ELSE 'Payment Required' END WHERE id = ?", [userId, normalizedEmail, id]); await this.database.execute('DELETE i FROM event_invitations i JOIN users u ON LOWER(u.email) = LOWER(i.email) WHERE i.event_id = ? AND u.id = ? AND i.status = \'Pending\'', [eventId, userId]); return { id, ...event[0] }; }
   async updateRegistrationStatus(id, managerId, status, isAdmin = false) { const ownership = isAdmin ? '' : ' AND e.manager_id = ?'; const params = isAdmin ? [status, id] : [status, id, managerId]; const [result] = await this.database.execute(`UPDATE event_registrations r JOIN events e ON e.id = r.event_id SET r.status = ? WHERE r.id = ? AND r.status <> 'Withdrawn'${ownership}`, params); if (result.affectedRows && status === 'Confirmed') { const [registration] = await this.database.execute('SELECT r.event_id AS eventId, r.user_id AS userId, COALESCE(u.name, r.attendee_name) AS name, COALESCE(r.attendee_email, u.email) AS email, COALESCE(r.attendee_phone, u.phone) AS phone, r.payment_status AS paymentStatus FROM event_registrations r LEFT JOIN users u ON u.id = r.user_id WHERE r.id = ?', [id]); if (registration[0] && registration[0].name) { await this.database.execute('INSERT INTO event_participants (event_id, user_id, participant_name, participant_email, participant_phone, payment_status) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE participant_name = VALUES(participant_name), participant_email = VALUES(participant_email), participant_phone = VALUES(participant_phone), payment_status = VALUES(payment_status)', [registration[0].eventId, registration[0].userId, registration[0].name, registration[0].email, registration[0].phone, registration[0].paymentStatus]); await this.database.execute('DELETE FROM event_registrations WHERE id = ?', [id]); } } if (result.affectedRows && ['Cancelled', 'Declined', 'Withdrawn'].includes(status)) { const [registration] = await this.database.execute('SELECT event_id AS eventId, user_id AS userId, attendee_email AS email FROM event_registrations WHERE id = ?', [id]); if (registration[0]) await this.database.execute('DELETE FROM event_participants WHERE event_id = ? AND (user_id = ? OR (user_id IS NULL AND participant_email = ?))', [registration[0].eventId, registration[0].userId, registration[0].email]); } return result.affectedRows > 0; }
   async withdrawRegistration(id, userId) { const [result] = await this.database.execute('UPDATE event_registrations SET status = \'Withdrawn\' WHERE id = ? AND user_id = ? AND status NOT IN (\'Attended\', \'Withdrawn\')', [id, userId]); return result.affectedRows > 0; }
   async findActiveRegistrationForUser(eventId, userId) { const [rows] = await this.database.execute(`SELECT id, source FROM (SELECT r.id, 'registration' AS source FROM event_registrations r LEFT JOIN users u ON u.id = r.user_id WHERE r.event_id = ? AND r.status IN ('Pending', 'Confirmed') AND (r.user_id = ? OR (r.user_id IS NULL AND LOWER(r.attendee_email) = LOWER((SELECT email FROM users WHERE id = ?)))) UNION ALL SELECT p.id, 'participant' AS source FROM event_participants p LEFT JOIN users u ON u.id = p.user_id WHERE p.event_id = ? AND p.status = 'Pending' AND (p.user_id = ? OR (p.user_id IS NULL AND LOWER(p.participant_email) = LOWER((SELECT email FROM users WHERE id = ?))))) active_records LIMIT 1`, [eventId, userId, userId, eventId, userId, userId]); return rows[0] || null; }
   async markRegistrationWithdrawn(registration) { if (registration.source === 'participant') { const [result] = await this.database.execute('DELETE FROM event_participants WHERE id = ?', [registration.id]); return result.affectedRows > 0; } const [result] = await this.database.execute("UPDATE event_registrations SET status = 'Withdrawn' WHERE id = ? AND status IN ('Pending', 'Confirmed')", [registration.id]); return result.affectedRows > 0; }
-  async customerRegistration(id, userId) { const [rows] = await this.database.execute('SELECT r.id, u.email, u.name, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.capacity FROM event_registrations r JOIN users u ON u.id = r.user_id JOIN events e ON e.id = r.event_id WHERE r.id = ? AND r.user_id = ?', [id, userId]); return rows[0]; }
+  async customerRegistration(id, userId) { const [rows] = await this.database.execute('SELECT r.id, u.email, u.name, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone, e.capacity FROM event_registrations r JOIN users u ON u.id = r.user_id JOIN events e ON e.id = r.event_id WHERE r.id = ? AND r.user_id = ?', [id, userId]); return rows[0]; }
   async createInvitation(eventId, managerId, name, email) { const [event] = await this.database.execute('SELECT id, title, description, location, starts_at AS startsAt, ends_at AS endsAt, timezone FROM events WHERE id = ? AND manager_id = ?', [eventId, managerId]); if (!event[0]) return { error: 'EVENT_NOT_FOUND' }; const token = crypto.randomBytes(32).toString('hex'); const tokenHash = crypto.createHash('sha256').update(token).digest('hex'); try { await this.database.execute('INSERT INTO event_invitations (event_id, manager_id, name, email, token_hash, token_expires_at) VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))', [eventId, managerId, name, email, tokenHash]); return { ...event[0], invitationToken: token }; } catch (error) { if (error.code === 'ER_DUP_ENTRY') return { error: 'ALREADY_INVITED' }; throw error; } }
   async resendInvitation(eventId, invitationId, managerId) { const [rows] = await this.database.execute('SELECT i.id AS invitationId, i.name, i.email, e.id, e.title, e.description, e.location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone FROM event_invitations i JOIN events e ON e.id = i.event_id WHERE i.id = ? AND i.event_id = ? AND i.manager_id = ? AND i.status = \'Pending\'', [invitationId, eventId, managerId]); const invitation = rows[0]; if (!invitation) return null; const token = crypto.randomBytes(32).toString('hex'); const tokenHash = crypto.createHash('sha256').update(token).digest('hex'); await this.database.execute('UPDATE event_invitations SET token_hash = ?, token_expires_at = DATE_ADD(NOW(), INTERVAL 30 DAY) WHERE id = ?', [tokenHash, invitation.invitationId]); return { ...invitation, invitationToken: token }; }
   async invitations(eventId, managerId) { const [rows] = await this.database.execute('SELECT i.id, i.event_id AS eventId, i.name, i.email, i.status, i.created_at AS createdAt FROM event_invitations i WHERE i.event_id = ? AND i.manager_id = ? ORDER BY i.created_at DESC', [eventId, managerId]); return rows; }
@@ -804,6 +828,66 @@ export class Queries {
     const [result] = await this.database.execute('INSERT INTO organization_members (organization_id, user_id, role) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE role = VALUES(role)', [organizationId, userId, membershipRole]);
     return result.affectedRows > 0;
   }
+  async canManageOrganization(organizationId, userId, role) {
+    if (['manager', 'admin'].includes(role)) return true;
+    const member = await this.organizationMember(organizationId, userId);
+    return Boolean(member && ['owner', 'admin', 'manager'].includes(member.role));
+  }
+  async organizationBillingProfile(organizationId) {
+    const [rows] = await this.database.execute(`SELECT organization_id AS organizationId, legal_name AS legalName, organization_number AS organizationNumber,
+      vat_number AS vatNumber, billing_address_line_1 AS billingAddressLine1, billing_address_line_2 AS billingAddressLine2,
+      postal_code AS postalCode, city, country, billing_email AS billingEmail, bank_name AS bankName, bank_account AS bankAccount,
+      iban, bic, bankgiro, default_currency AS defaultCurrency, default_vat_rate AS defaultVatRate, invoice_prefix AS invoicePrefix,
+      next_invoice_number AS nextInvoiceNumber, payment_instructions AS paymentInstructions FROM organization_billing_profile WHERE organization_id=?`, [organizationId]);
+    return rows[0] || null;
+  }
+  async updateOrganizationBillingProfile(organizationId, userId, role, profile) {
+    if (!await this.canManageOrganization(organizationId, userId, role)) return false;
+    const [result] = await this.database.execute(`INSERT INTO organization_billing_profile (organization_id, legal_name, organization_number, vat_number,
+      billing_address_line_1, billing_address_line_2, postal_code, city, country, billing_email, bank_name, bank_account, iban, bic, bankgiro,
+      default_currency, default_vat_rate, invoice_prefix, payment_instructions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE legal_name=VALUES(legal_name), organization_number=VALUES(organization_number), vat_number=VALUES(vat_number),
+      billing_address_line_1=VALUES(billing_address_line_1), billing_address_line_2=VALUES(billing_address_line_2), postal_code=VALUES(postal_code),
+      city=VALUES(city), country=VALUES(country), billing_email=VALUES(billing_email), bank_name=VALUES(bank_name), bank_account=VALUES(bank_account),
+      iban=VALUES(iban), bic=VALUES(bic), bankgiro=VALUES(bankgiro), default_currency=VALUES(default_currency), default_vat_rate=VALUES(default_vat_rate),
+      invoice_prefix=VALUES(invoice_prefix), payment_instructions=VALUES(payment_instructions)`, [organizationId, profile.legalName, profile.organizationNumber, profile.vatNumber, profile.billingAddressLine1, profile.billingAddressLine2, profile.postalCode, profile.city, profile.country, profile.billingEmail, profile.bankName, profile.bankAccount, profile.iban, profile.bic, profile.bankgiro, profile.defaultCurrency, profile.defaultVatRate, profile.invoicePrefix, profile.paymentInstructions]);
+    return result.affectedRows > 0;
+  }
+  async canAccessInvoice(userId, role, invoiceId) {
+    if (['manager', 'admin'].includes(role)) return true;
+    const [rows] = await this.database.execute(`SELECT i.id FROM invoices i LEFT JOIN organization_members om
+      ON om.organization_id=i.seller_organization_id AND om.user_id=? WHERE i.id=? AND
+      (i.buyer_user_id=? OR om.role IN ('owner','admin','manager'))`, [userId, invoiceId, userId]);
+    return Boolean(rows[0]);
+  }
+  async invoice(invoiceId, userId, role) {
+    if (!await this.canAccessInvoice(userId, role, invoiceId)) return null;
+    const [rows] = await this.database.execute(`SELECT id, seller_organization_id AS sellerOrganizationId, buyer_user_id AS buyerUserId,
+      buyer_organization_id AS buyerOrganizationId, booking_id AS bookingId, invoice_number AS invoiceNumber, status, delivery_status AS deliveryStatus,
+      issue_date AS issueDate, due_date AS dueDate, currency, subtotal, tax_amount AS taxAmount, total_amount AS totalAmount,
+      pdf_generated_at AS pdfGeneratedAt, pdf_hash AS pdfHash, paid_at AS paidAt, manual_payment_reference AS manualPaymentReference,
+      manual_payment_method AS manualPaymentMethod, voided_at AS voidedAt, void_reason AS voidReason, created_at AS createdAt FROM invoices WHERE id=?`, [invoiceId]);
+    if (!rows[0]) return null;
+    const [items] = await this.database.execute(`SELECT id, description, quantity, unit, unit_price AS unitPrice, tax_rate AS taxRate,
+      subtotal, tax_amount AS taxAmount, total FROM invoice_items WHERE invoice_id=? ORDER BY id`, [invoiceId]);
+    return { ...rows[0], items };
+  }
+  async markInvoicePaid(invoiceId, userId, role, { paymentReference = null, paymentMethod }) {
+    const connection = await this.database.getConnection();
+    try { await connection.beginTransaction();
+      // Lock before authorization/state transition so simultaneous manual
+      // reconciliation produces one audit event.
+      const [rows] = await connection.execute(`SELECT i.id, i.status, i.seller_organization_id AS sellerOrganizationId FROM invoices i
+        WHERE i.id=? FOR UPDATE`, [invoiceId]);
+      const invoice = rows[0]; if (!invoice) { await connection.rollback(); return false; }
+      if (!['manager', 'admin'].includes(role)) { const [members] = await connection.execute(`SELECT role FROM organization_members
+        WHERE organization_id=? AND user_id=? AND role IN ('owner','admin','manager')`, [invoice.sellerOrganizationId, userId]); if (!members[0]) { await connection.rollback(); return false; } }
+      if (!['issued', 'sent', 'overdue'].includes(invoice.status)) { await connection.rollback(); return { error: 'INVALID_STATE' }; }
+      await connection.execute(`UPDATE invoices SET status='paid', paid_at=NOW(), paid_by_user_id=?, manual_payment_reference=?, manual_payment_method=? WHERE id=?`, [userId, paymentReference, paymentMethod, invoiceId]);
+      await connection.execute(`INSERT INTO invoice_history (invoice_id, action, previous_status, new_status, performed_by_user_id) VALUES (?, 'marked_paid', ?, 'paid', ?)`, [invoiceId, invoice.status, userId]);
+      await connection.commit(); return true;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
   async canManageVenue(id, userId, role) {
     if (['manager', 'admin'].includes(role)) return true;
     const [rows] = await this.database.execute(`SELECT v.id FROM venues v LEFT JOIN organization_members om ON om.organization_id = v.organization_id AND om.user_id = ? WHERE v.id = ? AND (v.owner_user_id = ? OR om.role IN ('owner','admin','manager'))`, [userId, id, userId]);
@@ -813,12 +897,180 @@ export class Queries {
     const [rows] = await this.database.execute('SELECT id, venue_id AS venueId, weekday, TIME_FORMAT(start_time, \'%H:%i\') AS startTime, TIME_FORMAT(end_time, \'%H:%i\') AS endTime FROM venue_availability WHERE venue_id = ? ORDER BY weekday, start_time', [venueId]);
     return rows;
   }
+  async venueTimezone(venueId) {
+    const [rows] = await this.database.execute('SELECT timezone FROM venues WHERE id = ?', [venueId]);
+    return rows[0] || null;
+  }
   async venueAvailabilityForDate(venueId, date) {
     const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
     const [venues] = await this.database.execute("SELECT id, timezone FROM venues WHERE id = ? AND is_active = TRUE AND moderation_status = 'approved'", [venueId]);
     if (!venues[0]) return null;
     const [slots] = await this.database.execute('SELECT TIME_FORMAT(start_time, \'%H:%i\') AS startTime, TIME_FORMAT(end_time, \'%H:%i\') AS endTime FROM venue_availability WHERE venue_id = ? AND weekday = ? ORDER BY start_time', [venueId, weekday]);
     return { venueId, date, timezone: venues[0].timezone, slots };
+  }
+  async venueBookingSettings(venueId) {
+    // Legacy venues get virtual defaults from their advertised price. Reading
+    // public availability must not create a database row.
+    const [rows] = await this.database.execute(`SELECT COALESCE(s.booking_mode, 'hourly') AS bookingMode,
+      COALESCE(s.slot_increment_minutes, 30) AS slotIncrementMinutes, COALESCE(s.minimum_booking_minutes, 30) AS minimumBookingMinutes,
+      s.maximum_booking_minutes AS maximumBookingMinutes, COALESCE(s.buffer_before_minutes, 0) AS bufferBeforeMinutes,
+      COALESCE(s.buffer_after_minutes, 0) AS bufferAfterMinutes, COALESCE(s.minimum_notice_hours, 0) AS minimumNoticeHours,
+      COALESCE(s.maximum_advance_days, 365) AS maximumAdvanceDays, COALESCE(s.currency, v.currency) AS currency,
+      COALESCE(s.hourly_rate, v.price_from) AS hourlyRate, s.daily_rate AS dailyRate, COALESCE(s.invoice_due_days, 30) AS invoiceDueDays
+      FROM venues v LEFT JOIN venue_booking_settings s ON s.venue_id=v.id WHERE v.id = ?`, [venueId]);
+    return rows[0] || null;
+  }
+  async updateVenueBookingSettings(venueId, userId, role, settings) {
+    if (!await this.canManageVenue(venueId, userId, role)) return false;
+    const [result] = await this.database.execute(`INSERT INTO venue_booking_settings (venue_id, booking_mode, slot_increment_minutes, minimum_booking_minutes,
+      maximum_booking_minutes, buffer_before_minutes, buffer_after_minutes, minimum_notice_hours, maximum_advance_days, currency, hourly_rate, daily_rate, invoice_due_days)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE booking_mode=VALUES(booking_mode),
+      slot_increment_minutes=VALUES(slot_increment_minutes), minimum_booking_minutes=VALUES(minimum_booking_minutes), maximum_booking_minutes=VALUES(maximum_booking_minutes),
+      buffer_before_minutes=VALUES(buffer_before_minutes), buffer_after_minutes=VALUES(buffer_after_minutes), minimum_notice_hours=VALUES(minimum_notice_hours),
+      maximum_advance_days=VALUES(maximum_advance_days), currency=VALUES(currency), hourly_rate=VALUES(hourly_rate), daily_rate=VALUES(daily_rate), invoice_due_days=VALUES(invoice_due_days)`,
+    [venueId, settings.bookingMode, settings.slotIncrementMinutes, settings.minimumBookingMinutes, settings.maximumBookingMinutes, settings.bufferBeforeMinutes, settings.bufferAfterMinutes, settings.minimumNoticeHours, settings.maximumAdvanceDays, settings.currency, settings.hourlyRate, settings.dailyRate, settings.invoiceDueDays]);
+    return result.affectedRows > 0;
+  }
+  async venueAvailabilityData(venueId, from, to) {
+    const [venues] = await this.database.execute('SELECT id, timezone, is_active AS isActive, moderation_status AS moderationStatus FROM venues WHERE id = ?', [venueId]);
+    if (!venues[0]) return null;
+    const venue = venues[0];
+    // Database DATETIME values are UTC instants. Query with venue-local day
+    // bounds converted to UTC, otherwise a booking near midnight is loaded
+    // for the wrong calendar day (or not loaded at all).
+    const rangeStart = localDateTimeToUtc(from, '00:00', venue.timezone, 'start');
+    const rangeEnd = localDateTimeToUtc(addDays(to, 1), '00:00', venue.timezone, 'start');
+    if (!rangeStart || !rangeEnd) return null;
+    const rangeStartUtc = rangeStart.toISOString().slice(0, 19).replace('T', ' ');
+    const rangeEndUtc = rangeEnd.toISOString().slice(0, 19).replace('T', ' ');
+    const [rules] = await this.database.execute(`SELECT day_of_week AS weekday, TIME_FORMAT(start_time, '%H:%i') AS startTime,
+      TIME_FORMAT(end_time, '%H:%i') AS endTime, is_active AS isActive FROM venue_availability_rules WHERE venue_id = ? ORDER BY day_of_week, start_time`, [venueId]);
+    const [overrideRows] = await this.database.execute(`SELECT o.id, o.date, o.override_type AS overrideType,
+      TIME_FORMAT(w.start_time, '%H:%i') AS startTime, TIME_FORMAT(w.end_time, '%H:%i') AS endTime
+      FROM venue_availability_overrides o LEFT JOIN venue_availability_override_windows w ON w.override_id=o.id
+      WHERE o.venue_id=? AND o.date BETWEEN ? AND ? ORDER BY o.date, w.start_time`, [venueId, from, to]);
+    const overrides = [...overrideRows.reduce((map, row) => {
+      if (!map.has(row.id)) map.set(row.id, { id: row.id, date: row.date, overrideType: row.overrideType, windows: [] });
+      if (row.startTime) map.get(row.id).windows.push({ startTime: row.startTime, endTime: row.endTime });
+      return map;
+    }, new Map()).values()];
+    const [blocks] = await this.database.execute(`SELECT start_at AS startAt, end_at AS endAt FROM venue_availability_blocks
+      WHERE venue_id=? AND start_at < ? AND end_at > ?`, [venueId, rangeEndUtc, rangeStartUtc]);
+    const [externalReservations] = await this.database.execute(`SELECT start_at AS startAt, end_at AS endAt FROM venue_external_reservations
+      WHERE venue_id=? AND cancelled_at IS NULL AND start_at < ? AND end_at > ?`, [venueId, rangeEndUtc, rangeStartUtc]);
+    const [bookingRows] = await this.database.execute(`SELECT booking_type AS bookingType, booking_date AS bookingDate, venue_timezone AS venueTimezone,
+      occupied_start_at AS startAt, occupied_end_at AS endAt, status FROM venue_bookings
+      WHERE venue_id=? AND status IN ('requested', 'pending', 'confirmed') AND ((booking_type='daily' AND booking_date BETWEEN ? AND ?) OR
+      (booking_type='hourly' AND occupied_start_at < ? AND occupied_end_at > ?))`, [venueId, from, to, rangeEndUtc, rangeStartUtc]);
+    // Compatibility for installations that still have a published event with
+    // venue_id but no venue_bookings record. The startup migration backfills
+    // these rows; retaining this query keeps availability correct during a
+    // rolling deployment and protects records that pre-date the migration.
+    const [legacyEventRows] = await this.database.execute(`SELECT 'hourly' AS bookingType, DATE(e.starts_at) AS bookingDate,
+      e.starts_at AS startAt, e.ends_at AS endAt, 'confirmed' AS status FROM events e
+      LEFT JOIN venue_bookings b ON b.event_id=e.id
+      WHERE e.venue_id=? AND e.deleted_at IS NULL AND e.status='Published' AND b.id IS NULL
+        AND e.starts_at < ? AND e.ends_at > ?`, [venueId, rangeEndUtc, rangeStartUtc]);
+    const bookings = [...bookingRows, ...legacyEventRows].flatMap((booking) => {
+      if (booking.bookingType !== 'daily') return [booking];
+      const date = booking.bookingDate instanceof Date ? booking.bookingDate.toISOString().slice(0, 10) : String(booking.bookingDate).slice(0, 10);
+      const bookingTimezone = booking.venueTimezone || venue.timezone;
+      const startAt = localDateTimeToUtc(date, '00:00', bookingTimezone, 'start');
+      const endAt = localDateTimeToUtc(addDays(date, 1), '00:00', bookingTimezone, 'start');
+      return startAt && endAt ? [{ ...booking, startAt, endAt }] : [];
+    });
+    return { venue, rules: rules.map((rule) => ({ ...rule, isActive: Boolean(rule.isActive) })), overrides, blocks, externalReservations, bookings };
+  }
+  async calculateVenueAvailability(venueId, from, to, { publicOnly = true } = {}) {
+    if (!isDateOnly(from) || !isDateOnly(to) || from > to) return null;
+    const data = await this.venueAvailabilityData(venueId, from, to);
+    if (!data || (publicOnly && (!data.venue.isActive || data.venue.moderationStatus !== 'approved'))) return null;
+    const settings = await this.venueBookingSettings(venueId);
+    return { venueId, timezone: data.venue.timezone, bookingMode: settings.bookingMode, slotIncrementMinutes: settings.slotIncrementMinutes,
+      minimumBookingMinutes: settings.minimumBookingMinutes, maximumBookingMinutes: settings.maximumBookingMinutes,
+      bufferBeforeMinutes: settings.bufferBeforeMinutes, bufferAfterMinutes: settings.bufferAfterMinutes,
+      currency: settings.currency, hourlyRate: settings.hourlyRate, dailyRate: settings.dailyRate,
+      dates: calculateAvailability({ from, to, timezone: data.venue.timezone, ...data }) };
+  }
+  async replaceVenueAvailabilityOverrides(venueId, userId, role, overrides) {
+    if (!await this.canManageVenue(venueId, userId, role)) return false;
+    const connection = await this.database.getConnection();
+    try { await connection.beginTransaction(); await connection.execute('SELECT id FROM venues WHERE id=? FOR UPDATE', [venueId]);
+      await connection.execute('DELETE FROM venue_availability_overrides WHERE venue_id=?', [venueId]);
+      for (const override of overrides) { const [result] = await connection.execute('INSERT INTO venue_availability_overrides (venue_id, date, override_type) VALUES (?, ?, ?)', [venueId, override.date, override.overrideType]);
+        for (const window of override.windows || []) await connection.execute('INSERT INTO venue_availability_override_windows (override_id, start_time, end_time) VALUES (?, ?, ?)', [result.insertId, window.startTime, window.endTime]); }
+      await connection.commit(); return true;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async venueCalendar(venueId, userId, role, from, to) {
+    if (!await this.canManageVenue(venueId, userId, role)) return null;
+    const availability = await this.calculateVenueAvailability(venueId, from, to, { publicOnly: false });
+    if (!availability) return null;
+    const rangeStart = localDateTimeToUtc(from, '00:00', availability.timezone, 'start');
+    const rangeEnd = localDateTimeToUtc(addDays(to, 1), '00:00', availability.timezone, 'start');
+    if (!rangeStart || !rangeEnd) return null;
+    const rangeStartUtc = rangeStart.toISOString().slice(0, 19).replace('T', ' ');
+    const rangeEndUtc = rangeEnd.toISOString().slice(0, 19).replace('T', ' ');
+    const [overrides] = await this.database.execute('SELECT id, date, override_type AS overrideType FROM venue_availability_overrides WHERE venue_id=? AND date BETWEEN ? AND ? ORDER BY date', [venueId, from, to]);
+    const [blocks] = await this.database.execute('SELECT id, start_at AS startAt, end_at AS endAt, reason, created_by_user_id AS createdByUserId FROM venue_availability_blocks WHERE venue_id=? AND start_at < ? AND end_at > ?', [venueId, rangeEndUtc, rangeStartUtc]);
+    const [externalReservations] = await this.database.execute('SELECT id, start_at AS startAt, end_at AS endAt, source, title, notes, cancelled_at AS cancelledAt FROM venue_external_reservations WHERE venue_id=? AND start_at < ? AND end_at > ?', [venueId, rangeEndUtc, rangeStartUtc]);
+    const [bookings] = await this.database.execute(`SELECT id, organizer_user_id AS organizerUserId, booking_type AS bookingType, booking_date AS bookingDate, venue_timezone AS venueTimezone, start_at AS startAt, end_at AS endAt, status, organizer_message AS organizerMessage FROM venue_bookings WHERE venue_id=? AND ((booking_type='daily' AND booking_date BETWEEN ? AND ?) OR (booking_type='hourly' AND start_at < ? AND end_at > ?))`, [venueId, from, to, rangeEndUtc, rangeStartUtc]);
+    return { timezone: availability.timezone, range: { from, to }, availability: availability.dates, overrides, blocks,
+      bookingRequests: bookings.filter((booking) => booking.status === 'requested'), confirmedBookings: bookings.filter((booking) => booking.status === 'confirmed'), externalReservations };
+  }
+  async checkBookingConflict({ venueId, bookingType = 'hourly', bookingDate = null, occupiedStartAt = null, occupiedEndAt = null, excludeBookingId = null, excludeExternalReservationId = null }, executor = this.database) {
+    const [venues] = await executor.execute('SELECT timezone FROM venues WHERE id=?', [venueId]);
+    if (!venues[0]) return { conflict: true, reason: 'VENUE_NOT_FOUND' };
+    const timezone = venues[0].timezone;
+    let start = occupiedStartAt ? new Date(occupiedStartAt) : null;
+    let end = occupiedEndAt ? new Date(occupiedEndAt) : null;
+    if (bookingType === 'daily' && bookingDate) {
+      start = localDateTimeToUtc(bookingDate, '00:00', timezone, 'start');
+      end = localDateTimeToUtc(addDays(bookingDate, 1), '00:00', timezone, 'start');
+    }
+    if (!start || !end || Number.isNaN(start) || Number.isNaN(end) || start >= end) return { conflict: true, reason: 'INVALID_INTERVAL' };
+    const [bookings] = await executor.execute(`SELECT id, booking_type AS bookingType, booking_date AS bookingDate, venue_timezone AS venueTimezone,
+      occupied_start_at AS startAt, occupied_end_at AS endAt FROM venue_bookings
+      WHERE venue_id=? AND status IN ('requested', 'pending', 'confirmed')${excludeBookingId ? ' AND id <> ?' : ''} FOR UPDATE`, excludeBookingId ? [venueId, excludeBookingId] : [venueId]);
+    const [reservations] = await executor.execute(`SELECT id, start_at AS startAt, end_at AS endAt FROM venue_external_reservations
+      WHERE venue_id=? AND cancelled_at IS NULL${excludeExternalReservationId ? ' AND id <> ?' : ''} FOR UPDATE`, excludeExternalReservationId ? [venueId, excludeExternalReservationId] : [venueId]);
+    const occupied = [...reservations, ...bookings.flatMap((booking) => {
+      if (booking.bookingType !== 'daily') return [booking];
+      const date = booking.bookingDate instanceof Date ? booking.bookingDate.toISOString().slice(0, 10) : String(booking.bookingDate).slice(0, 10);
+      const bookingTimezone = booking.venueTimezone || timezone;
+      const startAt = localDateTimeToUtc(date, '00:00', bookingTimezone, 'start');
+      const endAt = localDateTimeToUtc(addDays(date, 1), '00:00', bookingTimezone, 'start');
+      return startAt && endAt ? [{ ...booking, startAt, endAt }] : [];
+    })];
+    return { conflict: occupied.some((item) => start < new Date(item.endAt) && end > new Date(item.startAt)) };
+  }
+  async createVenueAvailabilityBlock(venueId, userId, role, block) {
+    if (!await this.canManageVenue(venueId, userId, role)) return null;
+    const [result] = await this.database.execute('INSERT INTO venue_availability_blocks (venue_id, start_at, end_at, reason, created_by_user_id) VALUES (?, ?, ?, ?, ?)', [venueId, block.startAt, block.endAt, block.reason, userId]);
+    return result.insertId;
+  }
+  async deleteVenueAvailabilityBlock(venueId, blockId, userId, role) {
+    if (!await this.canManageVenue(venueId, userId, role)) return false;
+    const [result] = await this.database.execute('DELETE FROM venue_availability_blocks WHERE id=? AND venue_id=?', [blockId, venueId]);
+    return result.affectedRows > 0;
+  }
+  async createExternalReservation(venueId, userId, role, reservation) {
+    if (!await this.canManageVenue(venueId, userId, role)) return { error: 'FORBIDDEN' };
+    const connection = await this.database.getConnection();
+    try { await connection.beginTransaction();
+      const [venues] = await connection.execute('SELECT id FROM venues WHERE id=? FOR UPDATE', [venueId]);
+      if (!venues[0]) { await connection.rollback(); return { error: 'NOT_FOUND' }; }
+      const checked = await this.checkBookingConflict({ venueId, occupiedStartAt: reservation.startAt, occupiedEndAt: reservation.endAt }, connection);
+      if (checked.conflict) { await connection.rollback(); return { error: checked.reason || 'CONFLICT' }; }
+      const [result] = await connection.execute(`INSERT INTO venue_external_reservations (venue_id, start_at, end_at, source, title, notes, created_by_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`, [venueId, reservation.startAt, reservation.endAt, reservation.source, reservation.title, reservation.notes, userId]);
+      await connection.commit(); return { id: result.insertId };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async cancelExternalReservation(venueId, reservationId, userId, role) {
+    if (!await this.canManageVenue(venueId, userId, role)) return false;
+    const [result] = await this.database.execute('UPDATE venue_external_reservations SET cancelled_at=NOW() WHERE id=? AND venue_id=? AND cancelled_at IS NULL AND start_at > NOW()', [reservationId, venueId]);
+    return result.affectedRows > 0;
   }
   async venueMedia(venueId) { const [rows] = await this.database.execute('SELECT id, filename, alt_text AS altText, caption, is_cover AS isCover, sort_order AS sortOrder, created_at AS createdAt FROM venue_media WHERE venue_id = ? ORDER BY is_cover DESC, sort_order, id', [venueId]); return rows.map((item) => ({ ...item, isCover: Boolean(item.isCover) })); }
   async addVenueMedia(venueId, filename, altText, caption, isCover) {
@@ -972,7 +1224,9 @@ export class Queries {
   }
   async replaceVenueAvailabilitySlots(venueId, slots = [], executor = this.database) {
     await executor.execute('DELETE FROM venue_availability WHERE venue_id = ?', [venueId]);
+    await executor.execute('DELETE FROM venue_availability_rules WHERE venue_id = ?', [venueId]);
     for (const slot of slots) await executor.execute('INSERT INTO venue_availability (venue_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)', [venueId, slot.weekday, slot.startTime, slot.endTime]);
+    for (const slot of slots) await executor.execute('INSERT INTO venue_availability_rules (venue_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?)', [venueId, slot.weekday, slot.startTime, slot.endTime]);
   }
   async venueBookingContext(eventId, venueId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
@@ -989,51 +1243,72 @@ export class Queries {
       const [events] = await connection.execute('SELECT starts_at AS startsAt, ends_at AS endsAt FROM events WHERE id = ? AND manager_id = ? AND deleted_at IS NULL FOR UPDATE', [eventId, organizerUserId]);
       const event = events[0];
       if (!event) { await connection.rollback(); return { error: 'EVENT_NOT_FOUND' }; }
-      const [venues] = await connection.execute('SELECT id FROM venues WHERE id = ? AND is_active = TRUE FOR UPDATE', [venueId]);
+      const [venues] = await connection.execute('SELECT id, timezone FROM venues WHERE id = ? AND is_active = TRUE FOR UPDATE', [venueId]);
       if (!venues[0]) { await connection.rollback(); return { error: 'VENUE_NOT_FOUND' }; }
       const [existing] = await connection.execute('SELECT id, status FROM venue_bookings WHERE event_id = ? FOR UPDATE', [eventId]);
-      if (existing[0] && ['pending', 'confirmed'].includes(existing[0].status)) { await connection.rollback(); return { error: 'EVENT_ALREADY_BOOKED' }; }
-      const [conflicts] = await connection.execute(`SELECT b.id FROM venue_bookings b JOIN events e ON e.id = b.event_id
-        WHERE b.venue_id = ? AND b.status IN ('pending', 'confirmed') AND e.deleted_at IS NULL AND e.starts_at < ? AND COALESCE(e.ends_at, e.starts_at) > ? FOR UPDATE`, [venueId, event.endsAt, event.startsAt]);
-      if (conflicts[0]) { await connection.rollback(); return { error: 'VENUE_UNAVAILABLE' }; }
+      if (existing[0] && ['requested', 'pending', 'confirmed'].includes(existing[0].status)) { await connection.rollback(); return { error: 'EVENT_ALREADY_BOOKED' }; }
+      const [settingsRows] = await connection.execute('SELECT buffer_before_minutes AS beforeMinutes, buffer_after_minutes AS afterMinutes, currency FROM venue_booking_settings WHERE venue_id=?', [venueId]);
+      const settings = settingsRows[0] || { beforeMinutes: 0, afterMinutes: 0, currency: 'SEK' };
+      const localStart = zonedDateTime(event.startsAt instanceof Date ? event.startsAt : `${String(event.startsAt).replace(' ', 'T').replace(/Z$/i, '')}Z`, venues[0].timezone);
+      if (!localStart) { await connection.rollback(); return { error: 'INVALID_EVENT_TIME' }; }
+      const occupiedStart = new Date(new Date(event.startsAt).getTime() - settings.beforeMinutes * 60 * 1000);
+      const occupiedEnd = new Date(new Date(event.endsAt).getTime() + settings.afterMinutes * 60 * 1000);
+      const conflict = await this.checkBookingConflict({ venueId, occupiedStartAt: occupiedStart, occupiedEndAt: occupiedEnd, excludeBookingId: existing[0]?.id || null }, connection);
+      if (conflict.conflict) { await connection.rollback(); return { error: 'VENUE_UNAVAILABLE' }; }
       let bookingId;
       if (existing[0]) {
-        await connection.execute("UPDATE venue_bookings SET venue_id = ?, organizer_user_id = ?, status = 'pending', owner_note = NULL WHERE id = ?", [venueId, organizerUserId, existing[0].id]);
+        await connection.execute("UPDATE venue_bookings SET venue_id=?, organizer_user_id=?, status='requested', owner_note=NULL, start_at=?, end_at=?, occupied_start_at=?, occupied_end_at=?, booking_date=?, venue_timezone=?, currency=? WHERE id=?", [venueId, organizerUserId, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, localStart.date, venues[0].timezone, settings.currency, existing[0].id]);
         bookingId = existing[0].id;
       } else {
-        const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, status) VALUES (?, ?, ?, 'pending')", [venueId, eventId, organizerUserId]);
+        const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, booking_type, booking_date, start_at, end_at, occupied_start_at, occupied_end_at, venue_timezone, currency, status) VALUES (?, ?, ?, 'hourly', ?, ?, ?, ?, ?, ?, ?, 'requested')", [venueId, eventId, organizerUserId, localStart.date, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, venues[0].timezone, settings.currency]);
         bookingId = result.insertId;
       }
       await connection.commit();
-      return { id: bookingId, status: 'pending' };
+      return { id: bookingId, status: 'requested' };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async eventVenueBooking(eventId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.venue_timezone AS timezone, b.booking_date AS bookingDate, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
       v.name AS venueName, v.location AS venueLocation, v.owner_user_id AS venueOwnerUserId
       FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id
       WHERE b.event_id = ? AND (${privileged ? 'TRUE' : 'e.manager_id = ? OR v.owner_user_id = ?'})`, privileged ? [eventId] : [eventId, userId, userId]);
-    return rows[0] || null;
+    return rows[0] ? { ...rows[0], startAt: utcTimestamp(rows[0].startAt), endAt: utcTimestamp(rows[0].endAt), occupiedStartAt: utcTimestamp(rows[0].occupiedStartAt), occupiedEndAt: utcTimestamp(rows[0].occupiedEndAt), createdAt: utcTimestamp(rows[0].createdAt), updatedAt: utcTimestamp(rows[0].updatedAt) } : null;
   }
   async venueBookings(venueId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
-      e.title AS eventTitle, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone AS eventTimezone, organizer.name AS organizerName
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+      e.title AS eventTitle, e.timezone AS eventTimezone, organizer.name AS organizerName
       FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id JOIN users organizer ON organizer.id = b.organizer_user_id
       WHERE b.venue_id = ?${privileged ? '' : ' AND v.owner_user_id = ?'} ORDER BY e.starts_at ASC`, privileged ? [venueId] : [venueId, userId]);
     return rows;
   }
   async reviewVenueBooking(bookingId, userId, role, status, ownerNote = null) {
-    const privileged = ['manager', 'admin'].includes(role);
-    const [result] = await this.database.execute(`UPDATE venue_bookings b JOIN venues v ON v.id = b.venue_id SET b.status = ?, b.owner_note = ?
-      WHERE b.id = ? AND b.status = 'pending'${privileged ? '' : ' AND v.owner_user_id = ?'}`, privileged ? [status, ownerNote, bookingId] : [status, ownerNote, bookingId, userId]);
-    return result.affectedRows > 0;
+    const connection = await this.database.getConnection();
+    try { await connection.beginTransaction();
+      const [rows] = await connection.execute(`SELECT b.venue_id AS venueId, b.organizer_user_id AS organizerUserId, b.currency, b.subtotal, b.tax_amount AS taxAmount, b.total_amount AS totalAmount,
+        b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, v.organization_id AS sellerOrganizationId
+        FROM venue_bookings b JOIN venues v ON v.id=b.venue_id LEFT JOIN organization_members om ON om.organization_id=v.organization_id AND om.user_id=?
+        WHERE b.id=? AND b.status IN ('requested','pending') AND (${['manager', 'admin'].includes(role) ? 'TRUE' : "v.owner_user_id=? OR om.role IN ('owner','admin','manager')"}) FOR UPDATE`, ['manager', 'admin'].includes(role) ? [userId, bookingId] : [userId, bookingId, userId]);
+      const booking = rows[0]; if (!booking) { await connection.rollback(); return false; }
+      await connection.execute('SELECT id FROM venues WHERE id=? FOR UPDATE', [booking.venueId]);
+      if (status === 'confirmed') { const conflict = await this.checkBookingConflict({ venueId: booking.venueId, occupiedStartAt: booking.occupiedStartAt, occupiedEndAt: booking.occupiedEndAt, excludeBookingId: bookingId }, connection); if (conflict.conflict) { await connection.rollback(); return { error: 'CONFLICT' }; } }
+      await connection.execute('UPDATE venue_bookings SET status=?, owner_note=?, venue_internal_note=?, confirmed_at=CASE WHEN ?=\'confirmed\' THEN NOW() ELSE confirmed_at END, confirmed_by=CASE WHEN ?=\'confirmed\' THEN ? ELSE confirmed_by END WHERE id=?', [status, ownerNote, ownerNote, status, status, userId, bookingId]);
+      let invoiceId = null;
+      if (status === 'confirmed' && booking.sellerOrganizationId) {
+        const [existingInvoice] = await connection.execute('SELECT id FROM invoices WHERE booking_id=? FOR UPDATE', [bookingId]);
+        if (existingInvoice[0]) invoiceId = existingInvoice[0].id;
+        else { const [invoice] = await connection.execute(`INSERT INTO invoices (seller_organization_id, buyer_user_id, booking_id, currency, subtotal, tax_amount, total_amount)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`, [booking.sellerOrganizationId, booking.organizerUserId, bookingId, booking.currency, booking.subtotal, booking.taxAmount, booking.totalAmount]);
+          invoiceId = invoice.insertId; await connection.execute(`INSERT INTO invoice_history (invoice_id, action, new_status, performed_by_user_id) VALUES (?, 'created', 'draft', ?)`, [invoiceId, userId]); }
+      }
+      await connection.commit(); return { invoiceId };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async cancelVenueBooking(eventId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
     const [result] = await this.database.execute(`UPDATE venue_bookings b JOIN events e ON e.id = b.event_id SET b.status = 'cancelled'
-      WHERE b.event_id = ? AND b.status IN ('pending', 'confirmed')${privileged ? '' : ' AND e.manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]);
+      WHERE b.event_id = ? AND b.status IN ('requested', 'pending', 'confirmed')${privileged ? '' : ' AND e.manager_id = ?'}`, privileged ? [eventId] : [eventId, userId]);
     return result.affectedRows > 0;
   }
   async createPrivacyRequest(request) {
