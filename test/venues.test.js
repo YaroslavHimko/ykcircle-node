@@ -122,10 +122,10 @@ test('creates an expanded venue with matching columns, values, and parameters', 
   const calls = [];
   const queries = new Queries({ execute: async (sql, parameters) => { calls.push({ sql, parameters }); return [{ insertId: 9 }]; } });
   queries.replaceVenueRelations = async () => {};
-  const data = { organizationId: 4, name: 'Demo', slug: 'demo', businessName: null, shortDescription: null, description: null, addressLine1: null, addressLine2: null, postalCode: null, country: 'Sweden', countryCode: 'SE', city: 'Nacka', municipality: null, region: null, latitude: null, longitude: null, googlePlaceId: null, formattedAddress: null, locationVisibility: 'exact', timezone: 'UTC', venueType: 'studio', capacityMin: null, capacityMax: 60, standingCapacity: 60, seatedCapacity: 30, diningCapacity: null, classroomCapacity: null, sizeSqm: 220, priceFrom: 1800, priceUnit: 'hour', currency: 'SEK', pricingDescription: null, minimumBookingHours: 2, websiteUrl: null, phone: null, contactEmail: null, availabilityType: 'calendar', houseRulesText: null, isActive: true, amenitySlugs: [], suitableEventTypeSlugs: [] };
+  const data = { organizationId: 4, billingProfileId: 5, name: 'Demo', slug: 'demo', businessName: null, shortDescription: null, description: null, addressLine1: null, addressLine2: null, postalCode: null, country: 'Sweden', countryCode: 'SE', city: 'Nacka', municipality: null, region: null, latitude: null, longitude: null, googlePlaceId: null, formattedAddress: null, locationVisibility: 'exact', timezone: 'UTC', venueType: 'studio', capacityMin: null, capacityMax: 60, standingCapacity: 60, seatedCapacity: 30, diningCapacity: null, classroomCapacity: null, sizeSqm: 220, priceFrom: 1800, priceUnit: 'hour', currency: 'SEK', pricingDescription: null, minimumBookingHours: 2, websiteUrl: null, phone: null, contactEmail: null, availabilityType: 'calendar', houseRulesText: null, isActive: true, amenitySlugs: [], suitableEventTypeSlugs: [] };
   assert.equal(await queries.createVenue(1, data), 9);
-  assert.equal(calls[0].parameters.length, 40);
-  assert.equal((calls[0].sql.match(/\?/g) || []).length, 40);
+  assert.equal(calls[0].parameters.length, 41);
+  assert.equal((calls[0].sql.match(/\?/g) || []).length, 41);
 });
 
 test('returns only the recurring venue hours for one requested date', async () => {

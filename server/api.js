@@ -523,7 +523,8 @@ export class Api {
       const nullableNumber = (value, fallback = null) => value === '' || value === null ? null : (value === undefined ? fallback : Number(value));
       const list = (value, fallback = []) => value === undefined ? fallback : (Array.isArray(value) ? [...new Set(value.map(venueSlug).filter(Boolean))] : null);
       const data = {
-        organizationId: body.organizationId === undefined ? existing.organizationId ?? null : Number(body.organizationId),
+        organizationId: existing.organizationId ?? null,
+        billingProfileId: nullableNumber(body.billingProfileId, existing.billingProfileId ?? null),
         name: String(body.name ?? existing.name ?? '').trim(),
         slug: venueSlug(body.slug ?? existing.slug ?? body.name ?? existing.name),
         businessName: String(body.businessName ?? existing.businessName ?? '').trim() || null,
@@ -553,7 +554,8 @@ export class Api {
         isActive: body.isActive ?? (existing.isActive == null ? true : Boolean(existing.isActive)),
       };
       const errors = {};
-      if (!existing.id && (!Number.isInteger(data.organizationId) || data.organizationId < 1)) errors.organizationId = 'A valid organizationId is required.';
+      if (data.billingProfileId !== null && (!Number.isInteger(data.billingProfileId) || data.billingProfileId < 1)) errors.billingProfileId = 'A valid billing profile is required.';
+      if (Number(data.priceFrom) > 0 && !data.billingProfileId) errors.billingProfileId = 'Choose a billing profile before listing a paid venue.';
       if (data.name.length < 2 || data.name.length > 160) errors.name = 'Venue name must be between 2 and 160 characters.';
       if (!data.slug || data.slug.length > 180) errors.slug = 'Venue slug must contain letters or numbers and be at most 180 characters.';
       if (!data.formattedAddress || data.formattedAddress.length > 500) errors.formattedAddress = 'A formatted address of up to 500 characters is required.';
@@ -934,7 +936,7 @@ export class Api {
     app.post('/api/venues', authenticate, requireVerifiedUser, requireVenueOwner, ...creationGuards, async (req, res) => {
       const { data, errors } = venueData(req.body);
       if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
-      try { await ensureTable(); const membership = await this.queries.organizationMember(data.organizationId, req.user.id); if (!['owner', 'admin', 'manager'].includes(membership?.role) && !['manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Organization manager access is required to create a venue.' }); const id = await this.queries.createVenue(req.user.id, data); return sendVenue(res, await this.queries.venue(id, req.user.id, req.user.role), 201); }
+      try { await ensureTable(); const profile = data.billingProfileId && await this.queries.billingProfile(data.billingProfileId, req.user.id, req.user.role); if (data.billingProfileId && !profile) return res.status(403).json({ error: 'Billing profile not found or not available to you.' }); data.organizationId = profile?.ownerOrganizationId || null; const id = await this.queries.createVenue(req.user.id, data); return sendVenue(res, await this.queries.venue(id, req.user.id, req.user.role), 201); }
       catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That venue slug is already in use.' }); console.error('Venue creation failed:', error.message); return res.status(500).json({ error: 'Unable to create venue.' }); }
     });
     app.post('/api/venues/:id/media', authenticate, requireVenueOwner, parseVenueImage, async (req, res) => {
@@ -1054,6 +1056,9 @@ export class Api {
         if (!existing) return res.status(404).json({ error: 'Venue not found or not managed by you.' });
         const { data, errors } = venueData(req.body, existing);
         if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
+        const profile = data.billingProfileId && await this.queries.billingProfile(data.billingProfileId, req.user.id, req.user.role);
+        if (data.billingProfileId && !profile) return res.status(403).json({ error: 'Billing profile not found or not available to you.' });
+        data.organizationId = profile?.ownerOrganizationId || null;
         if (!await this.queries.updateVenue(venueId, req.user.id, req.user.role, data)) return res.status(404).json({ error: 'Venue not found or not managed by you.' });
         return sendVenue(res, await this.queries.venue(venueId, req.user.id, req.user.role));
       } catch (error) { console.error('Venue update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue.' }); }

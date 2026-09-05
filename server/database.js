@@ -473,6 +473,7 @@ export class Database {
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venues (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         organization_id INT UNSIGNED NULL,
+        billing_profile_id INT UNSIGNED NULL,
         owner_user_id INT UNSIGNED NOT NULL,
         name VARCHAR(160) NOT NULL,
         slug VARCHAR(180) NOT NULL UNIQUE,
