@@ -23,7 +23,7 @@ test('rejects wildcard origins and invalid data-retention settings', () => {
   assert.throws(() => new Configuration(values({ retention: { invitationDays: 3651 } })), /Retention setting invitationDays/);
 });
 
-test('keeps grouped configuration and compatibility aliases in sync', () => {
+test('exposes configuration only through its grouped contract', () => {
   const config = new Configuration({
     ...values(),
     email: { from: { noReply: 'notices@example.test' }, urls: { login: 'https://ykcircle.test/sign-in' } },
@@ -33,12 +33,12 @@ test('keeps grouped configuration and compatibility aliases in sync', () => {
     },
   });
 
-  assert.equal(config.noReplyFrom, 'notices@example.test');
-  assert.equal(config.loginUrl, 'https://ykcircle.test/sign-in');
-  assert.equal(config.ftpArticles, config.ftp.articles);
+  assert.equal(config.email.from.noReply, 'notices@example.test');
+  assert.equal(config.email.urls.login, 'https://ykcircle.test/sign-in');
   assert.equal(config.ftp.articles.publicUrl, 'https://cdn.example.test/articles');
-  assert.equal(config.ftpVenues, config.ftp.venues);
   assert.equal(config.ftp.venues.publicUrl, 'https://cdn.example.test/venues');
+  assert.equal(config.noReplyFrom, undefined);
+  assert.equal(config.ftpVenues, undefined);
 });
 
 test('renders controller details into the current privacy notice', async () => {
@@ -51,12 +51,26 @@ test('renders controller details into the current privacy notice', async () => {
 });
 
 test('keeps Maps server credentials separate from browser configuration', () => {
-  const config = new Configuration({ ...values(), runtime: { ...values().runtime, maps: { enabled: true, browserApiKey: 'browser-key', serverApiKey: 'server-key', requiresConsent: true } } });
-  assert.deepEqual(config.runtime.maps, { enabled: true, browserApiKey: 'browser-key', serverApiKey: 'server-key', requiresConsent: true });
+  const previous = Object.fromEntries(['GOOGLE_MAPS_BROWSER_API_KEY', 'GOOGLE_MAPS_SERVER_API_KEY'].map((name) => [name, process.env[name]]));
+  delete process.env.GOOGLE_MAPS_BROWSER_API_KEY;
+  delete process.env.GOOGLE_MAPS_SERVER_API_KEY;
+  try {
+    const config = new Configuration({ ...values(), runtime: { ...values().runtime, maps: { enabled: true, browserApiKey: 'browser-key', serverApiKey: 'server-key', requiresConsent: true } } });
+    assert.deepEqual(config.runtime.maps, { enabled: true, browserApiKey: 'browser-key', serverApiKey: 'server-key', requiresConsent: true });
+  } finally {
+    for (const [name, value] of Object.entries(previous)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  }
 });
 
 test('rejects reusing a browser Maps key as a server key', () => {
-  assert.throws(() => new Configuration({ ...values(), runtime: { ...values().runtime, maps: { enabled: true, browserApiKey: 'same-key', serverApiKey: 'same-key' } } }), /must be separate/);
+  const previous = Object.fromEntries(['GOOGLE_MAPS_BROWSER_API_KEY', 'GOOGLE_MAPS_SERVER_API_KEY'].map((name) => [name, process.env[name]]));
+  delete process.env.GOOGLE_MAPS_BROWSER_API_KEY;
+  delete process.env.GOOGLE_MAPS_SERVER_API_KEY;
+  try {
+    assert.throws(() => new Configuration({ ...values(), runtime: { ...values().runtime, maps: { enabled: true, browserApiKey: 'same-key', serverApiKey: 'same-key' } } }), /must be separate/);
+  } finally {
+    for (const [name, value] of Object.entries(previous)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  }
 });
 
 test('uses Maps values supplied by the deployment environment over local configuration', () => {

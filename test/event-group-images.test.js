@@ -59,11 +59,7 @@ const startApi = async (t, { eventCoverVisible, groupForCover, user = null, init
   return { baseUrl: `http://127.0.0.1:${server.address().port}`, streamed };
 };
 
-// uploadEventCover() historically stores publicPath()/filename (a full path)
-// in cover_image, unlike venues/groups which store a bare filename. These two
-// pin that decorateEventImage reduces it to a filename before it becomes a
-// route param or a token payload - otherwise the URL doubles the upload path.
-test('a public event exposes a deployment-safe cover URL without doubling a legacy full-path cover_image', async (t) => {
+test('a public event exposes the URL for its stored cover filename', async (t) => {
   const app = express();
   app.use(express.json());
   new Api({
@@ -71,7 +67,7 @@ test('a public event exposes a deployment-safe cover URL without doubling a lega
     database: {},
     queries: {
       initialize: async () => {},
-      richEvent: async () => ({ id: 1, managerId: 7, status: 'Published', visibility: 'Public', coverImage: '/uploads/event-covers/event-1-1786906288459.png', groupId: null }),
+      richEvent: async () => ({ id: 1, managerId: 7, status: 'Published', visibility: 'Public', coverImage: 'event-1-1786906288459.png', groupId: null }),
       publicEventParticipants: async () => [],
     },
     emailService: {},
@@ -93,34 +89,7 @@ test('a public event exposes a deployment-safe cover URL without doubling a lega
   assert.equal(body.coverImageUrl, '/uploads/event-covers/event-1-1786906288459.png');
 });
 
-test('an event never returns a persisted localhost cover URL to the browser', async (t) => {
-  const app = express();
-  app.use(express.json());
-  new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: SECRET, maps: { enabled: false } } },
-    database: {},
-    queries: {
-      initialize: async () => {},
-      richEvent: async () => ({ id: 24, managerId: 7, status: 'Published', visibility: 'Public', coverImage: 'http://localhost:3001/api/media/event/signed-token/event-24-1788610761759.png', groupId: null }),
-      publicEventParticipants: async () => [],
-    },
-    emailService: {},
-    ftpService: ftp('/uploads/profiles'),
-    eventFtpService: ftp('/uploads/event-covers'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/group-covers'), articleFtpService: ftp('/uploads/article-images'),
-  }).register(app);
-  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))));
-  const baseUrl = `http://127.0.0.1:${server.address().port}`;
-
-  const response = await fetch(`${baseUrl}/api/events/24`);
-  const body = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(body.coverImage, '/uploads/event-covers/event-24-1788610761759.png');
-  assert.equal(body.coverImageUrl, '/uploads/event-covers/event-24-1788610761759.png');
-});
-
-test('a private draft event tokens the bare cover filename, not the stored full path', async (t) => {
+test('a private draft event tokens its stored cover filename', async (t) => {
   const app = express();
   app.use(express.json());
   const managerId = 7;
@@ -130,7 +99,7 @@ test('a private draft event tokens the bare cover filename, not the stored full 
     queries: {
       initialize: async () => {},
       findUserById: async (id) => (id === managerId ? { id: managerId, role: 'customer', sessionVersion: 1 } : null),
-      richEvent: async () => ({ id: 1, managerId, status: 'Draft', visibility: 'Private', coverImage: '/uploads/event-covers/event-1-1786906288459.png', groupId: null }),
+      richEvent: async () => ({ id: 1, managerId, status: 'Draft', visibility: 'Private', coverImage: 'event-1-1786906288459.png', groupId: null }),
       publicEventParticipants: async () => [],
       eventParticipantStatus: async () => null,
     },

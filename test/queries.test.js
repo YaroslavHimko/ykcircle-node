@@ -74,9 +74,8 @@ test('gates a draft event cover to its manager and uses binary filename comparis
 
   assert.deepEqual(await queries.eventCoverVisible('event-1-1786906288459.png', 7, 'customer'), { id: 1, publiclyVisible: false });
   assert.match(calls[0].sql, /BINARY e\.cover_image = BINARY \?/);
-  assert.match(calls[0].sql, /BINARY e\.cover_image LIKE CONCAT\(BINARY '%\/', BINARY \?\)/);
   assert.match(calls[0].sql, /e\.manager_id = \?/);
-  assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png', 'event-1-1786906288459.png', 7]);
+  assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png', 7]);
 });
 
 test('lets a site manager reach any event cover without an owner parameter', async () => {
@@ -89,7 +88,7 @@ test('lets a site manager reach any event cover without an owner parameter', asy
   });
 
   assert.deepEqual(await queries.eventCoverVisible('event-1-1786906288459.png', 99, 'admin'), { id: 1, publiclyVisible: true });
-  assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png', 'event-1-1786906288459.png']);
+  assert.deepEqual(calls[0].parameters, ['event-1-1786906288459.png']);
 });
 
 test('lists invoices only for the buyer or a managing seller member', async () => {
@@ -119,7 +118,7 @@ test('lists venue bookings for organization managers as well as the venue owner'
   assert.deepEqual(await queries.venueBookings(7, 15, 'venue_owner'), [{ id: 22, status: 'requested' }]);
   assert.match(calls[0].sql, /LEFT JOIN organization_members venue_member/);
   assert.match(calls[0].sql, /venue_member\.role IN \('owner','admin','manager'\)/);
-  assert.match(calls[0].sql, /ORDER BY CASE WHEN b\.status IN \('requested','pending'\) THEN 0 ELSE 1 END, b\.created_at DESC/);
+  assert.match(calls[0].sql, /ORDER BY CASE WHEN b\.status = 'requested' THEN 0 ELSE 1 END, b\.created_at DESC/);
   assert.deepEqual(calls[0].parameters, [15, 7, 15]);
 });
 
@@ -132,7 +131,7 @@ test('prorates an hourly venue rate when a booking is requested', async () => {
       if (sql.startsWith('SELECT starts_at AS startsAt')) return [[{ startsAt: '2026-10-10T10:00:00Z', endsAt: '2026-10-10T10:30:00Z' }]];
       if (sql.startsWith('SELECT id, timezone, price_from')) return [[{ id: 4, timezone: 'UTC', priceFrom: '1800.00', currency: 'SEK' }]];
       if (sql.startsWith('SELECT id, status FROM venue_bookings')) return [[]];
-      if (sql.startsWith('SELECT buffer_before_minutes')) return [[]];
+      if (sql.startsWith('SELECT buffer_before_minutes')) return [[{ beforeMinutes: 0, afterMinutes: 0, currency: 'SEK', hourlyRate: '1800.00' }]];
       if (sql.startsWith('SELECT timezone FROM venues')) return [[{ timezone: 'UTC' }]];
       if (sql.includes('SELECT id, booking_type AS bookingType')) return [[]];
       if (sql.includes('FROM venue_external_reservations')) return [[]];
@@ -195,8 +194,8 @@ test('keeps rich event location columns and values aligned', async () => {
     managerId: 1, title: 'Location test', locationType: 'custom', customFormattedAddress: 'Stockholm, Sweden', customLatitude: 59.3293, customLongitude: 18.0686,
   }, 1);
 
-  assert.equal(insert.values.length, 52);
-  assert.equal((insert.sql.match(/\?/g) || []).length, 52);
+  assert.equal(insert.values.length, 46);
+  assert.equal((insert.sql.match(/\?/g) || []).length, 46);
   assert.match(insert.sql, /venue_id, custom_address_line_1/);
   assert.match(insert.sql, /online_url, online_platform/);
 });

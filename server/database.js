@@ -181,7 +181,6 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, manager_id INT UNSIGNED NOT NULL,
         group_id INT UNSIGNED NULL, series_id INT UNSIGNED NULL, recurrence_frequency ENUM('none','daily','weekly','monthly') NOT NULL DEFAULT 'none', recurrence_interval SMALLINT UNSIGNED NOT NULL DEFAULT 1, recurrence_count SMALLINT UNSIGNED NOT NULL DEFAULT 1, occurrence_number SMALLINT UNSIGNED NOT NULL DEFAULT 1,
         title VARCHAR(200) NOT NULL, short_description VARCHAR(240) NULL, description TEXT NULL, cover_image VARCHAR(1024) NULL, category_id INT UNSIGNED NULL, type_id INT UNSIGNED NULL,
-        country VARCHAR(120) NULL, city VARCHAR(120) NULL, location VARCHAR(255) NULL, address VARCHAR(255) NULL, latitude DECIMAL(9,6) NULL, longitude DECIMAL(9,6) NULL,
         location_type ENUM('venue','custom','online') NOT NULL DEFAULT 'custom', location_visibility ENUM('public','registered','attendees_only','approximate') NOT NULL DEFAULT 'public',
         venue_id INT UNSIGNED NULL,
         custom_address_line_1 VARCHAR(255) NULL, custom_address_line_2 VARCHAR(255) NULL, custom_postal_code VARCHAR(32) NULL, custom_locality VARCHAR(120) NULL, custom_municipality VARCHAR(120) NULL, custom_region VARCHAR(120) NULL, custom_country VARCHAR(120) NULL, custom_country_code CHAR(2) NULL, custom_latitude DECIMAL(9,6) NULL, custom_longitude DECIMAL(9,6) NULL, custom_google_place_id VARCHAR(255) NULL, custom_formatted_address VARCHAR(500) NULL,
@@ -304,7 +303,7 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, slug VARCHAR(180) NOT NULL UNIQUE,
         author_user_id INT UNSIGNED NOT NULL, city VARCHAR(120) NOT NULL, city_slug VARCHAR(140) NOT NULL,
         post_type_id INT UNSIGNED NOT NULL, category_id INT UNSIGNED NOT NULL, subcategory_id INT UNSIGNED NULL,
-        group_id INT UNSIGNED NULL, event_id INT UNSIGNED NULL, title VARCHAR(180) NOT NULL, short_description VARCHAR(300) NOT NULL, body TEXT NULL,
+        group_id INT UNSIGNED NULL, title VARCHAR(180) NOT NULL, short_description VARCHAR(300) NOT NULL, body TEXT NULL,
         location_name VARCHAR(255) NULL, latitude DECIMAL(10,7) NULL, longitude DECIMAL(10,7) NULL,
         location_radius_km DECIMAL(6,2) NULL, attributes JSON NULL,
         external_event_name VARCHAR(255) NULL, external_event_url VARCHAR(1024) NULL, external_event_at DATETIME NULL,
@@ -313,13 +312,12 @@ export class Database {
         is_indexable BOOLEAN NOT NULL DEFAULT TRUE, expires_at DATETIME NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX community_post_public_index (status, visibility, is_indexable, city_slug, category_id, subcategory_id, expires_at),
-        INDEX community_post_author_index (author_user_id, status), INDEX (post_type_id), INDEX (group_id), INDEX (event_id),
+        INDEX community_post_author_index (author_user_id, status), INDEX (post_type_id), INDEX (group_id),
         CONSTRAINT community_post_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE,
         CONSTRAINT community_post_type_fk FOREIGN KEY (post_type_id) REFERENCES community_post_types(id),
         CONSTRAINT community_post_category_fk FOREIGN KEY (category_id) REFERENCES community_categories(id),
         CONSTRAINT community_post_subcategory_fk FOREIGN KEY (subcategory_id) REFERENCES community_categories(id),
-        CONSTRAINT community_post_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL,
-        CONSTRAINT community_post_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL
+        CONSTRAINT community_post_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_events (
         post_id INT UNSIGNED NOT NULL, event_id INT UNSIGNED NOT NULL, position INT UNSIGNED NOT NULL,
@@ -327,7 +325,6 @@ export class Database {
         CONSTRAINT community_post_events_post_fk FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
         CONSTRAINT community_post_events_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
       )`);
-      await this.pool.execute('INSERT IGNORE INTO community_post_events (post_id, event_id, position) SELECT id, event_id, 0 FROM community_posts WHERE event_id IS NOT NULL');
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS community_post_responses (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, post_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL,
         message VARCHAR(2000) NULL, status ENUM('active','accepted','declined','removed') NOT NULL DEFAULT 'active',
@@ -482,7 +479,6 @@ export class Database {
         business_name VARCHAR(160) NULL,
         short_description VARCHAR(400) NULL,
         description TEXT NULL,
-        location VARCHAR(255) NOT NULL,
         address_line_1 VARCHAR(255) NULL,
         address_line_2 VARCHAR(255) NULL,
         postal_code VARCHAR(32) NULL,
@@ -491,7 +487,6 @@ export class Database {
         city VARCHAR(120) NULL,
         municipality VARCHAR(120) NULL,
         region VARCHAR(120) NULL,
-        address VARCHAR(255) NULL,
         latitude DECIMAL(9,6) NULL,
         longitude DECIMAL(9,6) NULL,
         google_place_id VARCHAR(255) NULL,
@@ -529,18 +524,6 @@ export class Database {
         INDEX venues_public_discovery (is_active, moderation_status, city, venue_type_id),
         CONSTRAINT venues_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
-      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_availability (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        venue_id INT UNSIGNED NOT NULL,
-        weekday TINYINT UNSIGNED NOT NULL COMMENT '0 is Sunday and 6 is Saturday',
-        start_time TIME NOT NULL,
-        end_time TIME NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY venue_availability_slot (venue_id, weekday, start_time, end_time),
-        INDEX venue_availability_venue_day (venue_id, weekday),
-        CONSTRAINT venue_availability_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
-      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_media (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         venue_id INT UNSIGNED NOT NULL,
@@ -564,7 +547,7 @@ export class Database {
         -- booking_date is a venue-local calendar DATE; timestamp columns are UTC instants.
         booking_date DATE NULL, venue_timezone VARCHAR(64) NULL, start_at DATETIME NULL, end_at DATETIME NULL,
         occupied_start_at DATETIME NULL, occupied_end_at DATETIME NULL,
-        status ENUM('requested','confirmed','declined','cancelled','completed','pending') NOT NULL DEFAULT 'requested',
+        status ENUM('requested','confirmed','declined','cancelled','completed') NOT NULL DEFAULT 'requested',
         payment_status ENUM('unpaid','paid') NOT NULL DEFAULT 'unpaid', currency CHAR(3) NOT NULL DEFAULT 'SEK',
         subtotal DECIMAL(12,2) NOT NULL DEFAULT 0, tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
         organizer_message TEXT NULL, venue_internal_note TEXT NULL,
@@ -725,118 +708,8 @@ export class Database {
         starts_at DATETIME NOT NULL, ends_at DATETIME NOT NULL, status ENUM('draft','scheduled','active','paused','ended') NOT NULL DEFAULT 'draft', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX venue_promotions_active (status, starts_at, ends_at), CONSTRAINT venue_promotions_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
-      await this.migrateLocationSchema();
-      await this.migrateTimezonePreferences();
-      await this.migrateEventCoverImagePaths();
-      await this.migrateVenueBookingSchema();
     })();
     return this.initialized;
-  }
-
-  async columnExists(table, column) {
-    const [rows] = await this.pool.execute(`SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ? LIMIT 1`, [table, column]);
-    return Boolean(rows[0]);
-  }
-
-  async addColumnIfMissing(table, column, definition) {
-    if (!await this.columnExists(table, column)) await this.pool.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
-  }
-
-  async constraintExists(name) {
-    const [rows] = await this.pool.execute('SELECT 1 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND constraint_name = ? LIMIT 1', [name]);
-    return Boolean(rows[0]);
-  }
-
-  async migrateLocationSchema() {
-    // CREATE TABLE only affects new installations. Keep existing installations
-    // compatible by applying these additive migrations at startup.
-    const venueColumns = {
-      country_code: 'CHAR(2) NULL',
-      google_place_id: 'VARCHAR(255) NULL',
-      formatted_address: 'VARCHAR(500) NULL',
-    };
-    const eventColumns = {
-      venue_id: 'INT UNSIGNED NULL',
-      custom_address_line_1: 'VARCHAR(255) NULL', custom_address_line_2: 'VARCHAR(255) NULL', custom_postal_code: 'VARCHAR(32) NULL',
-      custom_locality: 'VARCHAR(120) NULL', custom_municipality: 'VARCHAR(120) NULL', custom_region: 'VARCHAR(120) NULL', custom_country: 'VARCHAR(120) NULL', custom_country_code: 'CHAR(2) NULL',
-      custom_latitude: 'DECIMAL(9,6) NULL', custom_longitude: 'DECIMAL(9,6) NULL', custom_google_place_id: 'VARCHAR(255) NULL', custom_formatted_address: 'VARCHAR(500) NULL',
-      online_url: 'VARCHAR(1024) NULL', online_platform: 'VARCHAR(120) NULL',
-    };
-    for (const [column, definition] of Object.entries(venueColumns)) await this.addColumnIfMissing('venues', column, definition);
-    for (const [column, definition] of Object.entries(eventColumns)) await this.addColumnIfMissing('events', column, definition);
-
-    // The old values have a clear physical equivalent. Keeping the conversion
-    // in the migration makes old event records valid under the new invariant.
-    await this.pool.execute("UPDATE events SET location_type = 'custom' WHERE location_type IN ('physical', 'tba')");
-    await this.pool.execute("ALTER TABLE events MODIFY COLUMN location_type ENUM('venue','custom','online') NOT NULL DEFAULT 'custom'");
-    await this.pool.execute("UPDATE venues SET location_visibility = 'private' WHERE location_visibility = 'private_until_booking'");
-    await this.pool.execute("ALTER TABLE venues MODIFY COLUMN location_visibility ENUM('exact','approximate','private') NOT NULL DEFAULT 'exact'");
-    // Existing installations may have been edited before this relation was
-    // introduced. Clear any orphan before adding the integrity constraint.
-    await this.pool.execute('UPDATE events e LEFT JOIN venues v ON v.id = e.venue_id SET e.venue_id = NULL WHERE e.venue_id IS NOT NULL AND v.id IS NULL');
-    if (!await this.constraintExists('events_venue_location_fk')) {
-      await this.pool.execute('ALTER TABLE events ADD CONSTRAINT events_venue_location_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE SET NULL');
-    }
-  }
-
-  async migrateTimezonePreferences() {
-    // A profile city is for discovery, never a source of time interpretation.
-    // Device mode is the privacy-preserving default for travelling users.
-    await this.addColumnIfMissing('users', 'timezone_display_mode', "ENUM('device','fixed') NOT NULL DEFAULT 'device'");
-    await this.addColumnIfMissing('users', 'preferred_timezone', 'VARCHAR(64) NULL');
-  }
-
-  async migrateEventCoverImagePaths() {
-    // Earlier development builds could persist a signed localhost media URL
-    // in events.cover_image. Keep only its filename; API responses construct
-    // the public or protected URL for the active deployment.
-    await this.pool.execute(`UPDATE events
-      SET cover_image = SUBSTRING_INDEX(SUBSTRING_INDEX(cover_image, '?', 1), '/', -1)
-      WHERE cover_image LIKE 'http://localhost:%' OR cover_image LIKE 'https://localhost:%'
-        OR cover_image LIKE 'http://127.0.0.1:%' OR cover_image LIKE 'https://127.0.0.1:%'
-        OR cover_image LIKE 'http://[::1]:%' OR cover_image LIKE 'https://[::1]:%'`);
-  }
-
-  async migrateVenueBookingSchema() {
-    // Existing installations used `pending` and derive times from events. Keep
-    // those records valid while adding the independent booking representation.
-    const columns = {
-      organizer_organization_id: 'INT UNSIGNED NULL', booking_source: "ENUM('ykcircle','external','internal') NOT NULL DEFAULT 'ykcircle'",
-      booking_type: "ENUM('hourly','daily') NOT NULL DEFAULT 'hourly'", booking_date: 'DATE NULL', start_at: 'DATETIME NULL', end_at: 'DATETIME NULL',
-      // Snapshot the venue zone used to interpret booking_date. Historical
-      // instants stay immutable if a venue later moves timezones.
-      venue_timezone: 'VARCHAR(64) NULL',
-      occupied_start_at: 'DATETIME NULL', occupied_end_at: 'DATETIME NULL', payment_status: "ENUM('unpaid','paid') NOT NULL DEFAULT 'unpaid'",
-      currency: "CHAR(3) NOT NULL DEFAULT 'SEK'", subtotal: 'DECIMAL(12,2) NOT NULL DEFAULT 0', tax_amount: 'DECIMAL(12,2) NOT NULL DEFAULT 0', total_amount: 'DECIMAL(12,2) NOT NULL DEFAULT 0',
-      organizer_message: 'TEXT NULL', venue_internal_note: 'TEXT NULL', confirmed_at: 'DATETIME NULL', confirmed_by: 'INT UNSIGNED NULL', cancelled_at: 'DATETIME NULL',
-    };
-    for (const [column, definition] of Object.entries(columns)) await this.addColumnIfMissing('venue_bookings', column, definition);
-    await this.pool.execute("UPDATE venue_bookings SET status = 'requested' WHERE status = 'pending'");
-    await this.pool.execute("ALTER TABLE venue_bookings MODIFY COLUMN status ENUM('requested','confirmed','declined','cancelled','completed','pending') NOT NULL DEFAULT 'requested'");
-    // Versions before owner review backfilled published events as confirmed.
-    // Those rows have no reviewer or owner note, unlike a real confirmation;
-    // reopen only that unambiguous legacy shape for owner review.
-    await this.pool.execute("UPDATE venue_bookings SET status='requested', confirmed_at=NULL, confirmed_by=NULL WHERE booking_source='ykcircle' AND status='confirmed' AND confirmed_by IS NULL AND owner_note IS NULL");
-    await this.pool.execute('ALTER TABLE venue_bookings MODIFY COLUMN event_id INT UNSIGNED NULL');
-    await this.pool.execute(`UPDATE venue_bookings b JOIN events e ON e.id = b.event_id JOIN venues v ON v.id = b.venue_id
-      SET b.start_at = COALESCE(b.start_at, e.starts_at), b.end_at = COALESCE(b.end_at, e.ends_at),
-      b.occupied_start_at = COALESCE(b.occupied_start_at, e.starts_at), b.occupied_end_at = COALESCE(b.occupied_end_at, e.ends_at),
-      b.booking_date = COALESCE(b.booking_date, DATE(e.starts_at)), b.venue_timezone = COALESCE(b.venue_timezone, v.timezone, 'UTC')
-      WHERE b.event_id IS NOT NULL`);
-    // A timed draft with a selected venue is an owner-reviewable booking
-    // request. Publishing must never turn it into a confirmed reservation.
-    // INSERT IGNORE makes this safe to run on every startup and preserves any
-    // manual review that has already happened.
-    await this.pool.execute(`INSERT IGNORE INTO venue_bookings
-      (venue_id, event_id, organizer_user_id, booking_source, booking_type, booking_date, venue_timezone, start_at, end_at, occupied_start_at, occupied_end_at, status, currency)
-      SELECT e.venue_id, e.id, e.manager_id, 'ykcircle', 'hourly', DATE(e.starts_at), v.timezone, e.starts_at, e.ends_at,
-        DATE_SUB(e.starts_at, INTERVAL COALESCE(settings.buffer_before_minutes, 0) MINUTE), DATE_ADD(e.ends_at, INTERVAL COALESCE(settings.buffer_after_minutes, 0) MINUTE),
-        'requested', COALESCE(settings.currency, v.currency, 'SEK')
-      FROM events e JOIN venues v ON v.id=e.venue_id LEFT JOIN venue_booking_settings settings ON settings.venue_id=v.id LEFT JOIN venue_bookings b ON b.event_id=e.id
-      WHERE e.venue_id IS NOT NULL AND e.deleted_at IS NULL AND e.status='Draft'
-        AND e.starts_at IS NOT NULL AND e.ends_at IS NOT NULL AND e.ends_at > e.starts_at AND b.id IS NULL`);
-    await this.pool.execute(`INSERT IGNORE INTO venue_availability_rules (venue_id, day_of_week, start_time, end_time)
-      SELECT venue_id, weekday, start_time, end_time FROM venue_availability`);
   }
 
   execute(...args) { return this.pool.execute(...args); }

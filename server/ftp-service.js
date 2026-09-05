@@ -106,8 +106,7 @@ export class FtpService {
   async uploadEventCover(eventId, file) {
     const extension = this.validateImage(file);
     const remoteName = `event-${eventId}-${Date.now()}.${extension}`;
-    const filename = await this.upload(file, remoteName);
-    return `${this.publicPath()}/${filename}`;
+    return this.upload(file, remoteName);
   }
 
   async uploadVenueImage(venueId, file) {

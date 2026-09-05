@@ -53,7 +53,7 @@ export function calculateAvailability({ from, to, timezone, rules, overrides, bl
     const nextDayStart = localDateTimeToUtc(addDays(date, 1), '00:00', timezone, 'start');
     const busy = mergeIntervals([
       ...blocks, ...externalReservations,
-      ...bookings.filter((booking) => ['requested', 'pending', 'confirmed'].includes(booking.status)),
+      ...bookings.filter((booking) => ['requested', 'confirmed'].includes(booking.status)),
     ].map((item) => ({ start: new Date(item.startAt), end: new Date(item.endAt) }))
       .filter((interval) => !Number.isNaN(interval.start) && !Number.isNaN(interval.end)
       && (!dayStart || !nextDayStart || (interval.start < nextDayStart && interval.end > dayStart))));

@@ -188,8 +188,7 @@ export class Configuration {
       maps: {
         enabled: mapsEnabled ?? (runtimeValues.maps?.enabled === true || values.maps?.enabled === true),
         browserApiKey: process.env.GOOGLE_MAPS_BROWSER_API_KEY ?? runtimeValues.maps?.browserApiKey ?? values.maps?.browserApiKey ?? null,
-        // This value deliberately has no compatibility alias and is never
-        // exposed through an API response.
+        // This value is never exposed through an API response.
         serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY ?? runtimeValues.maps?.serverApiKey ?? values.maps?.serverApiKey ?? null,
         requiresConsent: mapsRequiresConsent ?? (runtimeValues.maps?.requiresConsent === true || values.maps?.requiresConsent === true),
       },
@@ -221,37 +220,6 @@ export class Configuration {
     for (const [name, days] of Object.entries(this.runtime.retention)) {
       if (!Number.isInteger(days) || days < 1 || days > 3650) throw new Error(`Retention setting ${name} must be a whole number from 1 to 3650.`);
     }
-    this.allowedOrigins = this.runtime.allowedOrigins;
-
-    // Compatibility aliases for consumers that have not moved to grouped config yet.
-    this.domain = this.site.domain;
-    this.siteUrl = this.site.siteUrl;
-    this.apiUrl = this.site.apiUrl;
-    this.brandName = this.site.brandName;
-    this.smtp = this.email.smtp;
-    this.emailVerificationUrl = this.email.urls.verification;
-    this.passwordResetUrl = this.email.urls.passwordReset;
-    this.adminApplicationUrl = this.email.urls.application;
-    this.managerEventUrl = this.email.urls.managerEvent;
-    this.eventDetailsUrl = this.email.urls.eventDetails;
-    this.invitationResponseUrl = this.email.urls.invitationResponse;
-    this.groupInvitationUrl = this.email.urls.groupInvitation;
-    this.loginUrl = this.email.urls.login;
-    this.unsubscribeUrl = this.email.urls.unsubscribe;
-    this.unsubscribeEndpointUrl = this.email.urls.unsubscribeEndpoint;
-    this.noReplyFrom = this.email.from.noReply;
-    this.applicationNotificationFrom = this.email.from.applicationNotification;
-    this.invitationFrom = this.email.from.invitation;
-    this.authSecret = this.runtime.authSecret;
-    this.minimumUserAge = this.runtime.minimumUserAge;
-    this.paidEventsEnabled = this.runtime.paidEventsEnabled;
-    this.uploadsDir = this.runtime.uploadsDir;
-    this.port = this.runtime.port;
-    this.ftpProfilePictures = this.ftp.profilePictures;
-    this.ftpEvents = this.ftp.events;
-    this.ftpVenues = this.ftp.venues;
-    this.ftpGroups = this.ftp.groups;
-    this.ftpArticles = this.ftp.articles;
   }
 
   getAllowedOrigins() {
