@@ -869,6 +869,10 @@ export class Api {
       try { await ensureTable(); return res.json(await this.queries.managedOrganizations(req.user.id, req.user.role)); }
       catch (error) { console.error('Managed organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load businesses.' }); }
     });
+    app.get('/api/my/owned-organizations', authenticate, requireBusinessOwner, async (req, res) => {
+      try { await ensureTable(); return res.json(await this.queries.ownedRegisteredOrganizations(req.user.id)); }
+      catch (error) { console.error('Owned organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load your businesses.' }); }
+    });
     app.put('/api/organizations/:id/members/:userId', authenticate, requireVerifiedUser, async (req, res) => { const organizationId = Number(req.params.id); const userId = Number(req.params.userId); const role = String(req.body.role || ''); if (!Number.isInteger(organizationId) || !Number.isInteger(userId) || !['owner', 'admin', 'manager', 'staff'].includes(role)) return res.status(422).json({ error: 'A valid organization member and role are required.' }); try { await ensureTable(); if (!await this.queries.setOrganizationMember(organizationId, req.user.id, req.user.role, userId, role)) return res.status(403).json({ error: 'Organization owner or admin access is required.' }); return res.json({ organizationId, userId, role }); } catch (error) { console.error('Organization member update failed:', error.message); return res.status(500).json({ error: 'Unable to update organization member.' }); } });
     app.get('/api/organizations/:id/billing-profile', authenticate, requireBusinessOwner, async (req, res) => {
       const organizationId = Number(req.params.id); if (!Number.isInteger(organizationId) || organizationId < 1) return res.status(422).json({ error: 'A valid organization id is required.' });

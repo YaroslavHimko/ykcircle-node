@@ -859,8 +859,18 @@ export class Queries {
       o.phone, o.contact_email AS contactEmail, p.business_registration_status AS businessRegistrationStatus,
       p.legal_name AS legalName, member.role AS membershipRole
       FROM organizations o LEFT JOIN organization_members member ON member.organization_id=o.id AND member.user_id=?
-      LEFT JOIN organization_billing_profile p ON p.organization_id=o.id
+      JOIN organization_billing_profile p ON p.organization_id=o.id
       WHERE ${['manager', 'admin'].includes(role) ? 'TRUE' : "member.role IN ('owner','admin','manager')"}
+      ORDER BY o.name`, [userId]);
+    return rows;
+  }
+  async ownedRegisteredOrganizations(userId) {
+    const [rows] = await this.database.execute(`SELECT o.id, o.name, o.slug, o.description, o.website_url AS websiteUrl,
+      o.phone, o.contact_email AS contactEmail, p.business_registration_status AS businessRegistrationStatus,
+      p.legal_name AS legalName, member.role AS membershipRole
+      FROM organizations o
+      JOIN organization_members member ON member.organization_id=o.id AND member.user_id=? AND member.role='owner'
+      JOIN organization_billing_profile p ON p.organization_id=o.id
       ORDER BY o.name`, [userId]);
     return rows;
   }
