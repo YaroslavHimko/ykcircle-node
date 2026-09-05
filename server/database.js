@@ -727,6 +727,7 @@ export class Database {
       )`);
       await this.migrateLocationSchema();
       await this.migrateTimezonePreferences();
+      await this.migrateEventCoverImagePaths();
       await this.migrateVenueBookingSchema();
     })();
     return this.initialized;
@@ -783,6 +784,17 @@ export class Database {
     // Device mode is the privacy-preserving default for travelling users.
     await this.addColumnIfMissing('users', 'timezone_display_mode', "ENUM('device','fixed') NOT NULL DEFAULT 'device'");
     await this.addColumnIfMissing('users', 'preferred_timezone', 'VARCHAR(64) NULL');
+  }
+
+  async migrateEventCoverImagePaths() {
+    // Earlier development builds could persist a signed localhost media URL
+    // in events.cover_image. Keep only its filename; API responses construct
+    // the public or protected URL for the active deployment.
+    await this.pool.execute(`UPDATE events
+      SET cover_image = SUBSTRING_INDEX(SUBSTRING_INDEX(cover_image, '?', 1), '/', -1)
+      WHERE cover_image LIKE 'http://localhost:%' OR cover_image LIKE 'https://localhost:%'
+        OR cover_image LIKE 'http://127.0.0.1:%' OR cover_image LIKE 'https://127.0.0.1:%'
+        OR cover_image LIKE 'http://[::1]:%' OR cover_image LIKE 'https://[::1]:%'`);
   }
 
   async migrateVenueBookingSchema() {

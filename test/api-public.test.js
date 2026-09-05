@@ -136,11 +136,12 @@ test('does not publish an event until its selected venue confirms the booking', 
 test('creates a requested venue booking with a timed venue draft', async (t) => {
   const secret = 'a sufficiently random test secret that exceeds thirty two characters';
   const bookingCalls = [];
+  let createdDraft;
   const queries = {
     initialize: async () => {},
     findUserById: async () => ({ id: 7, role: 'organizer', sessionVersion: 1, isEmailConfirmed: true }),
     eventLocationVenue: async () => ({ id: 4, timezone: 'UTC' }),
-    createRichEventSeries: async () => ({ seriesId: null, eventIds: [12] }),
+    createRichEventSeries: async (draft) => { createdDraft = draft; return { seriesId: null, eventIds: [12] }; },
     requestVenueBooking: async (...args) => { bookingCalls.push(args); return { id: 22, status: 'requested' }; },
     richEvent: async () => ({ id: 12, title: 'Venue draft', coverImage: null }),
     eventVenueBooking: async () => ({ id: 22, venueId: 4, status: 'requested' }),
@@ -158,9 +159,10 @@ test('creates a requested venue booking with a timed venue draft', async (t) => 
 
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events/drafts`, {
     method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z', endsAtUtc: '2026-10-10T12:00:00Z' }),
+    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z', endsAtUtc: '2026-10-10T12:00:00Z', coverImage: 'http://localhost:3001/api/media/event/signed-token/event-12.png' }),
   });
   assert.equal(response.status, 201);
+  assert.equal(createdDraft.coverImage, 'event-12.png');
   assert.deepEqual(bookingCalls, [[12, 4, 7]]);
   assert.equal((await response.json()).venueBooking.status, 'requested');
 });
