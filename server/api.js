@@ -508,7 +508,7 @@ export class Api {
     const requireAdmin = (req, res, next) => req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required.' });
     // Any registered role can manage the events it owns.  Managers and admins
     // retain their broader access through the ownership checks in Queries.
-    const requireManager = (req, res, next) => ['customer', 'organizer', 'venue_owner', 'manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Event-management access required.' });
+    const requireManager = (req, res, next) => ['customer', 'organizer', 'venue_owner', 'business_owner', 'manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Event-management access required.' });
     // Events, like groups, can be created by any verified account.  The
     // database ownership checks on the individual operations ensure a user
     // can only administer events they created (unless they are a manager/admin).
@@ -517,6 +517,7 @@ export class Api {
     // Venue access is governed by organization membership and the ownership
     // checks in Queries.
     const requireVenueOwner = (req, res, next) => req.user.isEmailConfirmed ? next() : res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Verify your email before managing venues.' });
+    const requireBusinessOwner = (req, res, next) => ['business_owner', 'manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Business-owner approval is required.' });
     const supportedTimezone = isValidIanaTimezone;
     const venueSlug = (value) => String(value || '').trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     const venueData = (body, existing = {}) => {
@@ -864,17 +865,17 @@ export class Api {
       catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That organization slug is already in use.' }); console.error('Organization creation failed:', error.message); return res.status(500).json({ error: 'Unable to create organization.' }); }
     });
     app.get('/api/organizations/:id', optionalAuthenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid organization id is required.' }); try { await ensureTable(); const organization = await this.queries.organization(id, req.user?.id ?? null, req.user?.role ?? null); return organization ? res.json(organization) : res.status(404).json({ error: 'Organization not found.' }); } catch (error) { console.error('Organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load organization.' }); } });
-    app.get('/api/organizations/mine', authenticate, async (req, res) => {
+    app.get('/api/my/organizations', authenticate, requireBusinessOwner, async (req, res) => {
       try { await ensureTable(); return res.json(await this.queries.managedOrganizations(req.user.id, req.user.role)); }
       catch (error) { console.error('Managed organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load businesses.' }); }
     });
     app.put('/api/organizations/:id/members/:userId', authenticate, requireVerifiedUser, async (req, res) => { const organizationId = Number(req.params.id); const userId = Number(req.params.userId); const role = String(req.body.role || ''); if (!Number.isInteger(organizationId) || !Number.isInteger(userId) || !['owner', 'admin', 'manager', 'staff'].includes(role)) return res.status(422).json({ error: 'A valid organization member and role are required.' }); try { await ensureTable(); if (!await this.queries.setOrganizationMember(organizationId, req.user.id, req.user.role, userId, role)) return res.status(403).json({ error: 'Organization owner or admin access is required.' }); return res.json({ organizationId, userId, role }); } catch (error) { console.error('Organization member update failed:', error.message); return res.status(500).json({ error: 'Unable to update organization member.' }); } });
-    app.get('/api/organizations/:id/billing-profile', authenticate, async (req, res) => {
+    app.get('/api/organizations/:id/billing-profile', authenticate, requireBusinessOwner, async (req, res) => {
       const organizationId = Number(req.params.id); if (!Number.isInteger(organizationId) || organizationId < 1) return res.status(422).json({ error: 'A valid organization id is required.' });
       try { await ensureTable(); if (!await this.queries.canManageOrganization(organizationId, req.user.id, req.user.role)) return res.status(403).json({ error: 'Organization manager access is required.' }); const profile = await this.queries.organizationBillingProfile(organizationId); return profile ? res.json(profile) : res.status(404).json({ error: 'Billing profile not found.' }); }
       catch (error) { console.error('Billing profile lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load billing profile.' }); }
     });
-    app.put('/api/organizations/:id/billing-profile', authenticate, requireVerifiedUser, async (req, res) => {
+    app.put('/api/organizations/:id/billing-profile', authenticate, requireBusinessOwner, async (req, res) => {
       const organizationId = Number(req.params.id); const { data, errors } = businessBillingProfileData(req.body); if (!Number.isInteger(organizationId) || organizationId < 1 || Object.keys(errors).length) return res.status(422).json({ error: 'Billing profile is invalid.', fields: errors });
       try { await ensureTable(); if (!await this.queries.updateOrganizationBillingProfile(organizationId, req.user.id, req.user.role, data)) return res.status(403).json({ error: 'Organization manager access is required.' }); return res.json(await this.queries.organizationBillingProfile(organizationId)); }
       catch (error) { console.error('Billing profile update failed:', error.message); return res.status(500).json({ error: 'Unable to update billing profile.' }); }
@@ -1273,7 +1274,7 @@ export class Api {
       return res.json(await this.queries.applicationsForUser(req.user.email));
       } catch (error) { console.error('Application lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load applications.' }); }
     });
-    app.post('/api/business-applications', authenticate, requireVerifiedUser, async (req, res) => {
+    app.post('/api/business-applications', authenticate, requireBusinessOwner, async (req, res) => {
       const name = String(req.body.organizationName || req.body.name || '').trim(); const slug = venueSlug(req.body.slug || name); const { data: profile, errors } = businessBillingProfileData(req.body);
       if (name.length < 2 || name.length > 160 || !slug || slug.length > 180 || Object.keys(errors).length) return res.status(422).json({ error: 'Business application is invalid.', fields: { ...errors, ...(name.length < 2 || name.length > 160 ? { organizationName: 'Business name must be 2-160 characters.' } : {}) } });
       try { await ensureTable(); const application = await this.queries.createBusinessApplication(req.user.id, { name, slug, description: textField(req.body, 'description', 5000) }, profile); return res.status(201).json(await this.queries.businessApplication(application.id, req.user.id, req.user.role)); }
@@ -1282,6 +1283,25 @@ export class Api {
     app.get('/api/business-applications/me', authenticate, async (req, res) => {
       try { await ensureTable(); return res.json(await this.queries.businessApplicationForUser(req.user.id)); }
       catch (error) { console.error('Business application lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load business applications.' }); }
+    });
+    app.get('/api/business-owner-applications/me', authenticate, async (req, res) => {
+      try { await ensureTable(); const application = await this.queries.businessOwnerApplication(req.user.id); return application ? res.json(application) : res.status(404).json({ error: 'Business-owner enquiry not found.' }); }
+      catch (error) { console.error('Business-owner enquiry lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load business-owner enquiry.' }); }
+    });
+    app.post('/api/business-owner-applications', authenticate, requireVerifiedUser, async (req, res) => {
+      const message = req.body.message == null ? null : String(req.body.message).trim() || null; if (message?.length > 5000) return res.status(422).json({ error: 'The message must not exceed 5,000 characters.' });
+      try { await ensureTable(); return res.status(201).json(await this.queries.createBusinessOwnerApplication(req.user.id, message)); }
+      catch (error) { console.error('Business-owner enquiry creation failed:', error.message); return res.status(500).json({ error: 'Unable to submit business-owner enquiry.' }); }
+    });
+    app.get('/api/admin/business-owner-applications', authenticate, requireRoleManager, async (req, res) => {
+      const status = req.query.status == null ? null : String(req.query.status); if (status && !['pending', 'approved', 'declined'].includes(status)) return res.status(422).json({ error: 'Invalid business-owner enquiry status.' });
+      try { await ensureTable(); return res.json(await this.queries.businessOwnerApplications(status)); }
+      catch (error) { console.error('Business-owner enquiry lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load business-owner enquiries.' }); }
+    });
+    app.patch('/api/admin/business-owner-applications/:id/review', authenticate, requireRoleManager, async (req, res) => {
+      const id = Number(req.params.id); const status = String(req.body.status || ''); if (!Number.isInteger(id) || id < 1 || !['approved', 'declined'].includes(status)) return res.status(422).json({ error: 'A valid enquiry review is required.' });
+      try { await ensureTable(); const result = await this.queries.reviewBusinessOwnerApplication(id, status, req.user.id); if (result.error === 'NOT_FOUND') return res.status(404).json({ error: 'Business-owner enquiry not found.' }); if (result.error === 'USER_NOT_FOUND') return res.status(404).json({ error: 'Applicant user not found.' }); if (result.error === 'ROLE_NOT_ELIGIBLE') return res.status(409).json({ error: 'Manager and admin accounts cannot be reassigned as business owners.' }); return res.json({ message: `Business-owner enquiry ${status}.`, ...result }); }
+      catch (error) { console.error('Business-owner enquiry review failed:', error.message); return res.status(500).json({ error: 'Unable to review business-owner enquiry.' }); }
     });
     app.get('/api/admin/business-applications', authenticate, requireAdmin, async (req, res) => {
       const status = req.query.status == null ? null : String(req.query.status); if (status && !['draft', 'submitted', 'under_review', 'changes_requested', 'approved', 'rejected', 'suspended'].includes(status)) return res.status(422).json({ error: 'Invalid business application status.' });
@@ -1360,7 +1380,7 @@ export class Api {
         return res.json({ message: `Organizer application ${req.body.status.toLowerCase()}.`, status: result.status, role: req.body.status === 'Approved' ? 'organizer' : 'customer' });
       } catch (error) { console.error('Organizer application review failed:', error.message); return res.status(500).json({ error: 'Unable to review organizer application.' }); }
     });
-    app.patch('/api/admin/users/:id/role', authenticate, requireAdmin, async (req, res) => { if (!['customer', 'organizer', 'venue_owner', 'manager', 'admin'].includes(req.body.role)) return res.status(400).json({ error: 'Invalid user role.' }); try { await ensureTable(); if (!await this.queries.updateUserRole(req.params.id, req.body.role, req.user.role)) return res.status(404).json({ error: 'User not found.' }); return res.json({ message: 'User role updated.', role: req.body.role }); } catch (error) { return res.status(500).json({ error: 'Unable to update user role.' }); } });
+    app.patch('/api/admin/users/:id/role', authenticate, requireAdmin, async (req, res) => { if (!['customer', 'organizer', 'venue_owner', 'business_owner', 'manager', 'admin'].includes(req.body.role)) return res.status(400).json({ error: 'Invalid user role.' }); try { await ensureTable(); if (!await this.queries.updateUserRole(req.params.id, req.body.role, req.user.role)) return res.status(404).json({ error: 'User not found.' }); return res.json({ message: 'User role updated.', role: req.body.role }); } catch (error) { return res.status(500).json({ error: 'Unable to update user role.' }); } });
     app.get('/api/admin/users', authenticate, requireAdmin, async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.users()); } catch (error) { return res.status(500).json({ error: 'Unable to load users.' }); } });
     app.get('/api/manager/users', authenticate, requireRoleManager, async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.users()); } catch (error) { return res.status(500).json({ error: 'Unable to load users.' }); } });
     app.patch('/api/manager/users/:id/role', authenticate, requireRoleManager, async (req, res) => { if (req.body.role !== 'organizer') return res.status(400).json({ error: 'Managers can only assign the organizer role.' }); try { await ensureTable(); if (!await this.queries.updateUserRole(req.params.id, 'organizer', req.user.role)) return res.status(404).json({ error: 'Customer not found.' }); return res.json({ message: 'User role updated.', role: 'organizer' }); } catch (error) { return res.status(500).json({ error: 'Unable to update user role.' }); } });

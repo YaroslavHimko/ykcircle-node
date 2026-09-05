@@ -742,6 +742,31 @@ export class Queries {
       FROM venue_owner_applications a LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by_user_id WHERE a.user_id = ?`, [userId]);
     return rows[0] || null;
   }
+  async businessOwnerApplication(userId) {
+    const [rows] = await this.database.execute(`SELECT a.id, a.user_id AS userId, a.message, a.status, a.created_at AS createdAt,
+      a.updated_at AS updatedAt, a.reviewed_at AS reviewedAt, reviewer.name AS reviewerName
+      FROM business_owner_applications a LEFT JOIN users reviewer ON reviewer.id=a.reviewed_by_user_id WHERE a.user_id=?`, [userId]);
+    return rows[0] || null;
+  }
+  async createBusinessOwnerApplication(userId, message = null) {
+    await this.database.execute(`INSERT INTO business_owner_applications (user_id, message, status, reviewed_by_user_id, reviewed_at)
+      VALUES (?, ?, 'pending', NULL, NULL) ON DUPLICATE KEY UPDATE message=VALUES(message), status='pending', reviewed_by_user_id=NULL, reviewed_at=NULL`, [userId, message]);
+    return this.businessOwnerApplication(userId);
+  }
+  async businessOwnerApplications(status = null) {
+    const [rows] = await this.database.execute(`SELECT a.id, a.user_id AS userId, a.message, a.status, a.created_at AS createdAt,
+      a.updated_at AS updatedAt, a.reviewed_at AS reviewedAt, u.name AS userName, u.email AS userEmail, u.role AS userRole,
+      reviewer.name AS reviewerName FROM business_owner_applications a JOIN users u ON u.id=a.user_id
+      LEFT JOIN users reviewer ON reviewer.id=a.reviewed_by_user_id${status ? ' WHERE a.status=?' : ''} ORDER BY a.created_at DESC`, status ? [status] : []);
+    return rows;
+  }
+  async reviewBusinessOwnerApplication(id, status, reviewerId) {
+    const connection = await this.database.getConnection();
+    try { await connection.beginTransaction(); const [applications] = await connection.execute('SELECT user_id AS userId FROM business_owner_applications WHERE id=? FOR UPDATE', [id]); const application = applications[0]; if (!application) { await connection.rollback(); return { error: 'NOT_FOUND' }; }
+      if (status === 'approved') { const [users] = await connection.execute('SELECT role FROM users WHERE id=? FOR UPDATE', [application.userId]); if (!users[0]) { await connection.rollback(); return { error: 'USER_NOT_FOUND' }; } if (!['customer', 'organizer', 'venue_owner', 'business_owner'].includes(users[0].role)) { await connection.rollback(); return { error: 'ROLE_NOT_ELIGIBLE' }; } await connection.execute("UPDATE users SET role='business_owner' WHERE id=?", [application.userId]); }
+      await connection.execute('UPDATE business_owner_applications SET status=?, reviewed_by_user_id=?, reviewed_at=NOW() WHERE id=?', [status, reviewerId, id]); await connection.commit(); return { userId: application.userId, status, role: status === 'approved' ? 'business_owner' : null };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
   async createVenueOwnerApplication(userId, { businessName, message = null }) {
     await this.database.execute(`INSERT INTO venue_owner_applications (user_id, business_name, message, status, reviewed_by_user_id, reviewed_at)
       VALUES (?, ?, ?, 'pending', NULL, NULL)
@@ -1577,5 +1602,5 @@ export class Queries {
     return { generatedAt: new Date().toISOString(), user: user[0], legalAcceptances, marketingPreferences, eventRegistrations: registrations, groupMemberships: memberships, reports, forumMessages: { group: groupForumMessages, event: eventForumMessages } };
   }
   async users() { const [rows] = await this.database.execute('SELECT id, name, email, phone, role, isEmailConfirmed, created_at AS createdAt FROM users ORDER BY created_at DESC'); return rows; }
-  async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'venue_owner', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }
+  async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'venue_owner', 'business_owner', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }
 }

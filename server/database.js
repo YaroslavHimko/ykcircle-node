@@ -12,7 +12,7 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, profile_picture VARCHAR(1024),
         name VARCHAR(160) NOT NULL, email VARCHAR(255) NOT NULL UNIQUE,
         password_hash VARCHAR(255) NOT NULL, phone VARCHAR(40) NULL,
-        role ENUM('customer', 'organizer', 'venue_owner', 'manager', 'admin') NOT NULL DEFAULT 'customer', session_version INT UNSIGNED NOT NULL DEFAULT 0,
+        role ENUM('customer', 'organizer', 'venue_owner', 'business_owner', 'manager', 'admin') NOT NULL DEFAULT 'customer', session_version INT UNSIGNED NOT NULL DEFAULT 0,
         isEmailConfirmed BOOLEAN NOT NULL DEFAULT FALSE,
         verification_token_hash CHAR(64) NULL, verification_expires_at DATETIME NULL,
         verification_resend_available_at DATETIME NULL, deleted_at DATETIME NULL,
@@ -656,6 +656,14 @@ export class Database {
         CONSTRAINT business_applications_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE RESTRICT,
         CONSTRAINT business_applications_applicant_fk FOREIGN KEY (applicant_user_id) REFERENCES users(id) ON DELETE RESTRICT,
         CONSTRAINT business_applications_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS business_owner_applications (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NOT NULL UNIQUE, message TEXT NULL,
+        status ENUM('pending','approved','declined') NOT NULL DEFAULT 'pending', reviewed_by_user_id INT UNSIGNED NULL,
+        reviewed_at DATETIME NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX business_owner_application_status (status, created_at),
+        CONSTRAINT business_owner_application_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT business_owner_application_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS billing_profiles (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, owner_user_id INT UNSIGNED NOT NULL, owner_organization_id INT UNSIGNED NULL,
