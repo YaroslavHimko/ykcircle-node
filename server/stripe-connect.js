@@ -10,6 +10,21 @@ const asForm = (value, prefix = '', target = new URLSearchParams()) => {
   return target;
 };
 
+const stripeCountryCode = (country) => {
+  const value = String(country || '').trim();
+  if (/^[A-Za-z]{2}$/.test(value)) return value.toUpperCase();
+  const countries = {
+    australia: 'AU', austria: 'AT', belgium: 'BE', brazil: 'BR', bulgaria: 'BG', canada: 'CA', croatia: 'HR', cyprus: 'CY',
+    czechia: 'CZ', 'czech republic': 'CZ', denmark: 'DK', estonia: 'EE', finland: 'FI', france: 'FR', germany: 'DE',
+    gibraltar: 'GI', greece: 'GR', 'hong kong': 'HK', hungary: 'HU', india: 'IN', indonesia: 'ID', ireland: 'IE', italy: 'IT',
+    japan: 'JP', latvia: 'LV', liechtenstein: 'LI', lithuania: 'LT', luxembourg: 'LU', malaysia: 'MY', malta: 'MT', mexico: 'MX',
+    netherlands: 'NL', 'new zealand': 'NZ', norway: 'NO', poland: 'PL', portugal: 'PT', romania: 'RO', singapore: 'SG',
+    slovakia: 'SK', slovenia: 'SI', spain: 'ES', sweden: 'SE', switzerland: 'CH', thailand: 'TH', 'united arab emirates': 'AE',
+    'united kingdom': 'GB', uk: 'GB', 'united states': 'US', usa: 'US', us: 'US',
+  };
+  return countries[value.toLowerCase()] || null;
+};
+
 export class StripeConnectService {
   constructor(stripe = {}) {
     this.secretKey = stripe.secretKey || null;
@@ -31,8 +46,14 @@ export class StripeConnectService {
   }
 
   async createConnectedAccount(profile) {
+    const country = stripeCountryCode(profile.country);
+    if (!country) {
+      const error = new Error('Choose a supported country before starting payment onboarding.');
+      error.code = 'UNSUPPORTED_STRIPE_COUNTRY';
+      throw error;
+    }
     return this.request('/accounts', {
-      type: 'express', country: profile.country, email: profile.billingEmail,
+      type: 'express', country, email: profile.billingEmail,
       business_type: profile.profileType === 'organization' ? 'company' : 'individual',
       business_profile: { name: profile.legalName },
       capabilities: { card_payments: { requested: true }, transfers: { requested: true } },

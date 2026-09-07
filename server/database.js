@@ -694,7 +694,7 @@ export class Database {
         paid_at DATETIME NULL, paid_by_user_id INT UNSIGNED NULL, manual_payment_reference VARCHAR(255) NULL,
         manual_payment_method ENUM('bank_transfer','swish','cash','other') NULL, voided_at DATETIME NULL, voided_by INT UNSIGNED NULL, void_reason TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY invoice_number_per_profile (seller_billing_profile_id, invoice_number), INDEX invoices_booking (booking_id),
+        UNIQUE KEY invoice_number_per_profile (seller_billing_profile_id, invoice_number), INDEX invoices_seller (seller_organization_id), INDEX invoices_booking (booking_id),
         CONSTRAINT invoices_seller_fk FOREIGN KEY (seller_organization_id) REFERENCES organizations(id) ON DELETE RESTRICT,
         CONSTRAINT invoices_buyer_fk FOREIGN KEY (buyer_user_id) REFERENCES users(id) ON DELETE SET NULL,
         CONSTRAINT invoices_buyer_billing_profile_fk FOREIGN KEY (buyer_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
@@ -885,7 +885,12 @@ export class Database {
       await this.ensureColumn('platform_orders', 'checkout_idempotency_key', 'VARCHAR(128) NULL');
       // Invoice numbers belong to a legal seller profile, not to an
       // organization. Retiring this index does not alter legacy numbers.
-      if (await this.hasIndex('invoices', 'invoice_number_per_seller')) await this.pool.execute('ALTER TABLE invoices DROP INDEX invoice_number_per_seller');
+      if (await this.hasIndex('invoices', 'invoice_number_per_seller')) {
+        // The legacy composite key may be the index MySQL chose for
+        // invoices_seller_fk. Keep an explicit replacement before removing it.
+        if (!await this.hasIndex('invoices', 'invoices_seller')) await this.pool.execute('ALTER TABLE invoices ADD INDEX invoices_seller (seller_organization_id)');
+        await this.pool.execute('ALTER TABLE invoices DROP INDEX invoice_number_per_seller');
+      }
       if (!await this.hasIndex('invoices', 'invoice_number_per_profile')) await this.pool.execute('ALTER TABLE invoices ADD UNIQUE KEY invoice_number_per_profile (seller_billing_profile_id, invoice_number)');
       if (!await this.hasIndex('platform_orders', 'platform_order_idempotency')) await this.pool.execute('ALTER TABLE platform_orders ADD UNIQUE KEY platform_order_idempotency (buyer_user_id, checkout_idempotency_key)');
     })();

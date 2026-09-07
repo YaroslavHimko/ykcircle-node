@@ -122,7 +122,7 @@ test('lists venue bookings for organization managers as well as the venue owner'
   assert.deepEqual(calls[0].parameters, [15, 7, 15]);
 });
 
-test('prorates an hourly venue rate when a booking is requested', async () => {
+test('uses the default billing profile and prorates an hourly venue booking', async () => {
   const calls = [];
   const connection = {
     beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {},
@@ -142,7 +142,8 @@ test('prorates an hourly venue rate when a booking is requested', async () => {
   };
   const queries = new Queries({ execute: async () => [[]], getConnection: async () => connection });
 
-  assert.deepEqual(await queries.requestVenueBooking(12, 4, 7, 'organizer', 51), { id: 22, status: 'requested' });
+  assert.deepEqual(await queries.requestVenueBooking(12, 4, 7, 'organizer'), { id: 22, status: 'requested' });
+  assert.ok(calls.some((call) => call.sql.includes('ORDER BY p.is_default DESC')));
   const insert = calls.find((call) => call.sql.startsWith('INSERT INTO venue_bookings'));
   assert.match(insert.sql, /subtotal, tax_amount, total_amount/);
   assert.equal(insert.parameters.at(-2), 900);

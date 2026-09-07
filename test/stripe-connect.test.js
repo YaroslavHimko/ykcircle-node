@@ -30,6 +30,16 @@ test('formats a direct-charge Checkout request without exposing credentials in i
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test('converts billing-profile country names to Stripe country codes for connected accounts', async () => {
+  const service = new StripeConnectService({ secretKey: 'sk_test_123' });
+  const originalFetch = globalThis.fetch; let seen;
+  globalThis.fetch = async (_url, options) => { seen = options; return { ok: true, json: async () => ({ id: 'acct_1' }) }; };
+  try {
+    await service.createConnectedAccount({ country: 'Sweden', billingEmail: 'seller@example.test', profileType: 'individual', legalName: 'Example Seller' });
+    assert.match(seen.body, /country=SE/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('uses the platform account for platform Checkout and preserves checkout idempotency', async () => {
   const service = new StripeConnectService({ secretKey: 'sk_test_123' });
   const originalFetch = globalThis.fetch; let seen;

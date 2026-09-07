@@ -1738,8 +1738,21 @@ export class Queries {
       const paidBooking = subtotal > 0;
       let buyerProfileId = null;
       if (paidBooking) {
-        if (!Number.isInteger(Number(buyerBillingProfileId))) { await connection.rollback(); return { error: 'BILLING_PROFILE_REQUIRED' }; }
-        const profile = await this.billingProfile(Number(buyerBillingProfileId), organizerUserId, role, connection);
+        let profileId = Number(buyerBillingProfileId);
+        // Existing event editors did not send a billing-profile id with the
+        // booking request. Prefer the account's default active profile so a
+        // paid venue continues to receive its requested booking; an explicit
+        // id remains authoritative when the organizer selected one.
+        if (!Number.isInteger(profileId) || profileId < 1) {
+          const privileged = ['manager', 'admin'].includes(role);
+          const [profiles] = await connection.execute(`SELECT p.id FROM billing_profiles p
+            LEFT JOIN organization_members member ON member.organization_id=p.owner_organization_id AND member.user_id=?
+            WHERE p.is_active=TRUE AND (p.owner_user_id=? OR member.role IN ('owner','admin') OR ${privileged ? 'TRUE' : 'FALSE'})
+            ORDER BY p.is_default DESC, p.updated_at DESC LIMIT 1`, [organizerUserId, organizerUserId]);
+          profileId = Number(profiles[0]?.id);
+        }
+        if (!Number.isInteger(profileId) || profileId < 1) { await connection.rollback(); return { error: 'BILLING_PROFILE_REQUIRED' }; }
+        const profile = await this.billingProfile(profileId, organizerUserId, role, connection);
         if (!profile) { await connection.rollback(); return { error: 'BILLING_PROFILE_UNAVAILABLE' }; }
         buyerProfileId = profile.id;
       }
