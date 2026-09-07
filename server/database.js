@@ -68,8 +68,12 @@ export class Database {
         version VARCHAR(64) NOT NULL,
         accepted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         source VARCHAR(80) NOT NULL DEFAULT 'registration',
+        context_type VARCHAR(64) NULL,
+        context_id VARCHAR(128) NULL,
+        organization_id INT UNSIGNED NULL,
         UNIQUE KEY user_legal_acceptance (user_id, document_type, version),
         INDEX user_legal_lookup (user_id, document_type, accepted_at),
+        INDEX user_legal_context_lookup (user_id, document_type, context_type, context_id, organization_id, accepted_at),
         CONSTRAINT user_legal_acceptance_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS marketing_email_preferences (
@@ -883,6 +887,18 @@ export class Database {
       await this.ensureColumn('invoices', 'context_id', 'VARCHAR(128) NULL');
       await this.ensureColumn('invoices', 'invoice_series_id', 'INT UNSIGNED NULL');
       await this.ensureColumn('platform_orders', 'checkout_idempotency_key', 'VARCHAR(128) NULL');
+      // This is additive for historic acceptance evidence. The old unique key
+      // prevented us from retaining a second acceptance for the same version
+      // in a distinct Event, Venue, Organization, booking, or order context.
+      await this.ensureColumn('user_legal_acceptances', 'context_type', 'VARCHAR(64) NULL');
+      await this.ensureColumn('user_legal_acceptances', 'context_id', 'VARCHAR(128) NULL');
+      await this.ensureColumn('user_legal_acceptances', 'organization_id', 'INT UNSIGNED NULL');
+      if (await this.hasIndex('user_legal_acceptances', 'user_legal_acceptance')) {
+        await this.pool.execute('ALTER TABLE user_legal_acceptances DROP INDEX user_legal_acceptance');
+      }
+      if (!await this.hasIndex('user_legal_acceptances', 'user_legal_context_lookup')) {
+        await this.pool.execute('CREATE INDEX user_legal_context_lookup ON user_legal_acceptances (user_id, document_type, context_type, context_id, organization_id, accepted_at)');
+      }
       // Invoice numbers belong to a legal seller profile, not to an
       // organization. Retiring this index does not alter legacy numbers.
       if (await this.hasIndex('invoices', 'invoice_number_per_seller')) {

@@ -17,6 +17,13 @@ const environmentBoolean = (name) => {
   throw new Error(`${name} must be true or false.`);
 };
 
+const configuredArray = (name, value) => {
+  if (value == null || value === '') return null;
+  const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+  if (!Array.isArray(parsed)) throw new Error(`${name} must be a JSON array.`);
+  return parsed;
+};
+
 export class Configuration {
   constructor(values = {}) {
     const siteValues = values.site || {};
@@ -41,7 +48,27 @@ export class Configuration {
       moderationEmail: process.env.MODERATION_EMAIL || operatorValues.moderationEmail || values.moderationEmail || null,
       country: process.env.PLATFORM_COUNTRY || operatorValues.country || values.platformCountry || 'Sweden',
       organisationNumber: process.env.PLATFORM_ORGANISATION_NUMBER || operatorValues.organisationNumber || null,
+      vatNumber: process.env.PLATFORM_VAT_NUMBER || operatorValues.vatNumber || null,
       registeredAddress: process.env.PLATFORM_REGISTERED_ADDRESS || operatorValues.registeredAddress || null,
+    };
+    const legalValues = values.legal || {};
+    const directChargeVerified = environmentBoolean('PAYMENT_DIRECT_CHARGE_VERIFIED');
+    this.legal = {
+      paymentProvider: process.env.PAYMENT_PROVIDER ?? legalValues.paymentProvider ?? null,
+      paymentProviderPrivacyUrl: process.env.PAYMENT_PROVIDER_PRIVACY_URL ?? legalValues.paymentProviderPrivacyUrl ?? null,
+      billingSupportEmail: process.env.BILLING_SUPPORT_EMAIL ?? legalValues.billingSupportEmail ?? null,
+      ticketSupportEmail: process.env.TICKET_SUPPORT_EMAIL ?? legalValues.ticketSupportEmail ?? null,
+      ticketSupportUrl: process.env.TICKET_SUPPORT_URL ?? legalValues.ticketSupportUrl ?? null,
+      venueSupportEmail: process.env.VENUE_SUPPORT_EMAIL ?? legalValues.venueSupportEmail ?? null,
+      venueSupportUrl: process.env.VENUE_SUPPORT_URL ?? legalValues.venueSupportUrl ?? null,
+      organizerSupportUrl: process.env.ORGANIZER_SUPPORT_URL ?? legalValues.organizerSupportUrl ?? null,
+      businessSupportUrl: process.env.BUSINESS_SUPPORT_URL ?? legalValues.businessSupportUrl ?? null,
+      withdrawalFunctionUrl: process.env.WITHDRAWAL_FUNCTION_URL ?? legalValues.withdrawalFunctionUrl ?? null,
+      analyticsProviders: process.env.ANALYTICS_PROVIDERS ?? legalValues.analyticsProviders ?? null,
+      marketingProviders: process.env.MARKETING_PROVIDERS ?? legalValues.marketingProviders ?? null,
+      cookieInventory: process.env.COOKIE_INVENTORY ?? legalValues.cookieInventory ?? null,
+      subprocessors: configuredArray('SUBPROCESSORS_JSON', process.env.SUBPROCESSORS_JSON ?? legalValues.subprocessors),
+      directChargeVerified: directChargeVerified ?? legalValues.directChargeVerified === true,
     };
     const databaseValues = values.database && typeof values.database === 'object' ? values.database : null;
     this.database = databaseValues || {
@@ -185,6 +212,8 @@ export class Configuration {
       allowedOrigins: runtimeValues.allowedOrigins || this.getAllowedOrigins(),
       minimumUserAge: Number(process.env.MINIMUM_USER_AGE || runtimeValues.minimumUserAge || values.minimumUserAge || 18),
       paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true' || runtimeValues.paidEventsEnabled === true || values.paidEventsEnabled === true,
+      paidServicesEnabled: process.env.ENABLE_PAID_SERVICES === 'true' || runtimeValues.paidServicesEnabled === true || values.paidServicesEnabled === true,
+      legalRequireReady: process.env.LEGAL_REQUIRE_READY === 'true' || runtimeValues.legalRequireReady === true || values.legalRequireReady === true,
       maps: {
         enabled: mapsEnabled ?? (runtimeValues.maps?.enabled === true || values.maps?.enabled === true),
         browserApiKey: process.env.GOOGLE_MAPS_BROWSER_API_KEY ?? runtimeValues.maps?.browserApiKey ?? values.maps?.browserApiKey ?? null,

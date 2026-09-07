@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Configuration } from '../server/configuration.js';
-import { legalDocument, legalDocumentIndex } from '../server/legal-documents.js';
+import { legalDocument, legalDocumentIndex, legalReadiness } from '../server/legal-documents.js';
 
 const values = (runtime = {}) => ({
   site: { domain: 'ykcircle.test', siteUrl: 'https://ykcircle.test', apiUrl: 'https://api.ykcircle.test' },
@@ -44,7 +44,7 @@ test('exposes configuration only through its grouped contract', () => {
 test('renders controller details into the current privacy notice', async () => {
   const config = new Configuration({ ...values(), operator: { name: 'Example Founder', email: 'founder@example.test', privacyEmail: 'privacy@example.test', supportEmail: 'support@example.test', moderationEmail: 'moderation@example.test' } });
   const privacy = await legalDocument('privacy', config);
-  assert.equal(privacy.version, '2026-08-26');
+  assert.equal(privacy.version, '2026-09-07');
   assert.match(privacy.content, /Example Founder/);
   assert.match(privacy.content, /privacy@example\.test/);
   assert.match(privacy.contentHash, /^[a-f0-9]{64}$/);
@@ -92,8 +92,16 @@ test('uses Maps values supplied by the deployment environment over local configu
 test('publishes all public legal document metadata and handles unknown slugs', async () => {
   const index = legalDocumentIndex();
 
-  assert.equal(index.length, 6);
-  assert.deepEqual(index.map(({ slug }) => slug), ['terms', 'privacy', 'community-guidelines', 'organizer-terms', 'tickets-refunds', 'cookies']);
+  assert.equal(index.length, 9);
+  assert.deepEqual(index.map(({ slug }) => slug), ['terms', 'privacy', 'community-guidelines', 'organizer-terms', 'venue-terms', 'tickets-refunds', 'paid-services', 'cookies', 'marketplace-transparency']);
   assert.ok(index.every((document) => document.url === `/api/legal-documents/${document.slug}` && document.format === 'markdown'));
   assert.equal(await legalDocument('not-a-document'), null);
+});
+
+test('reports missing commercial legal configuration without leaving public document placeholders', async () => {
+  const config = new Configuration({ ...values(), operator: { name: 'Example Founder', email: 'founder@example.test', privacyEmail: 'privacy@example.test', supportEmail: 'support@example.test', moderationEmail: 'moderation@example.test' } });
+  const readiness = await legalReadiness(config);
+  assert.equal(readiness.ready, false);
+  assert.ok(readiness.blockers.some((blocker) => blocker.includes('PAYMENT_PROVIDER')));
+  assert.doesNotMatch((await legalDocument('paid-services', config)).content, /\[PAYMENT PROVIDER\]/);
 });

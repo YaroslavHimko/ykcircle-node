@@ -7,21 +7,29 @@ import { INVITATION_STATUSES, isInvitationStatus } from './invitation-status.js'
 import { PARTICIPANT_STATUSES, isParticipantStatus } from './participant-status.js';
 import multer from 'multer';
 import { EMAIL_UNSUBSCRIBE_REASONS } from './email-unsubscribe-reasons.js';
-import { legalDocument, legalDocumentIndex, currentLegalDocument } from './legal-documents.js';
+import { legalDocument, legalDocumentIndex, currentLegalDocument, legalReadiness } from './legal-documents.js';
 import { createRateLimiter } from './rate-limit.js';
 import { isValidIanaTimezone, localDateTimeToUtc, mysqlUtc, parseUtcInstant, zonedDateTime } from './time.js';
 import { renderInvoicePdf } from './invoice-pdf.js';
 import { StripeConnectService } from './stripe-connect.js';
 
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
-const legalHtml = (markdown) => escapeHtml(markdown).split(/\r?\n/).map((line) => {
-  if (line.startsWith('# ')) return `<h1>${line.slice(2)}</h1>`;
-  if (line.startsWith('## ')) return `<h2>${line.slice(3)}</h2>`;
-  if (line.startsWith('### ')) return `<h3>${line.slice(4)}</h3>`;
-  if (line.startsWith('- ')) return `<li>${line.slice(2)}</li>`;
-  if (!line.trim()) return '';
-  return `<p>${line}</p>`;
-}).join('\n');
+const legalHtml = (markdown) => {
+  const html = [];
+  let listOpen = false;
+  const closeList = () => { if (listOpen) { html.push('</ul>'); listOpen = false; } };
+  for (const rawLine of String(markdown || '').split(/\r?\n/)) {
+    const line = escapeHtml(rawLine);
+    if (line.startsWith('# ')) { closeList(); html.push(`<h1>${line.slice(2)}</h1>`); continue; }
+    if (line.startsWith('## ')) { closeList(); html.push(`<h2>${line.slice(3)}</h2>`); continue; }
+    if (line.startsWith('### ')) { closeList(); html.push(`<h3>${line.slice(4)}</h3>`); continue; }
+    if (line.startsWith('- ')) { if (!listOpen) { html.push('<ul>'); listOpen = true; } html.push(`<li>${line.slice(2)}</li>`); continue; }
+    closeList();
+    if (line.trim()) html.push(`<p>${line.replace(/^&gt;\s?/, '')}</p>`);
+  }
+  closeList();
+  return html.join('\n');
+};
 
 export class Api {
   constructor({ config, database, queries, emailService, ftpService, eventFtpService, venueFtpService, groupFtpService, articleFtpService }) {
@@ -75,6 +83,20 @@ export class Api {
     app.get('/api/registration-statuses', (_req, res) => res.json(REGISTRATION_STATUSES));
     app.get('/api/invitation-statuses', (_req, res) => res.json(INVITATION_STATUSES));
     app.get('/api/participant-statuses', (_req, res) => res.json(PARTICIPANT_STATUSES));
+    const companyInformation = () => {
+      const operator = this.config.operator || {};
+      return {
+        legalOperatorName: operator.name || null,
+        organizationNumber: operator.organisationNumber || null,
+        vatNumber: operator.vatNumber || null,
+        registeredAddress: operator.registeredAddress || null,
+        supportEmail: operator.supportEmail || operator.email || null,
+        privacyEmail: operator.privacyEmail || operator.email || null,
+        moderationEmail: operator.moderationEmail || operator.email || null,
+        country: operator.country || null,
+      };
+    };
+    const publishedSubprocessors = () => Array.isArray(this.config.legal?.subprocessors) ? this.config.legal.subprocessors : [];
     app.get('/api/legal-documents', (_req, res) => res.json(legalDocumentIndex()));
     app.get('/api/legal-documents/:slug', async (req, res) => {
       try {
@@ -83,9 +105,20 @@ export class Api {
         return res.json(document);
       } catch (error) { console.error('Legal document load failed:', error.message); return res.status(500).json({ error: 'Unable to load legal document.' }); }
     });
-    const publicFooter = '<footer><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/community-guidelines">Community Guidelines</a><a href="/cookies">Cookies</a><a href="/report">Report</a><a href="/appeal">Appeal</a><a href="/contact">Contact</a></footer>';
+    app.get('/api/company', (_req, res) => res.json(companyInformation()));
+    app.get('/api/subprocessors', (_req, res) => res.json({ subprocessors: publishedSubprocessors() }));
+    const publicFooter = '<footer><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/cookies">Cookies</a><a href="/paid-services">Paid Services</a><a href="/community-guidelines">Community Guidelines</a><a href="/organizer-terms">Organizer Terms</a><a href="/venue-terms">Venue Terms</a><a href="/tickets-refunds">Tickets &amp; Refunds</a><a href="/marketplace-transparency">Marketplace Transparency</a><a href="/report">Report</a><a href="/appeal">Appeal</a><a href="/contact">Contact</a><a href="/company">Company information</a></footer>';
     const publicPage = (title, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)} · ${escapeHtml(this.config.site.brandName)}</title><style>body{font-family:system-ui,sans-serif;line-height:1.55;margin:0;color:#172033;background:#f7f8fa}main{max-width:840px;margin:2rem auto;padding:2rem;background:#fff;border-radius:12px}footer{display:flex;flex-wrap:wrap;gap:1rem;margin-top:3rem;padding-top:1rem;border-top:1px solid #ddd}label,input,select,textarea,button{display:block;width:100%;box-sizing:border-box;margin:.5rem 0}input,select,textarea,button{padding:.7rem}textarea{min-height:9rem}</style></head><body><main>${body}${publicFooter}</main></body></html>`;
-    for (const slug of ['terms', 'privacy', 'community-guidelines', 'cookies']) app.get(`/${slug}`, async (_req, res) => { try { const document = await legalDocument(slug, this.config); return res.type('html').send(publicPage(document.title, legalHtml(document.content))); } catch { return res.status(500).type('html').send(publicPage('Unavailable', '<h1>Document unavailable</h1>')); } });
+    for (const slug of legalDocumentIndex().map((document) => document.slug)) app.get(`/${slug}`, async (_req, res) => { try { const document = await legalDocument(slug, this.config); const metadata = `<header><p>Last updated: ${escapeHtml(document.lastUpdated || 'Not stated')}</p><p>Current version: ${escapeHtml(document.version)}</p></header>`; return res.type('html').send(publicPage(document.title, `<article>${metadata}${legalHtml(document.content)}</article>`)); } catch { return res.status(500).type('html').send(publicPage('Unavailable', '<h1>Document unavailable</h1>')); } });
+    app.get('/company', (_req, res) => {
+      const company = companyInformation();
+      const value = (label, content) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(content || 'Not currently published')}</dd>`;
+      return res.type('html').send(publicPage('Company information', `<article><h1>Company information</h1><dl>${value('Legal operator', company.legalOperatorName)}${value('Organisation number', company.organizationNumber)}${value('VAT number', company.vatNumber)}${value('Registered address', company.registeredAddress)}${value('Support email', company.supportEmail)}${value('Privacy contact', company.privacyEmail)}${value('Moderation contact', company.moderationEmail)}${value('Country of establishment', company.country)}</dl></article>`));
+    });
+    app.get('/subprocessors', (_req, res) => {
+      const items = publishedSubprocessors().map((provider) => `<li>${escapeHtml(typeof provider === 'string' ? provider : provider.name || 'Unnamed provider')}</li>`).join('');
+      return res.type('html').send(publicPage('Subprocessors', `<article><h1>Service providers and subprocessors</h1>${items ? `<ul>${items}</ul>` : '<p>No provider inventory has been published yet. This must be completed before commercial launch.</p>'}</article>`));
+    });
     app.get('/report', (req, res) => res.type('html').send(publicPage('Report content', `<h1>Report content</h1><p>Use this form to report content you believe is illegal or violates the Community Guidelines.</p><form id="report"><label>Content type<select name="entityType"><option value="event">Event</option><option value="group">Group</option><option value="profile">Profile</option><option value="image">Image</option><option value="review">Review</option><option value="organization">Venue or business listing</option></select></label><label>Content URL or ID<input name="content" required></label><label>Reason<select name="reasonCode"><option value="illegal_content">Illegal content</option><option value="harassment">Harassment</option><option value="child_safety">Child safety</option><option value="privacy">Privacy</option><option value="other">Other</option></select></label><label>Your email<input name="reporterEmail" type="email" required></label><label>Explanation<textarea name="description" required></textarea></label><label><input type="checkbox" name="goodFaithDeclared" required>I submit this report in good faith.</label><button>Submit report</button></form><p id="result"></p><script nonce="${req.cspNonce}">document.querySelector('#report').onsubmit=async(e)=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.target));if(/^https?:/i.test(d.content))d.contentUrl=d.content;else d.entityId=d.content;delete d.content;d.goodFaithDeclared=true;const r=await fetch('/api/reports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});const out=await r.json();document.querySelector('#result').textContent=out.reference||out.error||'Unable to submit report.'}</script>`)));
     app.get('/contact', (req, res) => res.type('html').send(publicPage('Contact', `<h1>Contact</h1><form id="contact"><label>Name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Category<select name="category"><option>General</option><option>Privacy</option><option>Account</option><option>Safety</option><option>Other</option></select></label><label>Message<textarea name="message" required></textarea></label><button>Send</button></form><p id="result"></p><script nonce="${req.cspNonce}">document.querySelector('#contact').onsubmit=async(e)=>{e.preventDefault();const r=await fetch('/api/contact',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});const d=await r.json();document.querySelector('#result').textContent=d.reference?('Reference: '+d.reference):(d.error||'Unable to send request.');}</script>`)));
     app.get('/appeal', (_req, res) => res.type('html').send(publicPage('Appeal', '<h1>Appeal a moderation decision</h1><p>Log in to the Platform, then submit your appeal through the authenticated <code>POST /api/appeals</code> endpoint with the moderation decision ID and your explanation.</p>')));
@@ -197,6 +230,31 @@ export class Api {
       } catch { /* Treat invalid optional credentials as anonymous. */ }
       return next();
     };
+    app.get('/api/legal-readiness', authenticate, async (req, res) => {
+      if (!['manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Manager access is required.' });
+      return res.json(await legalReadiness(this.config));
+    });
+    app.post('/api/legal-documents/:slug/accept', authenticate, async (req, res) => {
+      const document = await legalDocument(req.params.slug, this.config);
+      if (!document) return res.status(404).json({ error: 'Legal document not found.' });
+      if (req.body?.accepted !== true) return res.status(422).json({ error: 'You must explicitly confirm acceptance.' });
+      const contextType = req.body?.contextType == null ? null : String(req.body.contextType).trim();
+      const contextId = req.body?.contextId == null ? null : String(req.body.contextId).trim();
+      const organizationId = req.body?.organizationId == null ? null : Number(req.body.organizationId);
+      const allowedContexts = new Set(['registration', 'organization', 'event', 'venue', 'booking', 'platform_order', 'subscription']);
+      if (contextType && !allowedContexts.has(contextType)) return res.status(422).json({ error: 'Legal acceptance context is invalid.' });
+      if (organizationId != null && (!Number.isInteger(organizationId) || organizationId < 1)) return res.status(422).json({ error: 'Organization context is invalid.' });
+      try {
+        await ensureTable();
+        if (organizationId != null && !['manager', 'admin'].includes(req.user.role)) {
+          const membership = await this.queries.organizationMember(organizationId, req.user.id);
+          if (!membership || !['owner', 'admin', 'manager'].includes(membership.role)) return res.status(403).json({ error: 'You are not authorized to accept terms for this organization.' });
+        }
+        const acceptance = await this.queries.recordLegalAcceptance(req.user.id, document, { source: 'account', contextType, contextId, organizationId });
+        await this.queries.audit(req.user.id, 'legal_document_accepted', 'legal_document', document.documentType, JSON.stringify({ version: document.version, contextType, contextId, organizationId, created: acceptance.created }));
+        return res.status(acceptance.created ? 201 : 200).json({ documentType: document.documentType, version: document.version, acceptedAt: acceptance.acceptedAt, created: acceptance.created });
+      } catch (error) { console.error('Legal acceptance failed:', error.message); return res.status(500).json({ error: 'Unable to record legal acceptance.' }); }
+    });
     // A browser cannot send an Authorization header when loading <img src>, so
     // an image that is not publicly visible is addressed with a short-lived
     // token bound to one filename. Each resource kind gets its own namespace

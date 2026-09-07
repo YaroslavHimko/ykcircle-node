@@ -48,6 +48,15 @@ test('serves public API resources and validates unsubscribe requests', async (t)
   assert.equal(document.slug, 'privacy');
   assert.match(document.contentHash, /^[a-f0-9]{64}$/);
 
+  const legalIndex = await fetch(`${baseUrl}/api/legal-documents`);
+  const legalDocuments = await legalIndex.json();
+  assert.equal(legalDocuments.length, 9);
+  for (const item of legalDocuments) {
+    const page = await fetch(`${baseUrl}/${item.slug}`);
+    assert.equal(page.status, 200, `${item.slug} must be public`);
+    assert.match(await page.text(), /Current version:/);
+  }
+
   const invalid = await fetch(`${baseUrl}/api/email/unsubscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'invalid', reason: 'Unknown' }) });
   assert.equal(invalid.status, 400);
   assert.equal(preferenceCalls.length, 0);
