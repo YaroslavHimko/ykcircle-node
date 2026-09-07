@@ -103,7 +103,7 @@ test('lists invoices only for the buyer or a managing seller member', async () =
   assert.deepEqual(await queries.invoicesForViewer(7, 'venue_owner'), [{ id: 14, status: 'issued', eventTitle: 'Autumn social' }]);
   assert.match(calls[0].sql, /i\.buyer_user_id=\?/);
   assert.match(calls[0].sql, /seller_member\.role IN \('owner','admin','manager'\)/);
-  assert.deepEqual(calls[0].parameters, [7, 7, 7]);
+  assert.deepEqual(calls[0].parameters, [7, 7, 7, 7, 7]);
 });
 
 test('lists venue bookings for organization managers as well as the venue owner', async () => {

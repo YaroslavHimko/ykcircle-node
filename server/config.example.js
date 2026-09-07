@@ -123,6 +123,14 @@ export default {
       serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY,
       requiresConsent: process.env.GOOGLE_MAPS_REQUIRES_CONSENT === 'true',
     },
+    // Server-only keys. Ticket Checkout is created on the organizer's
+    // connected account (a Stripe direct charge); never expose secretKey or
+    // webhookSecret to a browser.
+    stripe: {
+      secretKey: process.env.STRIPE_SECRET_KEY,
+      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+    },
     minimumUserAge: Number(process.env.MINIMUM_USER_AGE || 18),
     paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true',
     retention: {

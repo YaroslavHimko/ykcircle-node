@@ -873,7 +873,8 @@ export class Queries {
         const member = await this.organizationMember(organizationId, userId);
         if (!member || !['owner', 'admin'].includes(member.role)) { await connection.rollback(); return null; }
       }
-      if (profileId && !await this.billingProfile(profileId, userId, role, connection)) { await connection.rollback(); return null; }
+      const existing = profileId ? await this.billingProfile(profileId, userId, role, connection) : null;
+      if (profileId && (!existing || Number(existing.ownerOrganizationId || 0) !== Number(organizationId || 0) || (!organizationId && Number(existing.ownerUserId) !== Number(userId)))) { await connection.rollback(); return null; }
       const ownerUserId = organizationId ? null : userId;
       if (profile.isDefault) await connection.execute(`UPDATE billing_profiles SET is_default=FALSE WHERE ${organizationId ? 'owner_organization_id=?' : 'owner_user_id=?'}`, [organizationId || userId]);
       const fields = [profile.profileType, profile.legalName, profile.organizationNumber, profile.vatNumber, profile.addressLine1, profile.addressLine2,
@@ -882,29 +883,55 @@ export class Queries {
       let id = profileId;
       if (id) await connection.execute(`UPDATE billing_profiles SET profile_type=?, legal_name=?, organization_number=?, vat_number=?, address_line_1=?, address_line_2=?, postal_code=?, city=?, country=?, billing_email=?, phone=?, default_currency=?, invoice_prefix=?, invoice_due_days=?, payment_instructions=?, is_default=? WHERE id=?`, [...fields, id]);
       else { const [result] = await connection.execute(`INSERT INTO billing_profiles (owner_user_id, owner_organization_id, profile_type, legal_name, organization_number, vat_number, address_line_1, address_line_2, postal_code, city, country, billing_email, phone, default_currency, invoice_prefix, invoice_due_days, payment_instructions, is_default) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [ownerUserId, organizationId, ...fields]); id = result.insertId; }
+      if (organizationId && profile.isDefault) await connection.execute('UPDATE organizations SET default_billing_profile_id=? WHERE id=?', [id, organizationId]);
       await connection.commit(); return this.billingProfile(id, userId, role);
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async archiveBillingProfile(profileId, userId, role) {
     const profile = await this.billingProfile(profileId, userId, role); if (!profile) return false;
-    const [references] = await this.database.execute('SELECT (SELECT COUNT(*) FROM invoices WHERE buyer_billing_profile_id=? OR seller_billing_profile_id=?) + (SELECT COUNT(*) FROM payment_accounts WHERE billing_profile_id=?) AS count', [profileId, profileId, profileId]);
-    if (Number(references[0]?.count || 0)) return { error: 'REFERENCED' };
-    await this.database.execute('UPDATE billing_profiles SET is_active=FALSE, is_default=FALSE WHERE id=?', [profileId]); return true;
+    // Archiving is intentionally allowed even for a profile referenced by an
+    // issued invoice or order. Those records retain their immutable snapshots;
+    // `is_active` only prevents new financial use of the profile.
+    await this.database.execute('UPDATE billing_profiles SET is_active=FALSE, is_default=FALSE WHERE id=?', [profileId]);
+    await this.database.execute('UPDATE organizations SET default_billing_profile_id=NULL WHERE default_billing_profile_id=?', [profileId]); return true;
   }
   async paymentAccounts(billingProfileId, userId, role) {
     if (!await this.billingProfile(billingProfileId, userId, role)) return null;
     const [rows] = await this.database.execute(`SELECT id, billing_profile_id AS billingProfileId, provider, provider_account_id AS providerAccountId,
-      onboarding_status AS onboardingStatus, charges_enabled AS chargesEnabled, payouts_enabled AS payoutsEnabled, country,
+      onboarding_status AS onboardingStatus, charges_enabled AS chargesEnabled, payouts_enabled AS payoutsEnabled, details_submitted AS detailsSubmitted, country,
       default_currency AS defaultCurrency, created_at AS createdAt, updated_at AS updatedAt FROM payment_accounts WHERE billing_profile_id=?`, [billingProfileId]);
-    return rows.map((row) => ({ ...row, chargesEnabled: Boolean(row.chargesEnabled), payoutsEnabled: Boolean(row.payoutsEnabled) }));
+    return rows.map((row) => ({ ...row, chargesEnabled: Boolean(row.chargesEnabled), payoutsEnabled: Boolean(row.payoutsEnabled), detailsSubmitted: row.detailsSubmitted == null ? null : Boolean(row.detailsSubmitted) }));
+  }
+  async createPaymentAccount(billingProfileId, userId, role, account) {
+    const profile = await this.billingProfile(billingProfileId, userId, role);
+    if (!profile) return null;
+    const [result] = await this.database.execute(`INSERT INTO payment_accounts
+      (billing_profile_id, provider, provider_account_id, onboarding_status, charges_enabled, payouts_enabled, details_submitted, country, default_currency)
+      VALUES (?, ?, ?, 'pending', FALSE, FALSE, FALSE, ?, ?)`, [billingProfileId, account.provider, account.providerAccountId, profile.country, profile.defaultCurrency]);
+    await this.audit(userId, 'payment_account_connected', 'payment_account', result.insertId, { billingProfileId, provider: account.provider });
+    return { id: result.insertId, billingProfileId, provider: account.provider, providerAccountId: account.providerAccountId, onboardingStatus: 'pending', chargesEnabled: false, payoutsEnabled: false, detailsSubmitted: false, country: profile.country, defaultCurrency: profile.defaultCurrency };
+  }
+  async updatePaymentAccountCapabilities(provider, providerAccountId, capabilities) {
+    const [result] = await this.database.execute(`UPDATE payment_accounts SET onboarding_status=?, charges_enabled=?, payouts_enabled=?, details_submitted=?
+      WHERE provider=? AND provider_account_id=?`, [capabilities.onboardingStatus, Boolean(capabilities.chargesEnabled), Boolean(capabilities.payoutsEnabled), capabilities.detailsSubmitted == null ? null : Boolean(capabilities.detailsSubmitted), provider, providerAccountId]);
+    return result.affectedRows > 0;
+  }
+  async paymentAccount(accountId, userId, role) {
+    const [rows] = await this.database.execute(`SELECT account.id, account.billing_profile_id AS billingProfileId, account.provider,
+      account.provider_account_id AS providerAccountId, account.onboarding_status AS onboardingStatus, account.charges_enabled AS chargesEnabled,
+      account.payouts_enabled AS payoutsEnabled, account.details_submitted AS detailsSubmitted, account.country, account.default_currency AS defaultCurrency
+      FROM payment_accounts account JOIN billing_profiles profile ON profile.id=account.billing_profile_id
+      LEFT JOIN organization_members member ON member.organization_id=profile.owner_organization_id AND member.user_id=?
+      WHERE account.id=? AND (profile.owner_user_id=? OR member.role IN ('owner','admin') OR ${['manager', 'admin'].includes(role) ? 'TRUE' : 'FALSE'})`, [userId, accountId, userId]);
+    return rows[0] ? { ...rows[0], chargesEnabled: Boolean(rows[0].chargesEnabled), payoutsEnabled: Boolean(rows[0].payoutsEnabled), detailsSubmitted: rows[0].detailsSubmitted == null ? null : Boolean(rows[0].detailsSubmitted) } : null;
   }
   async eventPaymentSettings(eventId, userId, role) {
     const scope = ['manager', 'admin'].includes(role) ? '' : ' AND e.manager_id=?';
     const [rows] = await this.database.execute(`SELECT s.event_id AS eventId, s.seller_billing_profile_id AS sellerBillingProfileId,
-      s.payment_account_id AS paymentAccountId, s.currency, s.payments_enabled AS paymentsEnabled, s.ticket_sales_enabled AS ticketSalesEnabled,
-      account.charges_enabled AS chargesEnabled FROM event_payment_settings s JOIN events e ON e.id=s.event_id
+      s.payment_account_id AS paymentAccountId, s.seller_capacity AS sellerCapacity, s.currency, s.payments_enabled AS paymentsEnabled, s.ticket_sales_enabled AS ticketSalesEnabled,
+      s.refund_policy_snapshot AS refundPolicy, account.charges_enabled AS chargesEnabled, account.onboarding_status AS onboardingStatus FROM event_payment_settings s JOIN events e ON e.id=s.event_id
       LEFT JOIN payment_accounts account ON account.id=s.payment_account_id WHERE s.event_id=?${scope}`, ['manager', 'admin'].includes(role) ? [eventId] : [eventId, userId]);
-    return rows[0] ? { ...rows[0], paymentsEnabled: Boolean(rows[0].paymentsEnabled), ticketSalesEnabled: Boolean(rows[0].ticketSalesEnabled), chargesEnabled: Boolean(rows[0].chargesEnabled) } : null;
+    return rows[0] ? { ...rows[0], refundPolicy: jsonValue(rows[0].refundPolicy), paymentsEnabled: Boolean(rows[0].paymentsEnabled), ticketSalesEnabled: Boolean(rows[0].ticketSalesEnabled), chargesEnabled: Boolean(rows[0].chargesEnabled) } : null;
   }
   async saveEventPaymentSettings(eventId, userId, role, settings) {
     const scope = ['manager', 'admin'].includes(role) ? '' : ' AND manager_id=?';
@@ -912,53 +939,396 @@ export class Queries {
     if (!events[0]) return { error: 'EVENT_NOT_FOUND' };
     if (settings.sellerBillingProfileId && !await this.billingProfile(settings.sellerBillingProfileId, userId, role)) return { error: 'SELLER_PROFILE_UNAVAILABLE' };
     if (settings.paymentAccountId) {
-      const [accounts] = await this.database.execute('SELECT billing_profile_id AS billingProfileId, charges_enabled AS chargesEnabled FROM payment_accounts WHERE id=?', [settings.paymentAccountId]);
+      const [accounts] = await this.database.execute(`SELECT billing_profile_id AS billingProfileId, charges_enabled AS chargesEnabled,
+        onboarding_status AS onboardingStatus FROM payment_accounts WHERE id=?`, [settings.paymentAccountId]);
       if (!accounts[0] || Number(accounts[0].billingProfileId) !== Number(settings.sellerBillingProfileId)) return { error: 'PAYMENT_ACCOUNT_MISMATCH' };
-      if (settings.ticketSalesEnabled && !accounts[0].chargesEnabled) return { error: 'PAYMENT_ACCOUNT_NOT_READY' };
+      if (settings.ticketSalesEnabled && (!accounts[0].chargesEnabled || accounts[0].onboardingStatus !== 'ready')) return { error: 'PAYMENT_ACCOUNT_NOT_READY' };
     }
     if (settings.ticketSalesEnabled && (!settings.sellerBillingProfileId || !settings.paymentAccountId)) return { error: 'PAYMENT_SETUP_REQUIRED' };
-    await this.database.execute(`INSERT INTO event_payment_settings (event_id, seller_billing_profile_id, payment_account_id, currency, payments_enabled, ticket_sales_enabled)
-      VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE seller_billing_profile_id=VALUES(seller_billing_profile_id), payment_account_id=VALUES(payment_account_id), currency=VALUES(currency), payments_enabled=VALUES(payments_enabled), ticket_sales_enabled=VALUES(ticket_sales_enabled)`, [eventId, settings.sellerBillingProfileId || null, settings.paymentAccountId || null, settings.currency || null, Boolean(settings.paymentsEnabled), Boolean(settings.ticketSalesEnabled)]);
+    if (settings.ticketSalesEnabled && !settings.sellerCapacity) return { error: 'SELLER_CAPACITY_REQUIRED' };
+    await this.database.execute(`INSERT INTO event_payment_settings (event_id, seller_billing_profile_id, payment_account_id, seller_capacity, currency, payments_enabled, ticket_sales_enabled, refund_policy_snapshot)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE seller_billing_profile_id=VALUES(seller_billing_profile_id), payment_account_id=VALUES(payment_account_id), seller_capacity=VALUES(seller_capacity), currency=VALUES(currency), payments_enabled=VALUES(payments_enabled), ticket_sales_enabled=VALUES(ticket_sales_enabled), refund_policy_snapshot=VALUES(refund_policy_snapshot)`, [eventId, settings.sellerBillingProfileId || null, settings.paymentAccountId || null, settings.sellerCapacity || null, settings.currency || null, Boolean(settings.paymentsEnabled), Boolean(settings.ticketSalesEnabled), settings.refundPolicy || null]);
     return this.eventPaymentSettings(eventId, userId, role);
   }
   async canAcceptPaidRegistrations(eventId) {
     const [rows] = await this.database.execute(`SELECT e.participation_fee AS fee, s.seller_billing_profile_id AS sellerBillingProfileId,
       s.payment_account_id AS paymentAccountId, s.payments_enabled AS paymentsEnabled, s.ticket_sales_enabled AS ticketSalesEnabled,
-      account.billing_profile_id AS accountBillingProfileId, account.charges_enabled AS chargesEnabled
+      account.billing_profile_id AS accountBillingProfileId, account.charges_enabled AS chargesEnabled, account.onboarding_status AS onboardingStatus
       FROM events e LEFT JOIN event_payment_settings s ON s.event_id=e.id LEFT JOIN payment_accounts account ON account.id=s.payment_account_id WHERE e.id=?`, [eventId]);
     const row = rows[0]; if (!row || Number(row.fee || 0) <= 0) return true;
-    return Boolean(row.sellerBillingProfileId && row.paymentAccountId && row.paymentsEnabled && row.ticketSalesEnabled && row.chargesEnabled && Number(row.accountBillingProfileId) === Number(row.sellerBillingProfileId));
+    return Boolean(row.sellerBillingProfileId && row.paymentAccountId && row.paymentsEnabled && row.ticketSalesEnabled && row.chargesEnabled && row.onboardingStatus === 'ready' && Number(row.accountBillingProfileId) === Number(row.sellerBillingProfileId));
+  }
+  async ticketTypes(eventId, { publicOnly = false } = {}) {
+    const [rows] = await this.database.execute(`SELECT id, event_id AS eventId, name, description, price, currency,
+      quantity_available AS quantityAvailable, quantity_sold AS quantitySold, sales_start_at AS salesStartAt, sales_end_at AS salesEndAt,
+      is_active AS isActive FROM event_ticket_types WHERE event_id=?${publicOnly ? " AND is_active=TRUE AND (sales_start_at IS NULL OR sales_start_at<=NOW()) AND (sales_end_at IS NULL OR sales_end_at>=NOW())" : ''} ORDER BY id`, [eventId]);
+    return rows.map((row) => ({ ...row, isActive: Boolean(row.isActive) }));
+  }
+  async saveTicketType(eventId, userId, role, ticketTypeId, ticketType) {
+    const scope = ['manager', 'admin'].includes(role) ? '' : ' AND manager_id=?';
+    const [events] = await this.database.execute(`SELECT id FROM events WHERE id=?${scope}`, ['manager', 'admin'].includes(role) ? [eventId] : [eventId, userId]);
+    if (!events[0]) return null;
+    if (ticketTypeId) {
+      const [result] = await this.database.execute(`UPDATE event_ticket_types SET name=?, description=?, price=?, currency=?, quantity_available=?, sales_start_at=?, sales_end_at=?, is_active=? WHERE id=? AND event_id=?`, [ticketType.name, ticketType.description, ticketType.price, ticketType.currency, ticketType.quantityAvailable, ticketType.salesStartAt, ticketType.salesEndAt, Boolean(ticketType.isActive), ticketTypeId, eventId]);
+      if (!result.affectedRows) return null;
+      return { id: ticketTypeId };
+    }
+    const [result] = await this.database.execute(`INSERT INTO event_ticket_types (event_id, name, description, price, currency, quantity_available, sales_start_at, sales_end_at, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [eventId, ticketType.name, ticketType.description, ticketType.price, ticketType.currency, ticketType.quantityAvailable, ticketType.salesStartAt, ticketType.salesEndAt, Boolean(ticketType.isActive)]);
+    return { id: result.insertId };
+  }
+  async ticketCheckoutContext(eventId, connection = this.database) {
+    const [rows] = await connection.execute(`SELECT e.id AS eventId, e.title, e.currency, e.status, e.visibility,
+      s.seller_billing_profile_id AS sellerBillingProfileId, s.payment_account_id AS paymentAccountId, s.seller_capacity AS sellerCapacity,
+      s.currency AS paymentCurrency, s.refund_policy_snapshot AS refundPolicy, account.provider, account.provider_account_id AS providerAccountId,
+      account.charges_enabled AS chargesEnabled, account.onboarding_status AS onboardingStatus,
+      profile.legal_name AS sellerLegalName, profile.organization_number AS sellerOrganizationNumber, profile.vat_number AS sellerVatNumber,
+      profile.address_line_1 AS sellerAddressLine1, profile.address_line_2 AS sellerAddressLine2, profile.postal_code AS sellerPostalCode,
+      profile.city AS sellerCity, profile.country AS sellerCountry, profile.billing_email AS sellerBillingEmail
+      FROM events e JOIN event_payment_settings s ON s.event_id=e.id JOIN payment_accounts account ON account.id=s.payment_account_id
+      JOIN billing_profiles profile ON profile.id=s.seller_billing_profile_id WHERE e.id=? AND e.status='Published' AND profile.is_active=TRUE AND s.payments_enabled=TRUE
+      AND s.ticket_sales_enabled=TRUE AND account.charges_enabled=TRUE AND account.onboarding_status='ready'`, [eventId]);
+    if (!rows[0]) return null;
+    const row = rows[0];
+    return { ...row, chargesEnabled: Boolean(row.chargesEnabled), refundPolicy: jsonValue(row.refundPolicy), seller: { legalName: row.sellerLegalName, organizationNumber: row.sellerOrganizationNumber, vatNumber: row.sellerVatNumber, addressLine1: row.sellerAddressLine1, addressLine2: row.sellerAddressLine2, postalCode: row.sellerPostalCode, city: row.sellerCity, country: row.sellerCountry, billingEmail: row.sellerBillingEmail, capacity: row.sellerCapacity } };
+  }
+  async createTicketOrder(eventId, attendee, selections) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const context = await this.ticketCheckoutContext(eventId, connection);
+      if (!context) { await connection.rollback(); return { error: 'PAYMENT_SETUP_REQUIRED' }; }
+      const ids = selections.map((selection) => Number(selection.ticketTypeId));
+      if (!ids.length || ids.some((id) => !Number.isInteger(id))) { await connection.rollback(); return { error: 'INVALID_TICKETS' }; }
+      const placeholders = ids.map(() => '?').join(',');
+      const [types] = await connection.execute(`SELECT id, name, description, price, currency, quantity_available AS quantityAvailable,
+        quantity_sold AS quantitySold FROM event_ticket_types WHERE event_id=? AND id IN (${placeholders}) AND is_active=TRUE FOR UPDATE`, [eventId, ...ids]);
+      if (types.length !== ids.length || new Set(ids).size !== ids.length) { await connection.rollback(); return { error: 'INVALID_TICKETS' }; }
+      let subtotal = 0; const items = [];
+      for (const selection of selections) {
+        const type = types.find((candidate) => Number(candidate.id) === Number(selection.ticketTypeId)); const quantity = Number(selection.quantity);
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20 || (type.quantityAvailable !== null && Number(type.quantitySold) + quantity > Number(type.quantityAvailable))) { await connection.rollback(); return { error: 'TICKETS_UNAVAILABLE' }; }
+        if (type.currency !== (context.paymentCurrency || context.currency)) { await connection.rollback(); return { error: 'CURRENCY_MISMATCH' }; }
+        const amount = Number(type.price) * quantity; subtotal += amount;
+        items.push({ type, quantity, amount });
+      }
+      const orderNumber = `TKT-${new Date().getUTCFullYear()}-${crypto.randomBytes(7).toString('hex').toUpperCase()}`;
+      const [order] = await connection.execute(`INSERT INTO ticket_orders (order_number, event_id, attendee_user_id, attendee_email, seller_billing_profile_id, payment_account_id, currency, subtotal, tax_amount, total_amount, provider, seller_snapshot_json, refund_policy_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`, [orderNumber, eventId, attendee.userId || null, attendee.email, context.sellerBillingProfileId, context.paymentAccountId, context.paymentCurrency || context.currency, subtotal, subtotal, context.provider, JSON.stringify(context.seller), context.refundPolicy || null]);
+      for (const item of items) await connection.execute(`INSERT INTO ticket_order_items (ticket_order_id, ticket_type_id, ticket_type_snapshot_json, quantity, unit_price, subtotal, tax_amount, total_amount)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?)`, [order.insertId, item.type.id, JSON.stringify({ id: item.type.id, name: item.type.name, description: item.type.description, currency: item.type.currency }), item.quantity, item.type.price, item.amount, item.amount]);
+      await connection.commit();
+      return { id: order.insertId, orderNumber, totalAmount: subtotal, currency: context.paymentCurrency || context.currency, provider: context.provider, providerAccountId: context.providerAccountId };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async attachTicketProviderPayment(orderId, provider, providerPaymentId) {
+    await this.database.execute(`UPDATE ticket_orders SET provider=?, provider_payment_id=? WHERE id=? AND payment_status='pending'`, [provider, providerPaymentId, orderId]);
+  }
+  async ticketOrder(orderId, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await this.database.execute(`SELECT o.id, o.order_number AS orderNumber, o.event_id AS eventId, e.title AS eventTitle,
+      o.attendee_user_id AS attendeeUserId, o.attendee_email AS attendeeEmail, o.currency, o.subtotal, o.tax_amount AS taxAmount,
+      o.total_amount AS totalAmount, o.payment_status AS paymentStatus, o.provider, o.created_at AS createdAt, o.paid_at AS paidAt,
+      o.seller_snapshot_json AS sellerSnapshot, o.refund_policy_snapshot AS refundPolicy
+      FROM ticket_orders o LEFT JOIN events e ON e.id=o.event_id LEFT JOIN event_payment_settings settings ON settings.event_id=o.event_id
+      LEFT JOIN billing_profiles seller ON seller.id=settings.seller_billing_profile_id
+      LEFT JOIN organization_members seller_member ON seller_member.organization_id=seller.owner_organization_id AND seller_member.user_id=?
+      WHERE o.id=? AND (${privileged ? 'TRUE' : "o.attendee_user_id=? OR e.manager_id=? OR seller.owner_user_id=? OR seller_member.role IN ('owner','admin','manager')"})`, privileged ? [userId, orderId] : [userId, orderId, userId, userId, userId]);
+    if (!rows[0]) return null;
+    const [items] = await this.database.execute(`SELECT id, ticket_type_id AS ticketTypeId, ticket_type_snapshot_json AS ticketType,
+      quantity, unit_price AS unitPrice, subtotal, tax_amount AS taxAmount, total_amount AS totalAmount FROM ticket_order_items WHERE ticket_order_id=?`, [orderId]);
+    return { ...rows[0], seller: jsonValue(rows[0].sellerSnapshot), refundPolicy: jsonValue(rows[0].refundPolicy), items: items.map((item) => ({ ...item, ticketType: jsonValue(item.ticketType) })) };
+  }
+  async ticketOrdersForAttendee(userId) {
+    const [rows] = await this.database.execute(`SELECT id, order_number AS orderNumber, event_id AS eventId, attendee_email AS attendeeEmail,
+      currency, total_amount AS totalAmount, payment_status AS paymentStatus, created_at AS createdAt, paid_at AS paidAt FROM ticket_orders
+      WHERE attendee_user_id=? ORDER BY created_at DESC`, [userId]);
+    return rows;
+  }
+  async processTicketProviderEvent({ provider, providerEventId, eventType, payload }) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      try {
+        await connection.execute(`INSERT INTO payment_provider_events (provider, provider_event_id, event_type, payload_json) VALUES (?, ?, ?, ?)`, [provider, providerEventId, eventType, JSON.stringify(payload)]);
+      } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY') { await connection.rollback(); return { duplicate: true }; }
+        throw error;
+      }
+      const object = payload?.data?.object || {}; const metadata = object.metadata || {};
+      if (eventType === 'account.updated' && object.id) {
+        await connection.execute(`UPDATE payment_accounts SET onboarding_status=?, charges_enabled=?, payouts_enabled=?, details_submitted=?
+          WHERE provider=? AND provider_account_id=?`, [object.charges_enabled ? 'ready' : object.details_submitted ? 'restricted' : 'pending', Boolean(object.charges_enabled), Boolean(object.payouts_enabled), object.details_submitted == null ? null : Boolean(object.details_submitted), provider, object.id]);
+        await connection.execute(`UPDATE payment_provider_events SET processed_at=NOW() WHERE provider=? AND provider_event_id=?`, [provider, providerEventId]);
+        await connection.commit(); return { paymentAccount: object.id, processed: true };
+      }
+      if (eventType.startsWith('customer.subscription.') && object.id) {
+        const status = object.status === 'canceled' ? 'cancelled' : object.status === 'incomplete_expired' ? 'expired' : ['active', 'past_due', 'cancelled', 'expired'].includes(object.status) ? object.status : object.cancel_at_period_end ? 'active' : 'pending';
+        await connection.execute(`UPDATE platform_subscriptions SET status=?, current_period_start=FROM_UNIXTIME(?), current_period_end=FROM_UNIXTIME(?),
+          cancel_at_period_end=? WHERE provider=? AND provider_subscription_id=?`, [status, object.current_period_start || null, object.current_period_end || null, Boolean(object.cancel_at_period_end), provider, object.id]);
+        if (status === 'past_due' || status === 'cancelled' || status === 'expired') await connection.execute(`UPDATE platform_entitlements entitlement JOIN platform_subscriptions subscription ON subscription.id=entitlement.source_id
+          SET entitlement.revoked_at=COALESCE(entitlement.revoked_at, NOW()) WHERE entitlement.source_type='platform_subscription' AND subscription.provider=? AND subscription.provider_subscription_id=?`, [provider, object.id]);
+        await connection.execute(`UPDATE payment_provider_events SET processed_at=NOW() WHERE provider=? AND provider_event_id=?`, [provider, providerEventId]);
+        await connection.commit(); return { subscription: object.id, processed: true };
+      }
+      const orderId = Number(metadata.ticketOrderId || metadata.ticket_order_id || 0);
+      const platformOrderId = Number(metadata.platformOrderId || metadata.platform_order_id || 0);
+      if (platformOrderId) {
+        const result = await this.processPlatformProviderEventInTransaction(connection, { provider, eventType, object, platformOrderId });
+        await connection.execute(`UPDATE payment_provider_events SET processed_at=NOW(), processing_error=? WHERE provider=? AND provider_event_id=?`, [result.error || null, provider, providerEventId]);
+        await connection.commit(); return result;
+      }
+      if (!orderId) { await connection.execute(`UPDATE payment_provider_events SET processed_at=NOW() WHERE provider=? AND provider_event_id=?`, [provider, providerEventId]); await connection.commit(); return { ignored: true }; }
+      const [orders] = await connection.execute(`SELECT ticket.id, ticket.payment_status AS paymentStatus, ticket.payment_account_id AS paymentAccountId,
+        account.provider_account_id AS providerAccountId FROM ticket_orders ticket JOIN payment_accounts account ON account.id=ticket.payment_account_id
+        WHERE ticket.id=? FOR UPDATE`, [orderId]);
+      const order = orders[0];
+      if (!order || (payload.account && payload.account !== order.providerAccountId)) { await connection.execute(`UPDATE payment_provider_events SET processing_error=? WHERE provider=? AND provider_event_id=?`, ['Ticket order/payment account mismatch', provider, providerEventId]); await connection.commit(); return { ignored: true }; }
+      const paid = ['checkout.session.completed', 'payment_intent.succeeded'].includes(eventType) && (eventType !== 'checkout.session.completed' || object.payment_status === 'paid');
+      if (paid && order.paymentStatus === 'pending') {
+        await connection.execute(`UPDATE ticket_orders SET payment_status='paid', paid_at=NOW(), provider_payment_id=? WHERE id=?`, [object.payment_intent || object.id || null, orderId]);
+        const [items] = await connection.execute('SELECT ticket_type_id AS ticketTypeId, quantity FROM ticket_order_items WHERE ticket_order_id=?', [orderId]);
+        for (const item of items) await connection.execute(`UPDATE event_ticket_types SET quantity_sold=quantity_sold+? WHERE id=?`, [item.quantity, item.ticketTypeId]);
+      } else if (['charge.refunded', 'refund.created', 'refund.updated'].includes(eventType) && ['paid', 'partially_refunded'].includes(order.paymentStatus)) {
+        const fullyRefunded = object.refunded === true || object.status === 'succeeded' && Number(object.amount_refunded || 0) >= Number(object.amount || 0);
+        await connection.execute(`UPDATE ticket_orders SET payment_status=? WHERE id=?`, [fullyRefunded ? 'refunded' : 'partially_refunded', orderId]);
+      } else if (eventType.startsWith('charge.dispute.')) {
+        await connection.execute(`UPDATE ticket_orders SET payment_status='disputed' WHERE id=?`, [orderId]);
+      }
+      await connection.execute(`UPDATE payment_provider_events SET processed_at=NOW() WHERE provider=? AND provider_event_id=?`, [provider, providerEventId]);
+      await connection.commit(); return { orderId, processed: true };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async processPlatformProviderEventInTransaction(connection, { provider, eventType, object, platformOrderId }) {
+    const [orders] = await connection.execute(`SELECT id, buyer_user_id AS buyerUserId, buyer_organization_id AS buyerOrganizationId,
+      buyer_billing_profile_id AS buyerBillingProfileId, product_id AS productId, event_id AS eventId, buyer_capacity AS buyerCapacity,
+      currency, subtotal, tax_amount AS taxAmount, total_amount AS totalAmount, payment_status AS paymentStatus, invoice_id AS invoiceId,
+      product_snapshot_json AS productSnapshot FROM platform_orders WHERE id=? FOR UPDATE`, [platformOrderId]);
+    const order = orders[0]; if (!order) return { ignored: true, error: 'Platform order not found' };
+    const product = jsonValue(order.productSnapshot) || {}; const paymentId = object.payment_intent || object.id || null;
+    const paid = ['checkout.session.completed', 'invoice.paid', 'payment_intent.succeeded'].includes(eventType) && (eventType !== 'checkout.session.completed' || object.payment_status === 'paid' || product.productType === 'subscription');
+    if (paid && order.paymentStatus === 'pending') {
+      await connection.execute(`UPDATE platform_orders SET payment_status='paid', provider=?, provider_payment_id=? WHERE id=?`, [provider, paymentId, order.id]);
+      const [updatedPayment] = await connection.execute(`UPDATE platform_payments SET provider_payment_id=?, provider_invoice_id=COALESCE(?, provider_invoice_id),
+        status='succeeded', paid_at=COALESCE(paid_at, NOW()) WHERE order_id=? AND provider=?`, [paymentId, object.invoice || null, order.id, provider]);
+      if (!updatedPayment.affectedRows) await connection.execute(`INSERT INTO platform_payments (order_id, provider, provider_payment_id, provider_invoice_id, amount, currency, status, paid_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'succeeded', NOW())`, [order.id, provider, paymentId, object.invoice || null, order.totalAmount, order.currency]);
+      const invoiceId = await this.issuePlatformOrderInvoice(connection, order);
+      let sourceType = 'platform_order'; let sourceId = order.id;
+      if (product.productType === 'subscription') {
+        const providerSubscriptionId = object.subscription || null;
+        const [subscription] = await connection.execute(`INSERT INTO platform_subscriptions (subscriber_user_id, subscriber_organization_id, buyer_billing_profile_id, product_id, buyer_capacity, status, provider, provider_customer_id, provider_subscription_id)
+          VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), status='active', buyer_billing_profile_id=VALUES(buyer_billing_profile_id)`, [order.buyerUserId, order.buyerOrganizationId, order.buyerBillingProfileId, order.productId, order.buyerCapacity, provider, object.customer || null, providerSubscriptionId]);
+        sourceType = 'platform_subscription'; sourceId = subscription.insertId;
+      }
+      if (product.entitlementFeature) await connection.execute(`INSERT INTO platform_entitlements (user_id, organization_id, event_id, feature, source_type, source_id)
+        SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM platform_entitlements WHERE source_type=? AND source_id=? AND feature=? AND revoked_at IS NULL)`, [order.buyerUserId, order.buyerOrganizationId, order.eventId, product.entitlementFeature, sourceType, sourceId, sourceType, sourceId, product.entitlementFeature]);
+      return { platformOrderId: order.id, invoiceId, processed: true };
+    }
+    if (['checkout.session.expired', 'payment_intent.payment_failed', 'invoice.payment_failed'].includes(eventType) && order.paymentStatus === 'pending') {
+      await connection.execute(`UPDATE platform_orders SET payment_status='failed' WHERE id=?`, [order.id]);
+      await connection.execute(`INSERT INTO platform_payments (order_id, provider, provider_payment_id, amount, currency, status)
+        VALUES (?, ?, ?, ?, ?, 'failed') ON DUPLICATE KEY UPDATE status='failed'`, [order.id, provider, paymentId, order.totalAmount, order.currency]);
+    } else if (['charge.refunded', 'refund.created', 'refund.updated'].includes(eventType) && order.paymentStatus === 'paid') {
+      await connection.execute(`UPDATE platform_orders SET payment_status='refunded' WHERE id=?`, [order.id]);
+      await connection.execute(`UPDATE platform_payments SET status='refunded', refunded_at=NOW() WHERE order_id=?`, [order.id]);
+      await connection.execute(`UPDATE platform_entitlements SET revoked_at=NOW() WHERE source_type='platform_order' AND source_id=? AND revoked_at IS NULL`, [order.id]);
+    }
+    return { platformOrderId: order.id, processed: true };
+  }
+  async ticketRefundContext(orderId, userId, role) {
+    const [rows] = await this.database.execute(`SELECT ticket.id, ticket.payment_status AS paymentStatus, ticket.provider, ticket.provider_payment_id AS providerPaymentId,
+      ticket.total_amount AS totalAmount, ticket.currency, account.provider_account_id AS providerAccountId
+      FROM ticket_orders ticket JOIN events event_row ON event_row.id=ticket.event_id JOIN payment_accounts account ON account.id=ticket.payment_account_id
+      LEFT JOIN billing_profiles seller ON seller.id=ticket.seller_billing_profile_id
+      LEFT JOIN organization_members member ON member.organization_id=seller.owner_organization_id AND member.user_id=?
+      WHERE ticket.id=? AND (${['manager', 'admin'].includes(role) ? 'TRUE' : "event_row.manager_id=? OR seller.owner_user_id=? OR member.role IN ('owner','admin','manager')"})`, ['manager', 'admin'].includes(role) ? [userId, orderId] : [userId, orderId, userId, userId]);
+    return rows[0] || null;
+  }
+  async platformProducts({ activeOnly = true } = {}) {
+    const [rows] = await this.database.execute(`SELECT product.id, product.product_type AS productType, product.code, product.name, product.description,
+      product.entitlement_feature AS entitlementFeature, product.is_active AS isActive, price.id AS priceId, price.currency, price.amount,
+      price.billing_interval AS billingInterval, price.provider_price_id AS providerPriceId FROM platform_products product
+      LEFT JOIN platform_prices price ON price.product_id=product.id AND price.is_active=TRUE
+      ${activeOnly ? 'WHERE product.is_active=TRUE' : ''} ORDER BY product.id, price.id`, []);
+    return rows.map((row) => ({ ...row, isActive: Boolean(row.isActive) }));
+  }
+  async savePlatformProduct(productId, product, actorUserId) {
+    if (productId) {
+      const [result] = await this.database.execute(`UPDATE platform_products SET product_type=?, code=?, name=?, description=?, entitlement_feature=?, is_active=? WHERE id=?`, [product.productType, product.code, product.name, product.description, product.entitlementFeature, Boolean(product.isActive), productId]);
+      if (!result.affectedRows) return null; await this.audit(actorUserId, 'platform_product_updated', 'platform_product', productId); return { id: productId };
+    }
+    const [result] = await this.database.execute(`INSERT INTO platform_products (product_type, code, name, description, entitlement_feature, is_active) VALUES (?, ?, ?, ?, ?, ?)`, [product.productType, product.code, product.name, product.description, product.entitlementFeature, Boolean(product.isActive)]);
+    await this.audit(actorUserId, 'platform_product_created', 'platform_product', result.insertId); return { id: result.insertId };
+  }
+  async savePlatformPrice(productId, price, actorUserId) {
+    const [products] = await this.database.execute('SELECT id FROM platform_products WHERE id=?', [productId]); if (!products[0]) return null;
+    const [result] = await this.database.execute(`INSERT INTO platform_prices (product_id, currency, amount, billing_interval, provider_price_id, is_active) VALUES (?, ?, ?, ?, ?, ?)`, [productId, price.currency, price.amount, price.billingInterval, price.providerPriceId, Boolean(price.isActive)]);
+    await this.audit(actorUserId, 'platform_price_created', 'platform_price', result.insertId, { productId }); return { id: result.insertId };
+  }
+  async createPlatformOrder(userId, role, request) {
+    if (request.idempotencyKey) {
+      const [existing] = await this.database.execute(`SELECT id, payment_status AS paymentStatus, currency, total_amount AS totalAmount,
+        product_snapshot_json AS productSnapshot FROM platform_orders WHERE buyer_user_id=? AND checkout_idempotency_key=?`, [userId, request.idempotencyKey]);
+      if (existing[0]) return { ...existing[0], product: jsonValue(existing[0].productSnapshot), reused: true };
+    }
+    const profile = await this.billingProfile(request.buyerBillingProfileId, userId, role);
+    if (!profile) return { error: 'BUYER_PROFILE_UNAVAILABLE' };
+    const [rows] = await this.database.execute(`SELECT product.id, product.product_type AS productType, product.code, product.name,
+      product.entitlement_feature AS entitlementFeature, price.id AS priceId, price.currency, price.amount, price.billing_interval AS billingInterval
+      FROM platform_products product JOIN platform_prices price ON price.product_id=product.id WHERE product.id=? AND price.id=? AND product.is_active=TRUE AND price.is_active=TRUE`, [request.productId, request.priceId]);
+    const product = rows[0]; if (!product) return { error: 'PRODUCT_UNAVAILABLE' };
+    if (request.eventId && product.productType !== 'event_fee') return { error: 'INVALID_PRODUCT_CONTEXT' };
+    if (request.eventId) {
+      const [events] = await this.database.execute(`SELECT id FROM events WHERE id=?${['manager', 'admin'].includes(role) ? '' : ' AND manager_id=?'}`, ['manager', 'admin'].includes(role) ? [request.eventId] : [request.eventId, userId]);
+      if (!events[0]) return { error: 'EVENT_UNAVAILABLE' };
+    }
+    const snapshot = { productType: product.productType, code: product.code, name: product.name, entitlementFeature: product.entitlementFeature, priceId: product.priceId, amount: product.amount, currency: product.currency, billingInterval: product.billingInterval };
+    const [result] = await this.database.execute(`INSERT INTO platform_orders (buyer_user_id, buyer_organization_id, buyer_billing_profile_id, product_id, event_id, buyer_capacity, currency, subtotal, tax_amount, total_amount, checkout_idempotency_key, terms_version, accepted_at, product_snapshot_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NOW(), ?)`, [userId, profile.ownerOrganizationId || null, profile.id, product.id, request.eventId || null, request.buyerCapacity, product.currency, product.amount, product.amount, request.idempotencyKey || null, request.termsVersion || null, JSON.stringify(snapshot)]);
+    await this.audit(userId, 'platform_order_created', 'platform_order', result.insertId, { productId: product.id, eventId: request.eventId || null });
+    return { id: result.insertId, paymentStatus: 'pending', currency: product.currency, totalAmount: Number(product.amount), product: snapshot };
+  }
+  async platformOrderForBuyer(orderId, userId, role) {
+    const [rows] = await this.database.execute(`SELECT order_row.id, order_row.buyer_user_id AS buyerUserId, order_row.buyer_organization_id AS buyerOrganizationId,
+      order_row.buyer_billing_profile_id AS buyerBillingProfileId, order_row.product_id AS productId, order_row.event_id AS eventId,
+      order_row.buyer_capacity AS buyerCapacity, order_row.currency, order_row.subtotal, order_row.tax_amount AS taxAmount,
+      order_row.total_amount AS totalAmount, order_row.payment_status AS paymentStatus, order_row.provider, order_row.provider_payment_id AS providerPaymentId,
+      order_row.invoice_id AS invoiceId, order_row.product_snapshot_json AS productSnapshot, price.provider_price_id AS providerPriceId
+      FROM platform_orders order_row JOIN platform_prices price ON price.id=JSON_UNQUOTE(JSON_EXTRACT(order_row.product_snapshot_json, '$.priceId'))
+      WHERE order_row.id=? AND (${['manager', 'admin'].includes(role) ? 'TRUE' : 'order_row.buyer_user_id=?'})`, ['manager', 'admin'].includes(role) ? [orderId] : [orderId, userId]);
+    return rows[0] ? { ...rows[0], product: jsonValue(rows[0].productSnapshot) } : null;
+  }
+  async attachPlatformProviderPayment(orderId, provider, providerPaymentId) {
+    const [orders] = await this.database.execute(`SELECT id, currency, total_amount AS totalAmount FROM platform_orders WHERE id=? AND payment_status='pending'`, [orderId]);
+    if (!orders[0]) return false;
+    await this.database.execute(`UPDATE platform_orders SET provider=?, provider_payment_id=? WHERE id=? AND payment_status='pending'`, [provider, providerPaymentId, orderId]);
+    await this.database.execute(`INSERT INTO platform_payments (order_id, provider, provider_payment_id, amount, currency, status)
+      VALUES (?, ?, ?, ?, ?, 'pending') ON DUPLICATE KEY UPDATE order_id=VALUES(order_id)`, [orderId, provider, providerPaymentId, orders[0].totalAmount, orders[0].currency]);
+    return true;
+  }
+  async issuePlatformOrderInvoice(connection, order) {
+    if (order.invoiceId) return order.invoiceId;
+    const [sellers] = await connection.execute(`SELECT profile.id, profile.owner_organization_id AS ownerOrganizationId, profile.legal_name AS legalName,
+      profile.organization_number AS organizationNumber, profile.vat_number AS vatNumber, profile.address_line_1 AS addressLine1,
+      profile.address_line_2 AS addressLine2, profile.postal_code AS postalCode, profile.city, profile.country, profile.billing_email AS billingEmail,
+      profile.invoice_prefix AS invoicePrefix, profile.invoice_due_days AS invoiceDueDays, profile.payment_instructions AS paymentInstructions
+      FROM platform_billing_settings settings JOIN billing_profiles profile ON profile.id=settings.billing_profile_id
+      WHERE settings.settings_key='platform' AND profile.is_active=TRUE FOR UPDATE`);
+    const seller = sellers[0]; if (!seller) throw new Error('Platform billing profile is not configured.');
+    const [buyers] = await connection.execute(`SELECT id, owner_organization_id AS ownerOrganizationId, profile_type AS profileType, legal_name AS legalName,
+      organization_number AS organizationNumber, vat_number AS vatNumber, address_line_1 AS addressLine1, address_line_2 AS addressLine2,
+      postal_code AS postalCode, city, country, billing_email AS billingEmail, phone FROM billing_profiles WHERE id=? FOR UPDATE`, [order.buyerBillingProfileId]);
+    const buyer = buyers[0]; if (!buyer) throw new Error('Platform order buyer snapshot is unavailable.');
+    const allocation = await this.allocateInvoiceNumber(connection, seller.id, seller.invoicePrefix);
+    const product = jsonValue(order.productSnapshot) || {}; const contextType = product.productType === 'subscription' ? 'platform_subscription' : product.productType === 'event_fee' ? 'platform_event_fee' : 'platform_service';
+    const sellerSnapshot = { legalName: seller.legalName, organizationNumber: seller.organizationNumber, vatNumber: seller.vatNumber, addressLine1: seller.addressLine1, addressLine2: seller.addressLine2, postalCode: seller.postalCode, city: seller.city, country: seller.country, billingEmail: seller.billingEmail };
+    const transactionSnapshot = { product, eventId: order.eventId, buyerCapacity: order.buyerCapacity };
+    const [invoice] = await connection.execute(`INSERT INTO invoices (seller_organization_id, seller_billing_profile_id, buyer_user_id, buyer_organization_id, buyer_billing_profile_id, context_type, context_id, invoice_series_id, invoice_number, status, issue_date, due_date, currency, subtotal, tax_amount, total_amount, seller_snapshot_json, buyer_snapshot_json, booking_snapshot_json, tax_snapshot_json, payment_instructions_snapshot)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', CURDATE(), DATE_ADD(CURDATE(), INTERVAL ? DAY), ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [seller.ownerOrganizationId, seller.id, order.buyerUserId, order.buyerOrganizationId || buyer.ownerOrganizationId || null, buyer.id, contextType, String(order.id), allocation.seriesId, allocation.invoiceNumber, seller.invoiceDueDays, order.currency, order.subtotal, order.taxAmount, order.totalAmount, JSON.stringify(sellerSnapshot), JSON.stringify(buyer), JSON.stringify(transactionSnapshot), JSON.stringify({ treatment: 'not_calculated', amount: order.taxAmount }), JSON.stringify({ text: seller.paymentInstructions })]);
+    await connection.execute(`INSERT INTO invoice_items (invoice_id, description, quantity, unit, unit_price, tax_rate, subtotal, tax_amount, total) VALUES (?, ?, 1, 'service', ?, 0, ?, ?, ?)`, [invoice.insertId, product.name || 'YKCircle service', order.subtotal, order.subtotal, order.taxAmount, order.totalAmount]);
+    await connection.execute(`INSERT INTO invoice_history (invoice_id, action, new_status, metadata_json) VALUES (?, 'issued', 'issued', ?)`, [invoice.insertId, JSON.stringify({ contextType, platformOrderId: order.id })]);
+    await connection.execute('UPDATE platform_orders SET invoice_id=? WHERE id=?', [invoice.insertId, order.id]);
+    return invoice.insertId;
+  }
+  async setPlatformBillingProfile(billingProfileId, actorUserId) {
+    const [profiles] = await this.database.execute('SELECT id FROM billing_profiles WHERE id=? AND is_active=TRUE', [billingProfileId]);
+    if (!profiles[0]) return false;
+    await this.database.execute(`INSERT INTO platform_billing_settings (settings_key, billing_profile_id, updated_by_user_id) VALUES ('platform', ?, ?)
+      ON DUPLICATE KEY UPDATE billing_profile_id=VALUES(billing_profile_id), updated_by_user_id=VALUES(updated_by_user_id)`, [billingProfileId, actorUserId]);
+    await this.audit(actorUserId, 'platform_billing_profile_changed', 'billing_profile', billingProfileId); return true;
+  }
+  async platformBillingProfileReady() {
+    const [rows] = await this.database.execute(`SELECT profile.id FROM platform_billing_settings settings JOIN billing_profiles profile ON profile.id=settings.billing_profile_id
+      WHERE settings.settings_key='platform' AND profile.is_active=TRUE`);
+    return Boolean(rows[0]);
+  }
+  async hasPlatformEntitlement({ userId, organizationId = null, feature, eventId = null }) {
+    const [rows] = await this.database.execute(`SELECT id FROM platform_entitlements WHERE feature=? AND revoked_at IS NULL AND starts_at<=NOW()
+      AND (ends_at IS NULL OR ends_at>NOW()) AND (user_id=? OR (? IS NOT NULL AND organization_id=?) OR (? IS NOT NULL AND event_id=?)) LIMIT 1`, [feature, userId, organizationId, organizationId, eventId, eventId]);
+    return Boolean(rows[0]);
+  }
+  billingProfileCompleteness(profile, context) {
+    const missing = [];
+    for (const key of ['legalName', 'addressLine1', 'postalCode', 'city', 'country', 'billingEmail']) if (!profile?.[key]) missing.push(key);
+    if (context === 'venue_seller' && profile?.profileType === 'organization' && !profile.organizationNumber) missing.push('organizationNumber');
+    return { complete: missing.length === 0, missing };
+  }
+  async eventFinancialReadiness(eventId, userId, role) {
+    const settings = await this.eventPaymentSettings(eventId, userId, role); if (!settings) return { requiresSellerProfile: false, sellerProfileComplete: false, requiresPaymentAccount: false, paymentAccountReady: false, ticketSalesReady: false };
+    const profile = settings.sellerBillingProfileId ? await this.billingProfile(settings.sellerBillingProfileId, userId, role) : null;
+    const completeness = this.billingProfileCompleteness(profile, 'ticket_seller');
+    return { requiresSellerProfile: Boolean(settings.paymentsEnabled || settings.ticketSalesEnabled), sellerProfileComplete: completeness.complete,
+      sellerProfileMissing: completeness.missing, requiresPaymentAccount: Boolean(settings.paymentsEnabled || settings.ticketSalesEnabled),
+      paymentAccountReady: Boolean(settings.paymentAccountId && settings.chargesEnabled && settings.onboardingStatus === 'ready'),
+      ticketSalesReady: Boolean(settings.ticketSalesEnabled && completeness.complete && settings.paymentAccountId && settings.chargesEnabled && settings.onboardingStatus === 'ready' && settings.sellerCapacity) };
+  }
+  async platformSubscriptions(userId, role) {
+    const [rows] = await this.database.execute(`SELECT id, subscriber_user_id AS subscriberUserId, subscriber_organization_id AS subscriberOrganizationId,
+      buyer_billing_profile_id AS buyerBillingProfileId, product_id AS productId, buyer_capacity AS buyerCapacity, status,
+      current_period_start AS currentPeriodStart, current_period_end AS currentPeriodEnd, cancel_at_period_end AS cancelAtPeriodEnd,
+      provider, provider_subscription_id AS providerSubscriptionId, created_at AS createdAt FROM platform_subscriptions
+      WHERE ${['manager', 'admin'].includes(role) ? 'TRUE' : 'subscriber_user_id=?'} ORDER BY created_at DESC`, ['manager', 'admin'].includes(role) ? [] : [userId]);
+    return rows.map((row) => ({ ...row, cancelAtPeriodEnd: Boolean(row.cancelAtPeriodEnd) }));
+  }
+  async subscriptionForViewer(subscriptionId, userId, role) {
+    const [rows] = await this.database.execute(`SELECT id, subscriber_user_id AS subscriberUserId, provider, provider_subscription_id AS providerSubscriptionId, status
+      FROM platform_subscriptions WHERE id=? AND (${['manager', 'admin'].includes(role) ? 'TRUE' : 'subscriber_user_id=?'})`, ['manager', 'admin'].includes(role) ? [subscriptionId] : [subscriptionId, userId]);
+    return rows[0] || null;
+  }
+  async markSubscriptionCancellation(subscriptionId) {
+    await this.database.execute(`UPDATE platform_subscriptions SET cancel_at_period_end=TRUE WHERE id=? AND status IN ('pending','active','past_due')`, [subscriptionId]);
+  }
+  async allocateInvoiceNumber(connection, sellerBillingProfileId, prefix, issueYear = new Date().getUTCFullYear()) {
+    // The row lock makes a per-seller/year sequence safe under concurrent
+    // issuance. Draft invoices never call this method.
+    const [seriesRows] = await connection.execute(`SELECT id, prefix, next_number AS nextNumber FROM invoice_series
+      WHERE seller_billing_profile_id=? AND year=? FOR UPDATE`, [sellerBillingProfileId, issueYear]);
+    let series = seriesRows[0];
+    if (!series) {
+      const normalizedPrefix = String(prefix || 'INV').toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 20) || 'INV';
+      const [insert] = await connection.execute(`INSERT INTO invoice_series (seller_billing_profile_id, prefix, year, next_number)
+        VALUES (?, ?, ?, 2)`, [sellerBillingProfileId, normalizedPrefix, issueYear]);
+      series = { id: insert.insertId, prefix: normalizedPrefix, nextNumber: 1 };
+    } else {
+      await connection.execute('UPDATE invoice_series SET next_number=? WHERE id=?', [Number(series.nextNumber) + 1, series.id]);
+    }
+    return { seriesId: series.id, invoiceNumber: `${series.prefix}-${issueYear}-${String(series.nextNumber).padStart(4, '0')}` };
   }
   async canAccessInvoice(userId, role, invoiceId) {
     if (['manager', 'admin'].includes(role)) return true;
     const [rows] = await this.database.execute(`SELECT i.id FROM invoices i
       LEFT JOIN billing_profiles seller_profile ON seller_profile.id=i.seller_billing_profile_id
-      LEFT JOIN organization_members om ON om.organization_id=i.seller_organization_id AND om.user_id=? WHERE i.id=? AND
-      (i.buyer_user_id=? OR seller_profile.owner_user_id=? OR om.role IN ('owner','admin','manager'))`, [userId, invoiceId, userId, userId]);
+      LEFT JOIN billing_profiles buyer_profile ON buyer_profile.id=i.buyer_billing_profile_id
+      LEFT JOIN organization_members seller_member ON seller_member.organization_id=COALESCE(i.seller_organization_id, seller_profile.owner_organization_id) AND seller_member.user_id=?
+      LEFT JOIN organization_members buyer_member ON buyer_member.organization_id=COALESCE(i.buyer_organization_id, buyer_profile.owner_organization_id) AND buyer_member.user_id=? WHERE i.id=? AND
+      (i.buyer_user_id=? OR buyer_profile.owner_user_id=? OR seller_profile.owner_user_id=? OR seller_member.role IN ('owner','admin','manager') OR buyer_member.role IN ('owner','admin'))`, [userId, userId, invoiceId, userId, userId, userId]);
     return Boolean(rows[0]);
   }
   async invoicesForViewer(userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const access = privileged ? 'TRUE' : `(i.buyer_user_id=? OR seller_profile.owner_user_id=? OR EXISTS (SELECT 1 FROM organization_members seller_member
-      WHERE seller_member.organization_id=i.seller_organization_id AND seller_member.user_id=? AND seller_member.role IN ('owner','admin','manager')))`;
+    const access = privileged ? 'TRUE' : `(i.buyer_user_id=? OR buyer_profile.owner_user_id=? OR seller_profile.owner_user_id=? OR EXISTS (SELECT 1 FROM organization_members seller_member
+      WHERE seller_member.organization_id=COALESCE(i.seller_organization_id, seller_profile.owner_organization_id) AND seller_member.user_id=? AND seller_member.role IN ('owner','admin','manager')) OR EXISTS (SELECT 1 FROM organization_members buyer_member
+      WHERE buyer_member.organization_id=COALESCE(i.buyer_organization_id, buyer_profile.owner_organization_id) AND buyer_member.user_id=? AND buyer_member.role IN ('owner','admin')))`;
     const [rows] = await this.database.execute(`SELECT i.id, i.seller_organization_id AS sellerOrganizationId, i.seller_billing_profile_id AS sellerBillingProfileId,
       COALESCE(seller.name, seller_profile.legal_name) AS sellerOrganizationName, i.buyer_user_id AS buyerUserId, buyer.name AS buyerName,
       i.buyer_organization_id AS buyerOrganizationId, i.booking_id AS bookingId, i.invoice_number AS invoiceNumber,
-      i.status, i.delivery_status AS deliveryStatus, i.issue_date AS issueDate, i.due_date AS dueDate, i.currency,
+      i.context_type AS contextType, i.context_id AS contextId, i.status, i.delivery_status AS deliveryStatus, i.issue_date AS issueDate, i.due_date AS dueDate, i.currency,
       i.subtotal, i.tax_amount AS taxAmount, i.total_amount AS totalAmount, i.paid_at AS paidAt,
       e.id AS eventId, e.title AS eventTitle, i.created_at AS createdAt
       FROM invoices i LEFT JOIN organizations seller ON seller.id=i.seller_organization_id
       LEFT JOIN billing_profiles seller_profile ON seller_profile.id=i.seller_billing_profile_id
+      LEFT JOIN billing_profiles buyer_profile ON buyer_profile.id=i.buyer_billing_profile_id
       LEFT JOIN users buyer ON buyer.id=i.buyer_user_id
       LEFT JOIN venue_bookings booking ON booking.id=i.booking_id
       LEFT JOIN events e ON e.id=booking.event_id
-      WHERE ${access} ORDER BY i.created_at DESC, i.id DESC`, privileged ? [] : [userId, userId, userId]);
+      WHERE ${access} ORDER BY i.created_at DESC, i.id DESC`, privileged ? [] : [userId, userId, userId, userId, userId]);
     return rows;
   }
   async invoice(invoiceId, userId, role) {
     if (!await this.canAccessInvoice(userId, role, invoiceId)) return null;
     const [rows] = await this.database.execute(`SELECT id, seller_organization_id AS sellerOrganizationId, seller_billing_profile_id AS sellerBillingProfileId, buyer_user_id AS buyerUserId,
-      buyer_organization_id AS buyerOrganizationId, buyer_billing_profile_id AS buyerBillingProfileId, booking_id AS bookingId, invoice_number AS invoiceNumber, status, delivery_status AS deliveryStatus,
+      buyer_organization_id AS buyerOrganizationId, buyer_billing_profile_id AS buyerBillingProfileId, booking_id AS bookingId, context_type AS contextType, context_id AS contextId, invoice_series_id AS invoiceSeriesId, invoice_number AS invoiceNumber, status, delivery_status AS deliveryStatus,
       issue_date AS issueDate, due_date AS dueDate, currency, subtotal, tax_amount AS taxAmount, total_amount AS totalAmount,
       pdf_generated_at AS pdfGeneratedAt, pdf_hash AS pdfHash, paid_at AS paidAt, manual_payment_reference AS manualPaymentReference,
       manual_payment_method AS manualPaymentMethod, voided_at AS voidedAt, void_reason AS voidReason, seller_snapshot_json AS sellerSnapshot,
@@ -1476,13 +1846,13 @@ export class Queries {
         const [existingInvoice] = await connection.execute('SELECT id FROM invoices WHERE booking_id=? FOR UPDATE', [bookingId]);
         if (existingInvoice[0]) invoiceId = existingInvoice[0].id;
         else {
-          const invoiceNumber = `${booking.invoicePrefix || 'INV'}-${new Date().getUTCFullYear()}-B${bookingId}`;
+          const allocation = await this.allocateInvoiceNumber(connection, booking.sellerBillingProfileId, booking.invoicePrefix);
           const sellerSnapshot = { legalName: booking.sellerLegalName, organizationNumber: booking.sellerRegistrationNumber, vatNumber: booking.sellerVatNumber || null, addressLine1: booking.sellerAddressLine1, addressLine2: booking.sellerAddressLine2, postalCode: booking.sellerPostalCode, city: booking.sellerCity, country: booking.sellerCountry, billingEmail: booking.sellerBillingEmail };
           const bookingSnapshot = { venueName: booking.venueName, venueAddress: booking.venueAddress, eventTitle: booking.eventTitle, startsAt: utcTimestamp(booking.startAt), endsAt: utcTimestamp(booking.endAt) };
           const taxSnapshot = { type: 'not_calculated', rate: taxRate, taxAmount, country: booking.sellerCountry };
           const paymentInstructions = { text: booking.sellerPaymentInstructions };
-          const [invoice] = await connection.execute(`INSERT INTO invoices (seller_organization_id, seller_billing_profile_id, buyer_user_id, buyer_billing_profile_id, booking_id, invoice_number, status, issue_date, due_date, currency, subtotal, tax_amount, total_amount, seller_snapshot_json, buyer_snapshot_json, booking_snapshot_json, tax_snapshot_json, payment_instructions_snapshot)
-          VALUES (?, ?, ?, ?, ?, ?, 'issued', CURDATE(), DATE_ADD(CURDATE(), INTERVAL ? DAY), ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [booking.sellerOrganizationId, booking.sellerBillingProfileId, booking.organizerUserId, buyerProfile.id, bookingId, invoiceNumber, booking.profileInvoiceDueDays || booking.invoiceDueDays, booking.currency, subtotal, taxAmount, totalAmount, JSON.stringify(sellerSnapshot), JSON.stringify(buyerProfile), JSON.stringify(bookingSnapshot), JSON.stringify(taxSnapshot), JSON.stringify(paymentInstructions)]);
+          const [invoice] = await connection.execute(`INSERT INTO invoices (seller_organization_id, seller_billing_profile_id, buyer_user_id, buyer_billing_profile_id, booking_id, context_type, context_id, invoice_series_id, invoice_number, status, issue_date, due_date, currency, subtotal, tax_amount, total_amount, seller_snapshot_json, buyer_snapshot_json, booking_snapshot_json, tax_snapshot_json, payment_instructions_snapshot)
+          VALUES (?, ?, ?, ?, ?, 'venue_booking', ?, ?, ?, 'issued', CURDATE(), DATE_ADD(CURDATE(), INTERVAL ? DAY), ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [booking.sellerOrganizationId, booking.sellerBillingProfileId, booking.organizerUserId, buyerProfile.id, bookingId, String(bookingId), allocation.seriesId, allocation.invoiceNumber, booking.profileInvoiceDueDays || booking.invoiceDueDays, booking.currency, subtotal, taxAmount, totalAmount, JSON.stringify(sellerSnapshot), JSON.stringify(buyerProfile), JSON.stringify(bookingSnapshot), JSON.stringify(taxSnapshot), JSON.stringify(paymentInstructions)]);
           invoiceId = invoice.insertId;
           const quantity = Math.round(durationHours * 1000) / 1000;
           const unitPrice = quantity > 0 ? Math.round((subtotal / quantity) * 100) / 100 : 0;

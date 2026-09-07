@@ -192,6 +192,13 @@ export class Configuration {
         serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY ?? runtimeValues.maps?.serverApiKey ?? values.maps?.serverApiKey ?? null,
         requiresConsent: mapsRequiresConsent ?? (runtimeValues.maps?.requiresConsent === true || values.maps?.requiresConsent === true),
       },
+      stripe: {
+        // These are intentionally retained only in server runtime
+        // configuration. API responses never serialize this object.
+        secretKey: process.env.STRIPE_SECRET_KEY ?? runtimeValues.stripe?.secretKey ?? values.stripe?.secretKey ?? null,
+        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? runtimeValues.stripe?.publishableKey ?? values.stripe?.publishableKey ?? null,
+        webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? runtimeValues.stripe?.webhookSecret ?? values.stripe?.webhookSecret ?? null,
+      },
       retention: {
         passwordResetDays: Number(process.env.RETENTION_PASSWORD_RESET_DAYS || retentionValues.passwordResetDays || 7),
         verificationTokenDays: Number(process.env.RETENTION_VERIFICATION_TOKEN_DAYS || retentionValues.verificationTokenDays || 30),

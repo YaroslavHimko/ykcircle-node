@@ -105,5 +105,10 @@ export default {
       serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY,
       requiresConsent: process.env.GOOGLE_MAPS_REQUIRES_CONSENT === 'true',
     },
+    stripe: {
+      secretKey: process.env.STRIPE_SECRET_KEY,
+      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+    },
   },
 };

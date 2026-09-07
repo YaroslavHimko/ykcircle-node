@@ -6,6 +6,20 @@ export class Database {
     this.initialized = null;
   }
 
+  // The application historically bootstrapped its schema with CREATE TABLE IF
+  // NOT EXISTS.  Financial columns must therefore be additive for deployed
+  // databases too; never rely on a fresh database when rolling this out.
+  async ensureColumn(table, column, definition) {
+    const [rows] = await this.pool.execute(`SELECT 1 FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, [table, column]);
+    if (!rows[0]) await this.pool.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+  }
+  async hasIndex(table, index) {
+    const [rows] = await this.pool.execute(`SELECT 1 FROM information_schema.statistics
+      WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`, [table, index]);
+    return Boolean(rows[0]);
+  }
+
   async initialize() {
     this.initialized ||= (async () => {
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS users (
@@ -574,6 +588,7 @@ export class Database {
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS organizations (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(160) NOT NULL, slug VARCHAR(180) NOT NULL UNIQUE,
         description TEXT NULL, website_url VARCHAR(1024) NULL, phone VARCHAR(80) NULL, contact_email VARCHAR(255) NULL,
+        default_billing_profile_id INT UNSIGNED NULL,
         is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS organization_members (
@@ -653,14 +668,15 @@ export class Database {
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, billing_profile_id INT UNSIGNED NOT NULL, provider VARCHAR(80) NOT NULL,
         provider_account_id VARCHAR(255) NULL, onboarding_status ENUM('not_started','pending','restricted','ready','disabled') NOT NULL DEFAULT 'not_started',
         charges_enabled BOOLEAN NOT NULL DEFAULT FALSE, payouts_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-        country VARCHAR(120) NULL, default_currency CHAR(3) NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        details_submitted BOOLEAN NULL, country VARCHAR(120) NULL, default_currency CHAR(3) NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY payment_account_provider (provider, provider_account_id), INDEX payment_accounts_profile (billing_profile_id),
         CONSTRAINT payment_accounts_profile_fk FOREIGN KEY (billing_profile_id) REFERENCES billing_profiles(id) ON DELETE RESTRICT
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_payment_settings (
         event_id INT UNSIGNED NOT NULL PRIMARY KEY, seller_billing_profile_id INT UNSIGNED NULL, payment_account_id INT UNSIGNED NULL,
-        currency CHAR(3) NULL, payments_enabled BOOLEAN NOT NULL DEFAULT FALSE, ticket_sales_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        seller_capacity ENUM('trader','private') NULL, currency CHAR(3) NULL, payments_enabled BOOLEAN NOT NULL DEFAULT FALSE, ticket_sales_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        refund_policy_snapshot JSON NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         CONSTRAINT event_payment_settings_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
         CONSTRAINT event_payment_settings_seller_fk FOREIGN KEY (seller_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
@@ -668,7 +684,8 @@ export class Database {
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoices (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, seller_organization_id INT UNSIGNED NULL, buyer_user_id INT UNSIGNED NULL,
-        buyer_organization_id INT UNSIGNED NULL, buyer_billing_profile_id INT UNSIGNED NULL, seller_billing_profile_id INT UNSIGNED NULL, booking_id INT UNSIGNED NULL, invoice_number VARCHAR(80) NULL,
+        buyer_organization_id INT UNSIGNED NULL, buyer_billing_profile_id INT UNSIGNED NULL, seller_billing_profile_id INT UNSIGNED NULL, booking_id INT UNSIGNED NULL,
+        context_type VARCHAR(64) NULL, context_id VARCHAR(128) NULL, invoice_series_id INT UNSIGNED NULL, invoice_number VARCHAR(80) NULL,
         status ENUM('draft','issued','sent','paid','overdue','void') NOT NULL DEFAULT 'draft', delivery_status ENUM('pending','sent','failed') NULL,
         issue_date DATE NULL, due_date DATE NULL, currency CHAR(3) NOT NULL, subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
         tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -677,7 +694,7 @@ export class Database {
         paid_at DATETIME NULL, paid_by_user_id INT UNSIGNED NULL, manual_payment_reference VARCHAR(255) NULL,
         manual_payment_method ENUM('bank_transfer','swish','cash','other') NULL, voided_at DATETIME NULL, voided_by INT UNSIGNED NULL, void_reason TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        UNIQUE KEY invoice_number_per_seller (seller_organization_id, invoice_number), INDEX invoices_booking (booking_id),
+        UNIQUE KEY invoice_number_per_profile (seller_billing_profile_id, invoice_number), INDEX invoices_booking (booking_id),
         CONSTRAINT invoices_seller_fk FOREIGN KEY (seller_organization_id) REFERENCES organizations(id) ON DELETE RESTRICT,
         CONSTRAINT invoices_buyer_fk FOREIGN KEY (buyer_user_id) REFERENCES users(id) ON DELETE SET NULL,
         CONSTRAINT invoices_buyer_billing_profile_fk FOREIGN KEY (buyer_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
@@ -707,6 +724,115 @@ export class Database {
         INDEX payments_invoice (invoice_id, created_at),
         CONSTRAINT payments_invoice_fk FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE RESTRICT,
         CONSTRAINT payments_booking_fk FOREIGN KEY (booking_id) REFERENCES venue_bookings(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS invoice_series (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, seller_billing_profile_id INT UNSIGNED NOT NULL,
+        prefix VARCHAR(20) NOT NULL, year SMALLINT UNSIGNED NOT NULL, next_number INT UNSIGNED NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY invoice_series_seller_year (seller_billing_profile_id, year),
+        CONSTRAINT invoice_series_seller_fk FOREIGN KEY (seller_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE RESTRICT
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS platform_billing_settings (
+        settings_key VARCHAR(64) NOT NULL PRIMARY KEY, billing_profile_id INT UNSIGNED NULL,
+        updated_by_user_id INT UNSIGNED NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT platform_billing_profile_fk FOREIGN KEY (billing_profile_id) REFERENCES billing_profiles(id) ON DELETE RESTRICT,
+        CONSTRAINT platform_billing_settings_user_fk FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS platform_products (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, product_type ENUM('subscription','event_fee','featured_listing','other') NOT NULL,
+        code VARCHAR(100) NOT NULL UNIQUE, name VARCHAR(255) NOT NULL, description TEXT NULL,
+        entitlement_feature VARCHAR(100) NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS platform_prices (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, product_id INT UNSIGNED NOT NULL, currency CHAR(3) NOT NULL,
+        amount DECIMAL(12,2) NOT NULL, billing_interval ENUM('month','year') NULL, provider_price_id VARCHAR(255) NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY platform_price_provider (provider_price_id), INDEX platform_price_product (product_id, is_active),
+        CONSTRAINT platform_prices_product_fk FOREIGN KEY (product_id) REFERENCES platform_products(id) ON DELETE RESTRICT
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS platform_orders (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, buyer_user_id INT UNSIGNED NULL, buyer_organization_id INT UNSIGNED NULL,
+        buyer_billing_profile_id INT UNSIGNED NULL, product_id INT UNSIGNED NOT NULL, event_id INT UNSIGNED NULL,
+        buyer_capacity ENUM('consumer','business') NOT NULL, currency CHAR(3) NOT NULL, subtotal DECIMAL(12,2) NOT NULL,
+        tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL,
+        payment_status ENUM('pending','paid','failed','refunded','cancelled') NOT NULL DEFAULT 'pending',
+        provider VARCHAR(80) NULL, provider_payment_id VARCHAR(255) NULL, checkout_idempotency_key VARCHAR(128) NULL, invoice_id INT UNSIGNED NULL,
+        terms_version VARCHAR(64) NULL, accepted_at DATETIME NULL, product_snapshot_json JSON NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY platform_order_provider_payment (provider, provider_payment_id), UNIQUE KEY platform_order_idempotency (buyer_user_id, checkout_idempotency_key), INDEX platform_orders_buyer (buyer_user_id, created_at),
+        CONSTRAINT platform_orders_buyer_user_fk FOREIGN KEY (buyer_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT platform_orders_buyer_org_fk FOREIGN KEY (buyer_organization_id) REFERENCES organizations(id) ON DELETE SET NULL,
+        CONSTRAINT platform_orders_buyer_profile_fk FOREIGN KEY (buyer_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
+        CONSTRAINT platform_orders_product_fk FOREIGN KEY (product_id) REFERENCES platform_products(id) ON DELETE RESTRICT,
+        CONSTRAINT platform_orders_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL,
+        CONSTRAINT platform_orders_invoice_fk FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS platform_subscriptions (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, subscriber_user_id INT UNSIGNED NULL, subscriber_organization_id INT UNSIGNED NULL,
+        buyer_billing_profile_id INT UNSIGNED NULL, product_id INT UNSIGNED NOT NULL, buyer_capacity ENUM('consumer','business') NOT NULL,
+        status ENUM('pending','active','past_due','cancelled','expired') NOT NULL DEFAULT 'pending',
+        current_period_start DATETIME NULL, current_period_end DATETIME NULL, cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+        provider VARCHAR(80) NULL, provider_customer_id VARCHAR(255) NULL, provider_subscription_id VARCHAR(255) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY platform_subscription_provider (provider, provider_subscription_id), INDEX platform_subscriptions_subscriber (subscriber_user_id, status),
+        CONSTRAINT platform_subscriptions_user_fk FOREIGN KEY (subscriber_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT platform_subscriptions_org_fk FOREIGN KEY (subscriber_organization_id) REFERENCES organizations(id) ON DELETE SET NULL,
+        CONSTRAINT platform_subscriptions_profile_fk FOREIGN KEY (buyer_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
+        CONSTRAINT platform_subscriptions_product_fk FOREIGN KEY (product_id) REFERENCES platform_products(id) ON DELETE RESTRICT
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS platform_payments (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, order_id INT UNSIGNED NULL, subscription_id INT UNSIGNED NULL,
+        provider VARCHAR(80) NOT NULL, provider_payment_id VARCHAR(255) NULL, provider_invoice_id VARCHAR(255) NULL,
+        amount DECIMAL(12,2) NOT NULL, currency CHAR(3) NOT NULL,
+        status ENUM('pending','succeeded','failed','refunded','partially_refunded','cancelled') NOT NULL DEFAULT 'pending',
+        paid_at DATETIME NULL, refunded_at DATETIME NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY platform_payment_provider (provider, provider_payment_id), INDEX platform_payments_order (order_id, created_at),
+        CONSTRAINT platform_payments_order_fk FOREIGN KEY (order_id) REFERENCES platform_orders(id) ON DELETE SET NULL,
+        CONSTRAINT platform_payments_subscription_fk FOREIGN KEY (subscription_id) REFERENCES platform_subscriptions(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS platform_entitlements (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NULL, organization_id INT UNSIGNED NULL,
+        event_id INT UNSIGNED NULL, feature VARCHAR(100) NOT NULL, source_type VARCHAR(64) NOT NULL, source_id INT UNSIGNED NULL,
+        starts_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ends_at DATETIME NULL, revoked_at DATETIME NULL,
+        INDEX platform_entitlement_lookup (user_id, organization_id, event_id, feature, revoked_at),
+        CONSTRAINT platform_entitlements_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT platform_entitlements_org_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL,
+        CONSTRAINT platform_entitlements_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_ticket_types (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL, name VARCHAR(160) NOT NULL,
+        description TEXT NULL, price DECIMAL(12,2) NOT NULL, currency CHAR(3) NOT NULL, quantity_available INT UNSIGNED NULL,
+        quantity_sold INT UNSIGNED NOT NULL DEFAULT 0, sales_start_at DATETIME NULL, sales_end_at DATETIME NULL,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX event_ticket_types_event (event_id, is_active),
+        CONSTRAINT event_ticket_types_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS ticket_orders (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, order_number VARCHAR(64) NOT NULL UNIQUE, event_id INT UNSIGNED NULL,
+        attendee_user_id INT UNSIGNED NULL, attendee_email VARCHAR(255) NOT NULL, seller_billing_profile_id INT UNSIGNED NULL,
+        payment_account_id INT UNSIGNED NULL, currency CHAR(3) NOT NULL, subtotal DECIMAL(12,2) NOT NULL,
+        tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL,
+        payment_status ENUM('pending','paid','failed','refunded','partially_refunded','disputed','cancelled') NOT NULL DEFAULT 'pending',
+        provider VARCHAR(80) NOT NULL, provider_payment_id VARCHAR(255) NULL, seller_snapshot_json JSON NOT NULL,
+        refund_policy_snapshot JSON NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, paid_at DATETIME NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY ticket_order_provider_payment (provider, provider_payment_id), INDEX ticket_orders_attendee (attendee_user_id, created_at),
+        CONSTRAINT ticket_orders_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL,
+        CONSTRAINT ticket_orders_attendee_fk FOREIGN KEY (attendee_user_id) REFERENCES users(id) ON DELETE SET NULL,
+        CONSTRAINT ticket_orders_seller_fk FOREIGN KEY (seller_billing_profile_id) REFERENCES billing_profiles(id) ON DELETE SET NULL,
+        CONSTRAINT ticket_orders_account_fk FOREIGN KEY (payment_account_id) REFERENCES payment_accounts(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS ticket_order_items (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ticket_order_id INT UNSIGNED NOT NULL, ticket_type_id INT UNSIGNED NULL,
+        ticket_type_snapshot_json JSON NOT NULL, quantity INT UNSIGNED NOT NULL, unit_price DECIMAL(12,2) NOT NULL,
+        subtotal DECIMAL(12,2) NOT NULL, tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0, total_amount DECIMAL(12,2) NOT NULL,
+        CONSTRAINT ticket_order_items_order_fk FOREIGN KEY (ticket_order_id) REFERENCES ticket_orders(id) ON DELETE RESTRICT,
+        CONSTRAINT ticket_order_items_type_fk FOREIGN KEY (ticket_type_id) REFERENCES event_ticket_types(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS payment_provider_events (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, provider VARCHAR(80) NOT NULL, provider_event_id VARCHAR(255) NOT NULL,
+        event_type VARCHAR(120) NOT NULL, payload_json JSON NOT NULL, processed_at DATETIME NULL, processing_error TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY payment_provider_event (provider, provider_event_id)
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_types (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, slug VARCHAR(100) NOT NULL UNIQUE, name VARCHAR(120) NOT NULL, sort_order INT NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT TRUE
@@ -747,6 +873,21 @@ export class Database {
         starts_at DATETIME NOT NULL, ends_at DATETIME NOT NULL, status ENUM('draft','scheduled','active','paused','ended') NOT NULL DEFAULT 'draft', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX venue_promotions_active (status, starts_at, ends_at), CONSTRAINT venue_promotions_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
+      // Additive compatibility migrations. Existing production rows are left
+      // untouched; the new nullable fields are populated only by new flows.
+      await this.ensureColumn('organizations', 'default_billing_profile_id', 'INT UNSIGNED NULL');
+      await this.ensureColumn('payment_accounts', 'details_submitted', 'BOOLEAN NULL');
+      await this.ensureColumn('event_payment_settings', 'seller_capacity', "ENUM('trader','private') NULL");
+      await this.ensureColumn('event_payment_settings', 'refund_policy_snapshot', 'JSON NULL');
+      await this.ensureColumn('invoices', 'context_type', 'VARCHAR(64) NULL');
+      await this.ensureColumn('invoices', 'context_id', 'VARCHAR(128) NULL');
+      await this.ensureColumn('invoices', 'invoice_series_id', 'INT UNSIGNED NULL');
+      await this.ensureColumn('platform_orders', 'checkout_idempotency_key', 'VARCHAR(128) NULL');
+      // Invoice numbers belong to a legal seller profile, not to an
+      // organization. Retiring this index does not alter legacy numbers.
+      if (await this.hasIndex('invoices', 'invoice_number_per_seller')) await this.pool.execute('ALTER TABLE invoices DROP INDEX invoice_number_per_seller');
+      if (!await this.hasIndex('invoices', 'invoice_number_per_profile')) await this.pool.execute('ALTER TABLE invoices ADD UNIQUE KEY invoice_number_per_profile (seller_billing_profile_id, invoice_number)');
+      if (!await this.hasIndex('platform_orders', 'platform_order_idempotency')) await this.pool.execute('ALTER TABLE platform_orders ADD UNIQUE KEY platform_order_idempotency (buyer_user_id, checkout_idempotency_key)');
     })();
     return this.initialized;
   }

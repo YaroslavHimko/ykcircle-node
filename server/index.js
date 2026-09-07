@@ -66,6 +66,7 @@ const start = async () => {
   const venueFtpService = new FtpService(config.ftp.venues);
   const groupFtpService = new FtpService(config.ftp.groups);
   const articleFtpService = new FtpService(config.ftp.articles);
+  const api = new Api({ config, database, queries, emailService, ftpService, eventFtpService, venueFtpService, groupFtpService, articleFtpService });
   const app = express();
   if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1);
   app.disable('x-powered-by');
@@ -77,6 +78,8 @@ const start = async () => {
   }
   app.use(securityHeaders);
   app.use(cors({ origin: config.runtime.allowedOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], maxAge: 86400 }));
+  app.post('/api/payment-webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }));
+  api.registerPaymentWebhooks(app);
   app.use(express.json());
   const byIpAndEmail = (req) => `${req.ip}:${String(req.body?.email || req.body?.reporterEmail || '').trim().toLowerCase()}`;
   const authIpLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30, message: 'Too many authentication attempts. Please try again later.' });
@@ -112,7 +115,7 @@ const start = async () => {
   // Media is served only through API routes below. Do not expose a generic
   // local /uploads directory: it would bypass signed URLs for draft venues,
   // events, and private groups if a file were ever present on disk.
-  new Api({ config, database, queries, emailService, ftpService, eventFtpService, venueFtpService, groupFtpService, articleFtpService }).register(app);
+  api.register(app);
   await queries.initialize();
   await queries.configureRetentionPolicies(config.runtime.retention);
   const runRetention = async () => { try { await queries.applyRetentionPolicies(config.runtime.retention); } catch (error) { console.error('Retention cleanup failed:', error.message); } };
