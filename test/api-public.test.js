@@ -133,6 +133,32 @@ test('does not publish an event until its selected venue confirms the booking', 
   assert.equal(publishCalled, false);
 });
 
+test('returns a signed cover URL for an owner\'s draft in the events list', async (t) => {
+  const secret = 'a sufficiently random test secret that exceeds thirty two characters';
+  const queries = {
+    initialize: async () => {},
+    findUserById: async () => ({ id: 7, role: 'organizer', sessionVersion: 1, isEmailConfirmed: true }),
+    eventsForViewer: async () => [{ id: 12, managerId: 7, status: 'Draft', visibility: 'Public', coverImage: 'event-12.png' }],
+  };
+  const app = express();
+  app.use(express.json());
+  new Api({
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
+    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+  }).register(app);
+  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events`, { headers: { Authorization: `Bearer ${token}` } });
+  const [event] = await response.json();
+  assert.equal(response.status, 200);
+  assert.match(event.coverImage, /^\/api\/media\/event\//);
+  assert.equal(event.coverImage, event.coverImageUrl);
+  assert.equal(event.coverImage, event.thumbnailUrl);
+});
+
 test('creates a requested venue booking with a timed venue draft', async (t) => {
   const secret = 'a sufficiently random test secret that exceeds thirty two characters';
   const bookingCalls = [];
