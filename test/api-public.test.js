@@ -56,6 +56,10 @@ test('serves public API resources and validates unsubscribe requests', async (t)
     assert.equal(page.status, 200, `${item.slug} must be public`);
     assert.match(await page.text(), /Current version:/);
   }
+  const venueTerms = await fetch(`${baseUrl}/venue-terms`);
+  const venueTermsHtml = await venueTerms.text();
+  assert.match(venueTermsHtml, /<pre><code>Seller:/);
+  assert.doesNotMatch(venueTermsHtml, /```text/);
 
   const invalid = await fetch(`${baseUrl}/api/email/unsubscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'invalid', reason: 'Unknown' }) });
   assert.equal(invalid.status, 400);
