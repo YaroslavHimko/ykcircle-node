@@ -19,9 +19,14 @@ const environmentBoolean = (name) => {
 
 const configuredArray = (name, value) => {
   if (value == null || value === '') return null;
-  const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-  if (!Array.isArray(parsed)) throw new Error(`${name} must be a JSON array.`);
-  return parsed;
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    // The optional public inventory is a legal-launch blocker, not a reason
+    // to take down all API traffic because a hosting-panel value was malformed.
+    return null;
+  }
 };
 
 export class Configuration {

@@ -34,7 +34,9 @@ export default {
     analyticsProviders: process.env.ANALYTICS_PROVIDERS || null,
     marketingProviders: process.env.MARKETING_PROVIDERS || null,
     cookieInventory: process.env.COOKIE_INVENTORY || null,
-    subprocessors: process.env.SUBPROCESSORS_JSON ? JSON.parse(process.env.SUBPROCESSORS_JSON) : null,
+    // Keep this raw. Configuration validates optional JSON safely so an
+    // incomplete deployment value cannot prevent the API from starting.
+    subprocessors: process.env.SUBPROCESSORS_JSON || null,
     directChargeVerified: process.env.PAYMENT_DIRECT_CHARGE_VERIFIED === 'true',
   },
   database: {

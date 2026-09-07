@@ -105,3 +105,8 @@ test('reports missing commercial legal configuration without leaving public docu
   assert.ok(readiness.blockers.some((blocker) => blocker.includes('PAYMENT_PROVIDER')));
   assert.doesNotMatch((await legalDocument('paid-services', config)).content, /\[PAYMENT PROVIDER\]/);
 });
+
+test('treats malformed optional subprocessor inventory as a legal blocker instead of a startup failure', () => {
+  const config = new Configuration({ ...values(), legal: { subprocessors: '{ not valid JSON' } });
+  assert.equal(config.legal.subprocessors, null);
+});
