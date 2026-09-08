@@ -209,3 +209,18 @@ test('venue moderation compares statuses without blending parameter and column c
   await queries.moderateVenue(5, 'pending', 'verified', true);
   assert.deepEqual(calls[1].parameters, ['pending', 'verified', 'verified', true, true, false, 5]);
 });
+
+test('venue owners can submit only draft or rejected listings for moderation', async () => {
+  const calls = [];
+  const queries = new Queries({
+    execute: async (sql, parameters) => {
+      calls.push({ sql, parameters });
+      return [{ affectedRows: 1 }];
+    },
+  });
+
+  assert.equal(await queries.submitVenueForModeration(7), true);
+  assert.match(calls[0].sql, /SET moderation_status = 'pending'/);
+  assert.match(calls[0].sql, /moderation_status IN \('draft', 'rejected'\)/);
+  assert.deepEqual(calls[0].parameters, [7]);
+});

@@ -1083,6 +1083,16 @@ export class Api {
       try { await ensureTable(); if (!await this.queries.moderateVenue(venueId, moderationStatus, verificationStatus, isActive)) return res.status(404).json({ error: 'Venue not found.' }); return sendVenue(res, await this.queries.venue(venueId, req.user.id, req.user.role)); }
       catch (error) { console.error('Venue moderation update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue moderation.' }); }
     });
+    app.post('/api/venues/:id/submit-for-review', authenticate, requireVerifiedUser, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id);
+      if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try {
+        await ensureTable();
+        if (!await this.queries.canManageVenue(venueId, req.user.id, req.user.role)) return res.status(404).json({ error: 'Venue not found or not managed by you.' });
+        if (!await this.queries.submitVenueForModeration(venueId)) return res.status(409).json({ error: 'Only draft or rejected venues can be submitted for review.' });
+        return sendVenue(res, await this.queries.venue(venueId, req.user.id, req.user.role));
+      } catch (error) { console.error('Venue review submission failed:', error.message); return res.status(500).json({ error: 'Unable to submit venue for review.' }); }
+    });
     app.post('/api/venues', authenticate, requireVerifiedUser, requireVenueOwner, ...creationGuards, async (req, res) => {
       const { data, errors } = venueData(req.body);
       if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });

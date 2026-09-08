@@ -146,6 +146,39 @@ test('does not publish an event until its selected venue confirms the booking', 
   assert.equal(publishCalled, false);
 });
 
+test('lets a verified venue owner submit a draft for review without granting approval access', async (t) => {
+  const secret = 'a sufficiently random test secret that exceeds thirty two characters';
+  const submissions = [];
+  const queries = {
+    initialize: async () => {},
+    findUserById: async () => ({ id: 7, role: 'venue_owner', sessionVersion: 1, isEmailConfirmed: true }),
+    canManageVenue: async (venueId, userId, role) => venueId === 4 && userId === 7 && role === 'venue_owner',
+    submitVenueForModeration: async (venueId) => { submissions.push(venueId); return true; },
+    venue: async () => ({ id: 4, name: 'Harbor Hall', moderationStatus: 'pending', isActive: true, canManage: true }),
+  };
+  const app = express();
+  app.use(express.json());
+  new Api({
+    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
+    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+  }).register(app);
+  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/venues/4/submit-for-review`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(submissions, [4]);
+  assert.equal((await response.json()).moderationStatus, 'pending');
+
+  const approval = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/venues/4/moderation`, {
+    method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ moderationStatus: 'approved' }),
+  });
+  assert.equal(approval.status, 403);
+  assert.deepEqual(await approval.json(), { error: 'Admin access required.' });
+});
+
 test('returns a signed cover URL for an owner\'s draft in the events list', async (t) => {
   const secret = 'a sufficiently random test secret that exceeds thirty two characters';
   const queries = {

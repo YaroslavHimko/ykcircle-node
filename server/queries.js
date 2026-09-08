@@ -1689,6 +1689,14 @@ export class Queries {
     const [result] = await this.database.execute(`UPDATE venues SET moderation_status = ?, verification_status = COALESCE(?, verification_status), is_verified = CASE WHEN ? IS NULL THEN verification_status = 'verified' ELSE ? END, is_active = COALESCE(?, is_active), published_at = CASE WHEN ? AND published_at IS NULL THEN NOW() ELSE published_at END WHERE id = ?`, [moderationStatus, verificationStatus, verificationStatus, verificationStatus === 'verified', isActive, moderationStatus === 'approved', venueId]);
     return result.affectedRows > 0;
   }
+  async submitVenueForModeration(venueId) {
+    // Submission is deliberately a narrow state transition. Owners may ask
+    // for review, but only an administrator can approve, reject, or remove a
+    // listing. Keeping both status literals in SQL also avoids comparing a
+    // bound string parameter with a literal under incompatible collations.
+    const [result] = await this.database.execute("UPDATE venues SET moderation_status = 'pending' WHERE id = ? AND moderation_status IN ('draft', 'rejected')", [venueId]);
+    return result.affectedRows > 0;
+  }
   async saveVenue(venueId, userId) {
     const [result] = await this.database.execute('INSERT IGNORE INTO saved_venues (user_id, venue_id) SELECT ?, id FROM venues WHERE id = ? AND is_active = TRUE', [userId, venueId]);
     return result.affectedRows > 0;
