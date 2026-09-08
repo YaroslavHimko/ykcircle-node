@@ -131,7 +131,7 @@ test('uses the default billing profile and prorates an hourly venue booking', as
       if (sql.startsWith('SELECT starts_at AS startsAt')) return [[{ startsAt: '2026-10-10T10:00:00Z', endsAt: '2026-10-10T10:30:00Z' }]];
       if (sql.startsWith('SELECT id, timezone, price_from')) return [[{ id: 4, timezone: 'UTC', priceFrom: '1800.00', currency: 'SEK' }]];
       if (sql.startsWith('SELECT id, status FROM venue_bookings')) return [[]];
-      if (sql.startsWith('SELECT buffer_before_minutes')) return [[{ beforeMinutes: 0, afterMinutes: 0, currency: 'SEK', hourlyRate: '1800.00' }]];
+      if (sql.includes('FROM venue_booking_settings WHERE venue_id=?')) return [[{ bookingMode: 'hourly', beforeMinutes: 0, afterMinutes: 0, currency: 'SEK', hourlyRate: '1800.00', dailyRate: null }]];
       if (sql.includes('FROM billing_profiles p')) return [[{ id: 51, ownerUserId: 7, ownerOrganizationId: null, profileType: 'individual', legalName: 'Anna Example', addressLine1: 'Main 1', postalCode: '111 11', city: 'Stockholm', country: 'Sweden', billingEmail: 'anna@example.test', isDefault: true, isActive: true }]];
       if (sql.startsWith('SELECT timezone FROM venues')) return [[{ timezone: 'UTC' }]];
       if (sql.includes('SELECT id, booking_type AS bookingType')) return [[]];
@@ -148,6 +148,33 @@ test('uses the default billing profile and prorates an hourly venue booking', as
   assert.match(insert.sql, /subtotal, tax_amount, total_amount/);
   assert.equal(insert.parameters.at(-2), 900);
   assert.equal(insert.parameters.at(-1), 900);
+});
+
+test('charges a daily venue once and records a daily booking', async () => {
+  const calls = [];
+  const connection = {
+    beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {},
+    execute: async (sql, parameters = []) => {
+      calls.push({ sql, parameters });
+      if (sql.startsWith('SELECT starts_at AS startsAt')) return [[{ startsAt: '2026-10-10T00:00:00Z', endsAt: '2026-10-11T00:00:00Z' }]];
+      if (sql.startsWith('SELECT id, timezone, price_from')) return [[{ id: 4, timezone: 'UTC', priceFrom: '1800.00', currency: 'SEK' }]];
+      if (sql.startsWith('SELECT id, status FROM venue_bookings')) return [[]];
+      if (sql.includes('FROM venue_booking_settings WHERE venue_id=?')) return [[{ bookingMode: 'daily', beforeMinutes: 0, afterMinutes: 0, currency: 'SEK', hourlyRate: null, dailyRate: '6500.00' }]];
+      if (sql.includes('FROM billing_profiles p')) return [[{ id: 51, isDefault: true }]];
+      if (sql.startsWith('SELECT timezone FROM venues')) return [[{ timezone: 'UTC' }]];
+      if (sql.includes('SELECT id, booking_type AS bookingType')) return [[]];
+      if (sql.includes('FROM venue_external_reservations')) return [[]];
+      if (sql.startsWith('INSERT INTO venue_bookings')) return [{ insertId: 23 }];
+      return [{ affectedRows: 1 }];
+    },
+  };
+  const queries = new Queries({ execute: async () => [[]], getConnection: async () => connection });
+
+  assert.deepEqual(await queries.requestVenueBooking(12, 4, 7, 'organizer'), { id: 23, status: 'requested' });
+  const insert = calls.find((call) => call.sql.startsWith('INSERT INTO venue_bookings'));
+  assert.equal(insert.parameters[5], 'daily');
+  assert.equal(insert.parameters.at(-2), 6500);
+  assert.equal(insert.parameters.at(-1), 6500);
 });
 
 test('uses boolean confirmation flags when reviewing a venue booking', async () => {

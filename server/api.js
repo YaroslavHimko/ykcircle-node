@@ -779,12 +779,18 @@ export class Api {
       const starts = zonedDateTime(start, venue.timezone);
       const ends = zonedDateTime(end, venue.timezone);
       if (!starts || !ends) return { error: 'The venue timezone is invalid.' };
-      if (starts.date !== ends.date) return { error: 'The event must start and end on the same local day at this venue.' };
       const startTime = starts.time;
       const endTime = ends.time;
       if (starts.seconds !== '00' || ends.seconds !== '00') return { error: 'Venue bookings must start and end on a whole minute.' };
       const date = starts.date;
       const availability = await this.queries.calculateVenueAvailability(venue.id, date, date);
+      if (!availability) return { error: 'This venue is not available for booking.' };
+      if (availability.bookingMode === 'daily') {
+        const fullDay = (ends.date === addDateDays(date, 1) && endTime === '00:00') || (ends.date === date && endTime === '23:59');
+        if (startTime !== '00:00' || !fullDay) return { error: 'This venue can only be booked for a full local day.' };
+        return availability.dates[0]?.availableIntervals.length ? {} : { error: 'The venue is not available on this date.', unavailable: true };
+      }
+      if (starts.date !== ends.date) return { error: 'The event must start and end on the same local day at this venue.' };
       if (!availability || !['hourly', 'both'].includes(availability.bookingMode)) return { error: 'This venue does not accept hourly bookings.' };
       const durationMinutes = (end.getTime() - start.getTime()) / 60000;
       if (durationMinutes < availability.minimumBookingMinutes) return { error: `This venue requires bookings of at least ${availability.minimumBookingMinutes} minutes.` };

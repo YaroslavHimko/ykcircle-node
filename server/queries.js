@@ -1746,19 +1746,20 @@ export class Queries {
       if (!venues[0]) { await connection.rollback(); return { error: 'VENUE_NOT_FOUND' }; }
       const [existing] = await connection.execute('SELECT id, status FROM venue_bookings WHERE event_id = ? FOR UPDATE', [eventId]);
       if (existing[0] && ['requested', 'confirmed'].includes(existing[0].status)) { await connection.rollback(); return { error: 'EVENT_ALREADY_BOOKED' }; }
-      const [settingsRows] = await connection.execute('SELECT buffer_before_minutes AS beforeMinutes, buffer_after_minutes AS afterMinutes, currency, hourly_rate AS hourlyRate FROM venue_booking_settings WHERE venue_id=?', [venueId]);
+      const [settingsRows] = await connection.execute('SELECT booking_mode AS bookingMode, buffer_before_minutes AS beforeMinutes, buffer_after_minutes AS afterMinutes, currency, hourly_rate AS hourlyRate, daily_rate AS dailyRate FROM venue_booking_settings WHERE venue_id=?', [venueId]);
       const settings = settingsRows[0];
       if (!settings) { await connection.rollback(); throw new Error(`Missing booking settings for venue ${venueId}`); }
       const localStart = zonedDateTime(event.startsAt instanceof Date ? event.startsAt : `${String(event.startsAt).replace(' ', 'T').replace(/Z$/i, '')}Z`, venues[0].timezone);
       if (!localStart) { await connection.rollback(); return { error: 'INVALID_EVENT_TIME' }; }
+      const bookingType = settings.bookingMode === 'daily' ? 'daily' : 'hourly';
       const occupiedStart = new Date(new Date(event.startsAt).getTime() - settings.beforeMinutes * 60 * 1000);
       const occupiedEnd = new Date(new Date(event.endsAt).getTime() + settings.afterMinutes * 60 * 1000);
-      const conflict = await this.checkBookingConflict({ venueId, occupiedStartAt: occupiedStart, occupiedEndAt: occupiedEnd, excludeBookingId: existing[0]?.id || null }, connection);
+      const conflict = await this.checkBookingConflict({ venueId, bookingType, bookingDate: localStart.date, occupiedStartAt: occupiedStart, occupiedEndAt: occupiedEnd, excludeBookingId: existing[0]?.id || null }, connection);
       if (conflict.conflict) { await connection.rollback(); return { error: 'VENUE_UNAVAILABLE' }; }
       const durationMinutes = (new Date(event.endsAt).getTime() - new Date(event.startsAt).getTime()) / 60000;
-      const configuredRate = settings.hourlyRate ?? venues[0].priceFrom;
-      const hourlyRate = Number.isFinite(Number(configuredRate)) && Number(configuredRate) >= 0 ? Number(configuredRate) : 0;
-      const subtotal = Math.round((hourlyRate * durationMinutes / 60) * 100) / 100;
+      const configuredRate = bookingType === 'daily' ? settings.dailyRate ?? venues[0].priceFrom : settings.hourlyRate ?? venues[0].priceFrom;
+      const rate = Number.isFinite(Number(configuredRate)) && Number(configuredRate) >= 0 ? Number(configuredRate) : 0;
+      const subtotal = bookingType === 'daily' ? rate : Math.round((rate * durationMinutes / 60) * 100) / 100;
       const paidBooking = subtotal > 0;
       let buyerProfileId = null;
       if (paidBooking) {
@@ -1783,10 +1784,10 @@ export class Queries {
       const billingStatus = paidBooking ? 'complete' : 'not_required';
       let bookingId;
       if (existing[0]) {
-        await connection.execute("UPDATE venue_bookings SET venue_id=?, organizer_user_id=?, buyer_billing_profile_id=?, billing_status=?, status='requested', owner_note=NULL, start_at=?, end_at=?, occupied_start_at=?, occupied_end_at=?, booking_date=?, venue_timezone=?, currency=?, subtotal=?, tax_amount=0, total_amount=? WHERE id=?", [venueId, organizerUserId, buyerProfileId, billingStatus, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, localStart.date, venues[0].timezone, settings.currency, subtotal, subtotal, existing[0].id]);
+        await connection.execute("UPDATE venue_bookings SET venue_id=?, organizer_user_id=?, buyer_billing_profile_id=?, billing_status=?, booking_type=?, status='requested', owner_note=NULL, start_at=?, end_at=?, occupied_start_at=?, occupied_end_at=?, booking_date=?, venue_timezone=?, currency=?, subtotal=?, tax_amount=0, total_amount=? WHERE id=?", [venueId, organizerUserId, buyerProfileId, billingStatus, bookingType, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, localStart.date, venues[0].timezone, settings.currency, subtotal, subtotal, existing[0].id]);
         bookingId = existing[0].id;
       } else {
-        const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, buyer_billing_profile_id, billing_status, booking_type, booking_date, start_at, end_at, occupied_start_at, occupied_end_at, venue_timezone, currency, subtotal, tax_amount, total_amount, status) VALUES (?, ?, ?, ?, ?, 'hourly', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'requested')", [venueId, eventId, organizerUserId, buyerProfileId, billingStatus, localStart.date, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, venues[0].timezone, settings.currency, subtotal, subtotal]);
+        const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, buyer_billing_profile_id, billing_status, booking_type, booking_date, start_at, end_at, occupied_start_at, occupied_end_at, venue_timezone, currency, subtotal, tax_amount, total_amount, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'requested')", [venueId, eventId, organizerUserId, buyerProfileId, billingStatus, bookingType, localStart.date, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, venues[0].timezone, settings.currency, subtotal, subtotal]);
         bookingId = result.insertId;
       }
       await connection.commit();
@@ -1795,7 +1796,7 @@ export class Queries {
   }
   async eventVenueBooking(eventId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.billing_status AS billingStatus, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.venue_timezone AS timezone, b.booking_date AS bookingDate, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.billing_status AS billingStatus, b.booking_type AS bookingType, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.venue_timezone AS timezone, b.booking_date AS bookingDate, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
       v.name AS venueName, v.formatted_address AS venueLocation, v.owner_user_id AS venueOwnerUserId
       FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id
       WHERE b.event_id = ? AND (${privileged ? 'TRUE' : 'e.manager_id = ? OR v.owner_user_id = ?'})`, privileged ? [eventId] : [eventId, userId, userId]);
@@ -1803,7 +1804,7 @@ export class Queries {
   }
   async venueBookings(venueId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.booking_type AS bookingType, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
       e.title AS eventTitle, e.timezone AS eventTimezone, organizer.name AS organizerName, organizer.email AS organizerEmail
       FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id JOIN users organizer ON organizer.id = b.organizer_user_id
       LEFT JOIN organization_members venue_member ON venue_member.organization_id=v.organization_id AND venue_member.user_id=?
@@ -1835,7 +1836,7 @@ export class Queries {
     try { await connection.beginTransaction();
       const [rows] = await connection.execute(`SELECT b.venue_id AS venueId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.billing_status AS billingStatus, b.currency, b.subtotal, b.tax_amount AS taxAmount, b.total_amount AS totalAmount,
         b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, v.organization_id AS sellerOrganizationId, v.owner_user_id AS sellerOwnerUserId,
-        v.name AS venueName, v.formatted_address AS venueAddress, b.start_at AS startAt, b.end_at AS endAt, e.title AS eventTitle, settings.hourly_rate AS hourlyRate,
+        v.name AS venueName, v.formatted_address AS venueAddress, b.booking_type AS bookingType, b.booking_date AS bookingDate, b.start_at AS startAt, b.end_at AS endAt, e.title AS eventTitle, settings.hourly_rate AS hourlyRate, settings.daily_rate AS dailyRate,
         seller_profile.id AS sellerBillingProfileId, seller_profile.legal_name AS sellerLegalName, seller_profile.organization_number AS sellerRegistrationNumber,
         seller_profile.vat_number AS sellerVatNumber, seller_profile.address_line_1 AS sellerAddressLine1,
         seller_profile.address_line_2 AS sellerAddressLine2, seller_profile.postal_code AS sellerPostalCode,
@@ -1849,14 +1850,14 @@ export class Queries {
         WHERE b.id=? AND b.status = 'requested' AND (${['manager', 'admin'].includes(role) ? 'TRUE' : "v.owner_user_id=? OR om.role IN ('owner','admin','manager')"}) FOR UPDATE`, ['manager', 'admin'].includes(role) ? [userId, bookingId] : [userId, bookingId, userId]);
       const booking = rows[0]; if (!booking) { await connection.rollback(); return false; }
       await connection.execute('SELECT id FROM venues WHERE id=? FOR UPDATE', [booking.venueId]);
-      if (status === 'confirmed') { const conflict = await this.checkBookingConflict({ venueId: booking.venueId, occupiedStartAt: booking.occupiedStartAt, occupiedEndAt: booking.occupiedEndAt, excludeBookingId: bookingId }, connection); if (conflict.conflict) { await connection.rollback(); return { error: 'CONFLICT' }; } }
+      if (status === 'confirmed') { const conflict = await this.checkBookingConflict({ venueId: booking.venueId, bookingType: booking.bookingType, bookingDate: booking.bookingDate, occupiedStartAt: booking.occupiedStartAt, occupiedEndAt: booking.occupiedEndAt, excludeBookingId: bookingId }, connection); if (conflict.conflict) { await connection.rollback(); return { error: 'CONFLICT' }; } }
       let buyerProfile = null;
       const confirmed = status === 'confirmed';
       const durationHours = Math.max(0, (new Date(booking.endAt).getTime() - new Date(booking.startAt).getTime()) / 3600000);
       const storedSubtotal = Number(booking.subtotal) || 0;
-      const hourlyRate = Number(booking.hourlyRate);
-      const calculatedSubtotal = Number.isFinite(hourlyRate) && hourlyRate > 0
-        ? Math.round(hourlyRate * durationHours * 100) / 100 : 0;
+      const rate = Number(booking.bookingType === 'daily' ? booking.dailyRate : booking.hourlyRate);
+      const calculatedSubtotal = Number.isFinite(rate) && rate > 0
+        ? booking.bookingType === 'daily' ? rate : Math.round(rate * durationHours * 100) / 100 : 0;
       // Requests created before pricing was added stored a zero total. Apply
       // today's configured rate when they are approved, while preserving an
       // explicitly priced booking (including a genuinely free venue).
@@ -1891,9 +1892,9 @@ export class Queries {
           const [invoice] = await connection.execute(`INSERT INTO invoices (seller_organization_id, seller_billing_profile_id, buyer_user_id, buyer_billing_profile_id, booking_id, context_type, context_id, invoice_series_id, invoice_number, status, issue_date, due_date, currency, subtotal, tax_amount, total_amount, seller_snapshot_json, buyer_snapshot_json, booking_snapshot_json, tax_snapshot_json, payment_instructions_snapshot)
           VALUES (?, ?, ?, ?, ?, 'venue_booking', ?, ?, ?, 'issued', CURDATE(), DATE_ADD(CURDATE(), INTERVAL ? DAY), ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [booking.sellerOrganizationId, booking.sellerBillingProfileId, booking.organizerUserId, buyerProfile.id, bookingId, String(bookingId), allocation.seriesId, allocation.invoiceNumber, booking.profileInvoiceDueDays || booking.invoiceDueDays, booking.currency, subtotal, taxAmount, totalAmount, JSON.stringify(sellerSnapshot), JSON.stringify(buyerProfile), JSON.stringify(bookingSnapshot), JSON.stringify(taxSnapshot), JSON.stringify(paymentInstructions)]);
           invoiceId = invoice.insertId;
-          const quantity = Math.round(durationHours * 1000) / 1000;
+          const quantity = booking.bookingType === 'daily' ? 1 : Math.round(durationHours * 1000) / 1000;
           const unitPrice = quantity > 0 ? Math.round((subtotal / quantity) * 100) / 100 : 0;
-          await connection.execute(`INSERT INTO invoice_items (invoice_id, description, quantity, unit, unit_price, tax_rate, subtotal, tax_amount, total) VALUES (?, ?, ?, 'hour', ?, ?, ?, ?, ?)`, [invoiceId, `Venue rental${booking.venueName ? `: ${booking.venueName}` : ''}`, quantity, unitPrice, taxRate, subtotal, taxAmount, totalAmount]);
+          await connection.execute(`INSERT INTO invoice_items (invoice_id, description, quantity, unit, unit_price, tax_rate, subtotal, tax_amount, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [invoiceId, `Venue rental${booking.venueName ? `: ${booking.venueName}` : ''}`, quantity, booking.bookingType === 'daily' ? 'day' : 'hour', unitPrice, taxRate, subtotal, taxAmount, totalAmount]);
           await connection.execute(`INSERT INTO invoice_history (invoice_id, action, new_status, performed_by_user_id) VALUES (?, 'issued', 'issued', ?)`, [invoiceId, userId]); }
       }
       await connection.commit(); return { invoiceId };
