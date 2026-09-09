@@ -606,7 +606,7 @@ export class Api {
       const nullableNumber = (value, fallback = null) => value === '' || value === null ? null : (value === undefined ? fallback : Number(value));
       const list = (value, fallback = []) => value === undefined ? fallback : (Array.isArray(value) ? [...new Set(value.map(venueSlug).filter(Boolean))] : null);
       const data = {
-        organizationId: existing.organizationId ?? null,
+        organizationId: nullableNumber(body.organizationId, existing.organizationId ?? null),
         billingProfileId: nullableNumber(body.billingProfileId, existing.billingProfileId ?? null),
         name: String(body.name ?? existing.name ?? '').trim(),
         slug: venueSlug(body.slug ?? existing.slug ?? body.name ?? existing.name),
@@ -637,8 +637,8 @@ export class Api {
         isActive: body.isActive ?? (existing.isActive == null ? true : Boolean(existing.isActive)),
       };
       const errors = {};
+      if (data.organizationId !== null && (!Number.isInteger(data.organizationId) || data.organizationId < 1)) errors.organizationId = 'A valid organization is required.';
       if (data.billingProfileId !== null && (!Number.isInteger(data.billingProfileId) || data.billingProfileId < 1)) errors.billingProfileId = 'A valid billing profile is required.';
-      if (Number(data.priceFrom) > 0 && !data.billingProfileId) errors.billingProfileId = 'Choose a billing profile before listing a paid venue.';
       if (data.name.length < 2 || data.name.length > 160) errors.name = 'Venue name must be between 2 and 160 characters.';
       if (!data.slug || data.slug.length > 180) errors.slug = 'Venue slug must contain letters or numbers and be at most 180 characters.';
       if (!data.formattedAddress || data.formattedAddress.length > 500) errors.formattedAddress = 'A formatted address of up to 500 characters is required.';
@@ -740,6 +740,34 @@ export class Api {
       if (data.maximumBookingMinutes !== null && (!Number.isInteger(data.maximumBookingMinutes) || data.maximumBookingMinutes < data.minimumBookingMinutes)) errors.maximumBookingMinutes = 'Maximum booking duration must be at least the minimum.';
       for (const key of ['hourlyRate', 'dailyRate']) if (data[key] !== null && (!Number.isFinite(data[key]) || data[key] < 0)) errors[key] = 'Rate must be zero or positive.';
       if (!/^[A-Z]{3}$/.test(data.currency)) errors.currency = 'Currency must be a three-letter ISO code.';
+      return { data, errors };
+    };
+    const venueFinancialSettingsData = (body, existing = {}) => {
+      const nullableText = (key, max = 255) => body[key] == null || body[key] === '' ? null : String(body[key]).trim().slice(0, max) || null;
+      const sellerBillingProfileId = body.sellerBillingProfileId == null || body.sellerBillingProfileId === '' ? null : Number(body.sellerBillingProfileId);
+      const methods = Array.isArray(body.methods) ? [...new Set(body.methods.map(String))] : (existing.methods || []);
+      const data = {
+        invoiceMode: String(body.invoiceMode ?? existing.invoiceMode ?? 'ykcircle'), sellerBillingProfileId,
+        paymentTermsDays: Number(body.paymentTermsDays ?? existing.paymentTermsDays ?? 30),
+        taxMode: String(body.taxMode ?? existing.taxMode ?? 'no_tax'),
+        defaultTaxRate: body.defaultTaxRate == null || body.defaultTaxRate === '' ? null : Number(body.defaultTaxRate),
+        pricesIncludeTax: body.pricesIncludeTax === true, confirmationPolicy: String(body.confirmationPolicy ?? existing.confirmationPolicy ?? 'on_owner_approval'),
+        methods, bankgiro: nullableText('bankgiro', 80), plusgiro: nullableText('plusgiro', 80), iban: nullableText('iban', 80), bic: nullableText('bic', 32),
+        swishNumber: nullableText('swishNumber', 80), bankName: nullableText('bankName', 160), accountDetailsText: nullableText('accountDetailsText', 5000),
+        additionalInstructions: nullableText('additionalInstructions', 5000), paymentReferenceMode: String(body.paymentReferenceMode ?? existing.paymentReferenceMode ?? 'invoice_number'),
+        acceptInvoiceAuthorization: body.acceptInvoiceAuthorization === true, termsVersion: nullableText('termsVersion', 64),
+      };
+      const errors = {};
+      if (!['ykcircle', 'external'].includes(data.invoiceMode)) errors.invoiceMode = 'Invoice mode must be ykcircle or external.';
+      if (data.sellerBillingProfileId !== null && (!Number.isInteger(data.sellerBillingProfileId) || data.sellerBillingProfileId < 1)) errors.sellerBillingProfileId = 'Choose a valid seller billing profile.';
+      if (!Number.isInteger(data.paymentTermsDays) || data.paymentTermsDays < 0 || data.paymentTermsDays > 365) errors.paymentTermsDays = 'Payment terms must be 0-365 days.';
+      if (!['no_tax', 'configured'].includes(data.taxMode)) errors.taxMode = 'Choose no tax or a configured tax rate.';
+      if (data.taxMode === 'configured' && (!Number.isFinite(data.defaultTaxRate) || data.defaultTaxRate < 0 || data.defaultTaxRate > 100)) errors.defaultTaxRate = 'Tax rate must be between 0 and 100.';
+      if (!['on_owner_approval', 'after_payment'].includes(data.confirmationPolicy)) errors.confirmationPolicy = 'Invalid confirmation policy.';
+      const allowedMethods = new Set(['bank_transfer', 'bankgiro', 'plusgiro', 'swish', 'cash', 'other']);
+      if (methods.length > 6 || methods.some((method) => !allowedMethods.has(method))) errors.methods = 'Choose supported payment methods only.';
+      if (!['invoice_number', 'custom'].includes(data.paymentReferenceMode)) errors.paymentReferenceMode = 'Invalid payment reference mode.';
+      if (data.invoiceMode === 'ykcircle' && data.acceptInvoiceAuthorization && !data.termsVersion) errors.termsVersion = 'The invoicing terms version is required when accepting authorization.';
       return { data, errors };
     };
     const textField = (body, key, max = 255) => body[key] == null ? null : String(body[key]).trim().slice(0, max) || null;
@@ -1003,11 +1031,13 @@ export class Api {
       try { await ensureTable(); const invoice = await this.queries.invoice(invoiceId, req.user.id, req.user.role); return invoice ? res.json(invoice) : res.status(403).json({ error: 'Invoice not found or not available to you.' }); }
       catch (error) { console.error('Invoice lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load invoice.' }); }
     });
-    app.get('/api/invoices/:id/download', authenticate, async (req, res) => {
+    const downloadInvoicePdf = async (req, res) => {
       const invoiceId = Number(req.params.id); if (!Number.isInteger(invoiceId) || invoiceId < 1) return res.status(422).json({ error: 'A valid invoice id is required.' });
-      try { await ensureTable(); const invoice = await this.queries.invoice(invoiceId, req.user.id, req.user.role); if (!invoice) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); const pdf = renderInvoicePdf(invoice); await this.queries.recordInvoicePdf(invoiceId, crypto.createHash('sha256').update(pdf).digest('hex')); res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="invoice-${invoice.invoiceNumber || invoiceId}.pdf"`, 'Cache-Control': 'private, no-store' }); return res.send(pdf); }
+      try { await ensureTable(); const invoice = await this.queries.invoice(invoiceId, req.user.id, req.user.role); if (!invoice) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); let document = await this.queries.invoiceDocument(invoiceId); if (!document) { const generated = renderInvoicePdf(invoice); const hash = crypto.createHash('sha256').update(generated).digest('hex'); document = await this.queries.storeInvoiceDocument(invoiceId, generated, hash); } const pdf = document.pdfDocument; res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="invoice-${invoice.invoiceNumber || invoiceId}.pdf"`, 'Cache-Control': 'private, no-store', ETag: `"${document.pdfHash}"` }); return res.send(pdf); }
       catch (error) { console.error('Invoice PDF generation failed:', error.message); return res.status(500).json({ error: 'Unable to download invoice.' }); }
-    });
+    };
+    app.get('/api/invoices/:id/download', authenticate, downloadInvoicePdf);
+    app.get('/api/invoices/:id/pdf', authenticate, downloadInvoicePdf);
     const testPaymentsEnabled = process.env.NODE_ENV !== 'production' || process.env.PAYMENTS_TEST_MODE === 'true';
     app.post('/api/test-payments', authenticate, async (req, res) => {
       if (!testPaymentsEnabled) return res.status(404).json({ error: 'Test payments are unavailable.' });
@@ -1016,9 +1046,9 @@ export class Api {
       catch (error) { console.error('Test payment simulation failed:', error.message); return res.status(500).json({ error: 'Unable to simulate payment.' }); }
     });
     app.post('/api/invoices/:id/mark-paid', authenticate, requireVenueOwner, async (req, res) => {
-      const invoiceId = Number(req.params.id); const paymentMethod = String(req.body.paymentMethod || ''); const paymentReference = req.body.paymentReference == null ? null : String(req.body.paymentReference).trim() || null;
-      if (!Number.isInteger(invoiceId) || invoiceId < 1 || !['bank_transfer', 'swish', 'cash', 'other'].includes(paymentMethod) || paymentReference?.length > 255) return res.status(422).json({ error: 'A valid payment method and optional reference are required.' });
-      try { await ensureTable(); const result = await this.queries.markInvoicePaid(invoiceId, req.user.id, req.user.role, { paymentMethod, paymentReference }); if (result?.error === 'INVALID_STATE') return res.status(409).json({ error: 'Only issued invoices can be marked paid.' }); if (!result) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); return res.json({ id: invoiceId, status: 'paid' }); }
+      const invoiceId = Number(req.params.id); const paymentMethod = String(req.body.paymentMethod || ''); const paymentReference = req.body.paymentReference == null ? null : String(req.body.paymentReference).trim() || null; const paidDate = req.body.paidDate == null || req.body.paidDate === '' ? null : String(req.body.paidDate); const internalNote = req.body.internalNote == null ? null : String(req.body.internalNote).trim() || null;
+      if (!Number.isInteger(invoiceId) || invoiceId < 1 || !['bank_transfer', 'bankgiro', 'plusgiro', 'swish', 'cash', 'other'].includes(paymentMethod) || paymentReference?.length > 255 || (paidDate && !/^\d{4}-\d{2}-\d{2}$/.test(paidDate)) || internalNote?.length > 5000 || req.body.confirmReceived !== true) return res.status(422).json({ error: 'Confirm receipt and provide a valid payment date, method, and optional reference.' });
+      try { await ensureTable(); const result = await this.queries.markInvoicePaid(invoiceId, req.user.id, req.user.role, { paymentMethod, paymentReference, paidDate, internalNote }); if (result?.error === 'INVALID_STATE') return res.status(409).json({ error: 'Only issued invoices can be marked paid.' }); if (!result) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); return res.json({ id: invoiceId, status: 'paid', paymentSource: 'confirmed_by_venue' }); }
       catch (error) { console.error('Invoice payment update failed:', error.message); return res.status(500).json({ error: 'Unable to mark invoice paid.' }); }
     });
     app.get('/api/platform/products', async (_req, res) => {
@@ -1102,7 +1132,7 @@ export class Api {
     app.post('/api/venues', authenticate, requireVerifiedUser, requireVenueOwner, ...creationGuards, async (req, res) => {
       const { data, errors } = venueData(req.body);
       if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
-      try { await ensureTable(); const profile = data.billingProfileId && await this.queries.billingProfile(data.billingProfileId, req.user.id, req.user.role); if (data.billingProfileId && !profile) return res.status(403).json({ error: 'Billing profile not found or not available to you.' }); data.organizationId = profile?.ownerOrganizationId || null; const id = await this.queries.createVenue(req.user.id, data); return sendVenue(res, await this.queries.venue(id, req.user.id, req.user.role), 201); }
+      try { await ensureTable(); if (data.organizationId && !await this.queries.canManageOrganization(data.organizationId, req.user.id, req.user.role)) return res.status(403).json({ error: 'Organization not found or not managed by you.' }); const profile = data.billingProfileId && await this.queries.billingProfile(data.billingProfileId, req.user.id, req.user.role); if (data.billingProfileId && (!profile || Number(profile.ownerOrganizationId) !== Number(data.organizationId))) return res.status(403).json({ error: 'The seller billing profile must belong to the Venue organization.' }); const id = await this.queries.createVenue(req.user.id, data); return sendVenue(res, await this.queries.venue(id, req.user.id, req.user.role), 201); }
       catch (error) { if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That venue slug is already in use.' }); console.error('Venue creation failed:', error.message); return res.status(500).json({ error: 'Unable to create venue.' }); }
     });
     app.post('/api/venues/:id/media', authenticate, requireVenueOwner, parseVenueImage, async (req, res) => {
@@ -1164,6 +1194,30 @@ export class Api {
       try { await ensureTable(); const existing = await this.queries.venueBookingSettings(venueId); const { data, errors } = bookingSettingsData(req.body, existing || {}); if (Object.keys(errors).length) return res.status(422).json({ error: 'Booking settings are invalid.', fields: errors }); if (!await this.queries.updateVenueBookingSettings(venueId, req.user.id, req.user.role, data)) return res.status(403).json({ error: 'Venue manager access is required.' }); return res.json(data); }
       catch (error) { console.error('Booking settings update failed:', error.message); return res.status(500).json({ error: 'Unable to update booking settings.' }); }
     });
+    app.get('/api/venues/:id/financial-settings', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try { await ensureTable(); const settings = await this.queries.venueFinancialSettings(venueId, req.user.id, req.user.role); return settings ? res.json(settings) : res.status(403).json({ error: 'Venue billing access is required.' }); }
+      catch (error) { console.error('Venue financial settings lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load Venue billing settings.' }); }
+    });
+    app.put('/api/venues/:id/financial-settings', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try {
+        await ensureTable();
+        const existing = await this.queries.venueFinancialSettings(venueId, req.user.id, req.user.role);
+        if (!existing) return res.status(403).json({ error: 'Venue billing access is required.' });
+        const { data, errors } = venueFinancialSettingsData(req.body, existing);
+        if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue billing settings are invalid.', fields: errors });
+        const result = await this.queries.saveVenueFinancialSettings(venueId, req.user.id, req.user.role, data);
+        if (result?.error === 'SELLER_PROFILE_ORGANIZATION_MISMATCH') return res.status(422).json({ code: result.error, error: 'Choose an active organization Billing Profile owned by this Venue organization.' });
+        if (result?.error) return res.status(result.error === 'NOT_FOUND' ? 404 : 403).json({ code: result.error, error: 'Venue billing settings could not be saved.' });
+        return res.json(result);
+      } catch (error) { console.error('Venue financial settings update failed:', error.message); return res.status(500).json({ error: 'Unable to save Venue billing settings.' }); }
+    });
+    app.get('/api/venues/:id/financial-readiness', authenticate, requireVenueOwner, async (req, res) => {
+      const venueId = Number(req.params.id); if (!Number.isInteger(venueId) || venueId < 1) return res.status(422).json({ error: 'A valid venue id is required.' });
+      try { await ensureTable(); const readiness = await this.queries.getVenueFinancialReadiness(venueId, req.user.id, req.user.role); return readiness ? res.json(readiness) : res.status(403).json({ error: 'Venue billing access is required.' }); }
+      catch (error) { console.error('Venue financial readiness lookup failed:', error.message); return res.status(500).json({ error: 'Unable to check Venue financial readiness.' }); }
+    });
     app.put('/api/venues/:id/availability-overrides', authenticate, requireVenueOwner, async (req, res) => {
       const venueId = Number(req.params.id); const validated = availabilityOverrides(req.body.overrides);
       if (!Number.isInteger(venueId) || venueId < 1 || validated.error) return res.status(422).json({ error: validated.error || 'A valid venue id is required.' });
@@ -1222,9 +1276,9 @@ export class Api {
         if (!existing) return res.status(404).json({ error: 'Venue not found or not managed by you.' });
         const { data, errors } = venueData(req.body, existing);
         if (Object.keys(errors).length) return res.status(422).json({ error: 'Venue is invalid.', fields: errors });
+        if (data.organizationId && !await this.queries.canManageOrganization(data.organizationId, req.user.id, req.user.role)) return res.status(403).json({ error: 'Organization not found or not managed by you.' });
         const profile = data.billingProfileId && await this.queries.billingProfile(data.billingProfileId, req.user.id, req.user.role);
-        if (data.billingProfileId && !profile) return res.status(403).json({ error: 'Billing profile not found or not available to you.' });
-        data.organizationId = profile?.ownerOrganizationId || null;
+        if (data.billingProfileId && (!profile || Number(profile.ownerOrganizationId) !== Number(data.organizationId))) return res.status(403).json({ error: 'The seller billing profile must belong to the Venue organization.' });
         if (!await this.queries.updateVenue(venueId, req.user.id, req.user.role, data)) return res.status(404).json({ error: 'Venue not found or not managed by you.' });
         return sendVenue(res, await this.queries.venue(venueId, req.user.id, req.user.role));
       } catch (error) { console.error('Venue update failed:', error.message); return res.status(500).json({ error: 'Unable to update venue.' }); }
@@ -1285,6 +1339,28 @@ export class Api {
       try { await ensureTable(); const booking = await this.queries.eventVenueBooking(req.params.id, req.user.id, req.user.role); return booking ? res.json(booking) : res.status(404).json({ error: 'Venue booking not found or not available to you.' }); }
       catch (error) { console.error('Venue booking lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue booking.' }); }
     });
+    app.get('/api/venue-bookings/:id/billing-readiness', authenticate, async (req, res) => {
+      const bookingId = Number(req.params.id); if (!Number.isInteger(bookingId) || bookingId < 1) return res.status(422).json({ error: 'A valid booking id is required.' });
+      try { await ensureTable(); if (!await this.queries.canAccessVenueBooking(bookingId, req.user.id, req.user.role)) return res.status(403).json({ error: 'This booking is not available to you.' }); const readiness = await this.queries.getVenueBookingBillingReadiness(bookingId); return readiness ? res.json(readiness) : res.status(404).json({ error: 'Booking not found.' }); }
+      catch (error) { console.error('Booking billing readiness lookup failed:', error.message); return res.status(500).json({ error: 'Unable to check booking billing readiness.' }); }
+    });
+    app.get('/api/venue-bookings/:id/external-invoice', authenticate, async (req, res) => {
+      const bookingId = Number(req.params.id); if (!Number.isInteger(bookingId) || bookingId < 1) return res.status(422).json({ error: 'A valid booking id is required.' });
+      try { await ensureTable(); const invoice = await this.queries.externalInvoice(bookingId, req.user.id, req.user.role); return invoice ? res.json(invoice) : res.status(404).json({ error: 'External invoice not found or not available to you.' }); }
+      catch (error) { console.error('External invoice lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load the external invoice.' }); }
+    });
+    app.put('/api/venue-bookings/:id/external-invoice', authenticate, requireVenueOwner, async (req, res) => {
+      const bookingId = Number(req.params.id); const externalInvoiceNumber = req.body.externalInvoiceNumber == null ? null : String(req.body.externalInvoiceNumber).trim() || null; const externalInvoiceDate = req.body.externalInvoiceDate == null || req.body.externalInvoiceDate === '' ? null : String(req.body.externalInvoiceDate); const amount = req.body.amount == null || req.body.amount === '' ? null : Number(req.body.amount); const currency = req.body.currency == null || req.body.currency === '' ? null : String(req.body.currency).toUpperCase(); const dueDate = req.body.dueDate == null || req.body.dueDate === '' ? null : String(req.body.dueDate); const externalInvoiceUrl = req.body.externalInvoiceUrl == null || req.body.externalInvoiceUrl === '' ? null : String(req.body.externalInvoiceUrl).trim();
+      const validUrl = !externalInvoiceUrl || (() => { try { return new URL(externalInvoiceUrl).protocol === 'https:'; } catch { return false; } })();
+      if (!Number.isInteger(bookingId) || bookingId < 1 || externalInvoiceNumber?.length > 120 || (externalInvoiceDate && !/^\d{4}-\d{2}-\d{2}$/.test(externalInvoiceDate)) || (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) || (amount !== null && (!Number.isFinite(amount) || amount < 0)) || (currency && !/^[A-Z]{3}$/.test(currency)) || !validUrl || externalInvoiceUrl?.length > 2048) return res.status(422).json({ error: 'External invoice details are invalid.' });
+      try { await ensureTable(); const result = await this.queries.saveExternalInvoice(bookingId, req.user.id, req.user.role, { externalInvoiceNumber, externalInvoiceDate, amount, currency, dueDate, externalInvoiceUrl }); if (result?.error === 'INVALID_MODE') return res.status(409).json({ error: 'This Venue uses YKCircle-generated invoices.' }); if (result?.error) return res.status(403).json({ error: 'This booking is not managed by you.' }); return res.json(result); }
+      catch (error) { console.error('External invoice update failed:', error.message); return res.status(500).json({ error: 'Unable to save the external invoice.' }); }
+    });
+    app.post('/api/venue-bookings/:id/external-invoice/mark-paid', authenticate, requireVenueOwner, async (req, res) => {
+      const bookingId = Number(req.params.id); if (!Number.isInteger(bookingId) || bookingId < 1 || req.body.confirmReceived !== true) return res.status(422).json({ error: 'Confirm that the Venue received this payment.' });
+      try { await ensureTable(); return await this.queries.markExternalInvoicePaid(bookingId, req.user.id, req.user.role) ? res.json({ bookingId, status: 'paid', paymentSource: 'confirmed_by_venue' }) : res.status(403).json({ error: 'External invoice not found or not managed by you.' }); }
+      catch (error) { console.error('External invoice payment update failed:', error.message); return res.status(500).json({ error: 'Unable to mark the external invoice paid.' }); }
+    });
     app.post('/api/events/:id/venue-booking/cancel', authenticate, async (req, res) => {
       try { await ensureTable(); if (!await this.queries.cancelVenueBooking(req.params.id, req.user.id, req.user.role)) return res.status(404).json({ error: 'Active venue booking not found or not managed by you.' }); return res.json({ message: 'Venue booking cancelled.' }); }
       catch (error) { console.error('Venue booking cancellation failed:', error.message); return res.status(500).json({ error: 'Unable to cancel venue booking.' }); }
@@ -1294,7 +1370,28 @@ export class Api {
       const status = String(req.body.status || '');
       const ownerNote = req.body.ownerNote == null ? null : String(req.body.ownerNote).trim() || null;
       if (!Number.isInteger(bookingId) || bookingId < 1 || !['confirmed', 'declined'].includes(status)) return res.status(422).json({ error: 'A booking id and status of confirmed or declined are required.' });
-      try { await ensureTable(); const result = await this.queries.reviewVenueBooking(bookingId, req.user.id, req.user.role, status, ownerNote); if (result?.error === 'CONFLICT') return res.status(409).json({ error: 'The venue is already occupied for this time.' }); if (result?.error === 'SELLER_PROFILE_INCOMPLETE') return res.status(422).json({ code: result.error, error: "The venue's billing details are incomplete, so an invoice cannot be issued yet." }); if (result?.error === 'BUYER_PROFILE_INCOMPLETE') return res.status(422).json({ code: result.error, error: 'Organizer billing details are incomplete.' }); if (!result) return res.status(404).json({ error: 'Pending venue booking not found or not managed by you.' }); return res.json({ id: bookingId, status, ownerNote, invoiceId: result.invoiceId || null }); }
+      try {
+        await ensureTable();
+        const result = await this.queries.reviewVenueBooking(bookingId, req.user.id, req.user.role, status, ownerNote);
+        if (result?.error === 'CONFLICT') return res.status(409).json({ error: 'The venue is already occupied for this time.' });
+        if (['SELLER_PROFILE_INCOMPLETE', 'FINANCIAL_SETUP_INCOMPLETE'].includes(result?.error)) return res.status(422).json({ code: result.error, missing: result.missing || [], error: 'Complete the Venue invoicing setup before approving this paid booking.' });
+        if (result?.error === 'BUYER_PROFILE_INCOMPLETE') return res.status(422).json({ code: result.error, error: 'Select who is paying for this Venue before approval.' });
+        if (result?.error === 'BILLING_PERMISSION_REQUIRED') return res.status(403).json({ code: result.error, error: 'Organization owner or billing admin permission is required to issue this invoice.' });
+        if (['PRICE_NOT_CONFIGURED', 'INVALID_BOOKING_INTERVAL', 'INVALID_TAX_CONFIGURATION'].includes(result?.error)) return res.status(422).json({ code: result.error, error: 'The authoritative booking price or tax configuration is incomplete.' });
+        if (!result) return res.status(404).json({ error: 'Pending venue booking not found or not managed by you.' });
+        let warning = result.warning || null;
+        if (result.invoiceId) {
+          try {
+            const invoice = await this.queries.invoice(result.invoiceId, req.user.id, req.user.role);
+            const pdf = renderInvoicePdf(invoice);
+            await this.queries.storeInvoiceDocument(result.invoiceId, pdf, crypto.createHash('sha256').update(pdf).digest('hex'));
+          } catch (pdfError) {
+            warning = 'INVOICE_DOCUMENT_GENERATION_FAILED';
+            await this.queries.markVenueInvoiceGenerationFailed(bookingId, pdfError.message);
+          }
+        }
+        return res.json({ id: bookingId, status, ownerNote, invoiceId: result.invoiceId || null, externalInvoiceId: result.externalInvoiceId || null, invoiceMode: result.invoiceMode || null, invoiceGenerationStatus: warning ? 'failed' : 'succeeded', warning });
+      }
       catch (error) { console.error('Venue booking review failed:', error.message); return res.status(500).json({ error: 'Unable to review venue booking.' }); }
     });
     app.get('/api/venue-bookings/:id/messages', authenticate, async (req, res) => {

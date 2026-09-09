@@ -5,15 +5,22 @@ const pdfText = (value) => String(value ?? '').replace(/[^\x20-\x7e]/g, '?').rep
 // mutable seller, buyer, venue, or user data into a historical document.
 export const renderInvoicePdf = (invoice) => {
   const seller = invoice.seller || {}; const buyer = invoice.buyer || {}; const booking = invoice.booking || {};
+  const payment = typeof invoice.paymentInstructions === 'string' ? { additionalInstructions: invoice.paymentInstructions } : (invoice.paymentInstructions || {});
+  const paymentLines = [
+    payment.bankgiro && `Bankgiro: ${payment.bankgiro}`, payment.plusgiro && `Plusgiro: ${payment.plusgiro}`,
+    payment.iban && `IBAN: ${payment.iban}`, payment.bic && `BIC: ${payment.bic}`, payment.swishNumber && `Swish: ${payment.swishNumber}`,
+    payment.bankName, payment.accountDetailsText, payment.additionalInstructions,
+  ].filter(Boolean);
   const lines = [
     'INVOICE', `Invoice #: ${invoice.invoiceNumber || invoice.id}`, `Issue date: ${invoice.issueDate || ''}`, `Due date: ${invoice.dueDate || ''}`, '',
-    'SELLER', seller.legalName, seller.registrationNumber && `Registration #: ${seller.registrationNumber}`, seller.vatNumber && `VAT #: ${seller.vatNumber}`,
+    'SELLER', seller.legalName, (seller.organizationNumber || seller.registrationNumber) && `Registration #: ${seller.organizationNumber || seller.registrationNumber}`, seller.vatNumber && `VAT #: ${seller.vatNumber}`,
     seller.addressLine1, seller.addressLine2, [seller.postalCode, seller.city].filter(Boolean).join(' '), seller.country, seller.billingEmail, '',
-    'BILL TO', buyer.legalName, buyer.registrationNumber && `Registration #: ${buyer.registrationNumber}`, buyer.vatNumber && `VAT #: ${buyer.vatNumber}`,
+    'BILL TO', buyer.legalName, (buyer.organizationNumber || buyer.registrationNumber) && `Registration #: ${buyer.organizationNumber || buyer.registrationNumber}`, buyer.vatNumber && `VAT #: ${buyer.vatNumber}`,
     buyer.addressLine1, buyer.addressLine2, [buyer.postalCode, buyer.city].filter(Boolean).join(' '), buyer.country, buyer.billingEmail, '',
-    'BOOKING', booking.venueName, booking.eventTitle, booking.startsAt && `Service: ${booking.startsAt} - ${booking.endsAt || ''}`, '',
+    'BOOKING', booking.bookingReference, booking.venueName, booking.venueAddress, booking.eventTitle, booking.startsAt && `Service: ${booking.startsAt} - ${booking.endsAt || ''}`, booking.venueTimezone && `Venue timezone: ${booking.venueTimezone}`, '',
     ...invoice.items.flatMap((item) => [`${item.description}: ${item.quantity} ${item.unit} x ${item.unitPrice} ${invoice.currency} = ${item.total} ${invoice.currency}`]),
     '', `Subtotal: ${invoice.subtotal} ${invoice.currency}`, `Tax: ${invoice.taxAmount} ${invoice.currency}`, `AMOUNT DUE: ${invoice.totalAmount} ${invoice.currency}`,
+    '', 'PAYMENT INSTRUCTIONS', ...paymentLines, `Reference: ${invoice.invoiceNumber || invoice.id}`,
     '', 'Generated through YKCircle on behalf of the seller.',
   ].filter(Boolean).map(pdfText);
   const content = ['BT', '/F1 10 Tf', '48 792 Td', ...lines.flatMap((line, index) => [`(${line}) Tj`, index === lines.length - 1 ? '' : '0 -14 Td']).filter(Boolean), 'ET'].join('\n');

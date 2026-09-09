@@ -183,7 +183,7 @@ test('uses boolean confirmation flags when reviewing a venue booking', async () 
     beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {},
     execute: async (sql, parameters = []) => {
       calls.push({ sql, parameters });
-      if (sql.includes('FROM venue_bookings b JOIN venues')) return [[{ venueId: 4, organizerUserId: 9, sellerOrganizationId: null, occupiedStartAt: '2026-10-10T10:00:00Z', occupiedEndAt: '2026-10-10T12:00:00Z' }]];
+      if (sql.includes('FROM venue_bookings b JOIN venues')) return [[{ id: 22, venueId: 4, organizerUserId: 9, sellerOrganizationId: null, bookingType: 'hourly', status: 'requested', startAt: '2026-10-10T10:00:00Z', endAt: '2026-10-10T12:00:00Z', occupiedStartAt: '2026-10-10T10:00:00Z', occupiedEndAt: '2026-10-10T12:00:00Z', hourlyRate: 0, currency: 'SEK', invoiceMode: 'ykcircle' }]];
       if (sql.startsWith('SELECT id FROM venues')) return [[{ id: 4 }]];
       if (sql.startsWith('SELECT timezone FROM venues')) return [[{ timezone: 'UTC' }]];
       if (sql.includes('SELECT id, booking_type AS bookingType')) return [[]];
@@ -191,12 +191,12 @@ test('uses boolean confirmation flags when reviewing a venue booking', async () 
       return [{ affectedRows: 1 }];
     },
   };
-  const queries = new Queries({ execute: async () => [[]], getConnection: async () => connection });
+  const queries = new Queries({ execute: connection.execute, getConnection: async () => connection });
 
-  assert.deepEqual(await queries.reviewVenueBooking(22, 15, 'venue_owner', 'confirmed', 'Approved'), { invoiceId: null });
+  assert.deepEqual(await queries.reviewVenueBooking(22, 15, 'venue_owner', 'confirmed', 'Approved'), { invoiceId: null, invoiceMode: 'ykcircle', paymentStatus: 'not_required' });
   const update = calls.find((call) => call.sql.startsWith('UPDATE venue_bookings SET status='));
   assert.doesNotMatch(update.sql, /\?='confirmed'/);
-  assert.deepEqual(update.parameters, ['confirmed', 'Approved', 'Approved', true, true, 15, 22]);
+  assert.deepEqual(update.parameters, ['confirmed', 'Approved', 'Approved', true, true, 15, true, 22]);
 });
 
 test('returns booking messages only after verifying conversation access', async () => {

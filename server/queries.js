@@ -2,6 +2,7 @@
 
 import { addDays, calculateAvailability, isDateOnly, localDateTimeToUtc } from './venue-availability.js';
 import { zonedDateTime } from './time.js';
+import { calculateVenueBookingPrice, venueFinancialReadiness as evaluateVenueFinancialReadiness } from './venue-finance.js';
 
 const utcTimestamp = (value) => {
   if (!value) return value;
@@ -810,6 +811,7 @@ export class Queries {
       normalized.location.addressLine1 = null; normalized.location.addressLine2 = null; normalized.location.postalCode = null; normalized.location.formattedAddress = null; normalized.location.googlePlaceId = null;
       if (normalized.locationVisibility === 'private') { normalized.latitude = null; normalized.longitude = null; normalized.location.latitude = null; normalized.location.longitude = null; }
     }
+    if (publicView) delete normalized.billingProfileId;
     return normalized;
   }
   async venueRelations(venueId) {
@@ -1321,6 +1323,14 @@ export class Queries {
       (i.buyer_user_id=? OR buyer_profile.owner_user_id=? OR seller_profile.owner_user_id=? OR seller_member.role IN ('owner','admin','manager') OR buyer_member.role IN ('owner','admin'))`, [userId, userId, invoiceId, userId, userId, userId]);
     return Boolean(rows[0]);
   }
+  async canManageInvoicePayment(userId, role, invoiceId) {
+    if (['manager', 'admin'].includes(role)) return true;
+    const [rows] = await this.database.execute(`SELECT invoice.id FROM invoices invoice
+      LEFT JOIN billing_profiles seller ON seller.id=invoice.seller_billing_profile_id
+      LEFT JOIN organization_members member ON member.organization_id=COALESCE(invoice.seller_organization_id, seller.owner_organization_id) AND member.user_id=?
+      WHERE invoice.id=? AND (seller.owner_user_id=? OR member.role IN ('owner','admin'))`, [userId, invoiceId, userId]);
+    return Boolean(rows[0]);
+  }
   async invoicesForViewer(userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
     const access = privileged ? 'TRUE' : `(i.buyer_user_id=? OR buyer_profile.owner_user_id=? OR seller_profile.owner_user_id=? OR EXISTS (SELECT 1 FROM organization_members seller_member
@@ -1346,17 +1356,26 @@ export class Queries {
     const [rows] = await this.database.execute(`SELECT id, seller_organization_id AS sellerOrganizationId, seller_billing_profile_id AS sellerBillingProfileId, buyer_user_id AS buyerUserId,
       buyer_organization_id AS buyerOrganizationId, buyer_billing_profile_id AS buyerBillingProfileId, booking_id AS bookingId, context_type AS contextType, context_id AS contextId, invoice_series_id AS invoiceSeriesId, invoice_number AS invoiceNumber, status, delivery_status AS deliveryStatus,
       issue_date AS issueDate, due_date AS dueDate, currency, subtotal, tax_amount AS taxAmount, total_amount AS totalAmount,
-      pdf_generated_at AS pdfGeneratedAt, pdf_hash AS pdfHash, paid_at AS paidAt, manual_payment_reference AS manualPaymentReference,
-      manual_payment_method AS manualPaymentMethod, voided_at AS voidedAt, void_reason AS voidReason, seller_snapshot_json AS sellerSnapshot,
+      pdf_generated_at AS pdfGeneratedAt, pdf_hash AS pdfHash, paid_at AS paidAt, paid_date AS paidDate, manual_payment_reference AS manualPaymentReference,
+      manual_payment_method AS manualPaymentMethod, manual_payment_note AS manualPaymentNote, voided_at AS voidedAt, void_reason AS voidReason, seller_snapshot_json AS sellerSnapshot,
       buyer_snapshot_json AS buyerSnapshot, booking_snapshot_json AS bookingSnapshot, tax_snapshot_json AS taxSnapshot,
       payment_instructions_snapshot AS paymentInstructions, created_at AS createdAt FROM invoices WHERE id=?`, [invoiceId]);
     if (!rows[0]) return null;
     const [items] = await this.database.execute(`SELECT id, description, quantity, unit, unit_price AS unitPrice, tax_rate AS taxRate,
       subtotal, tax_amount AS taxAmount, total FROM invoice_items WHERE invoice_id=? ORDER BY id`, [invoiceId]);
     const invoice = rows[0];
-    return { ...invoice, seller: jsonValue(invoice.sellerSnapshot), buyer: jsonValue(invoice.buyerSnapshot), booking: jsonValue(invoice.bookingSnapshot), tax: jsonValue(invoice.taxSnapshot), items };
+    return {
+      ...invoice,
+      seller: jsonValue(invoice.sellerSnapshot),
+      buyer: jsonValue(invoice.buyerSnapshot),
+      booking: jsonValue(invoice.bookingSnapshot),
+      tax: jsonValue(invoice.taxSnapshot),
+      paymentInstructions: jsonValue(invoice.paymentInstructions) || invoice.paymentInstructions,
+      items,
+      canManage: await this.canManageInvoicePayment(userId, role, invoiceId),
+    };
   }
-  async markInvoicePaid(invoiceId, userId, role, { paymentReference = null, paymentMethod }) {
+  async markInvoicePaid(invoiceId, userId, role, { paymentReference = null, paymentMethod, paidDate = null, internalNote = null }) {
     const connection = await this.database.getConnection();
     try { await connection.beginTransaction();
       // Lock before authorization/state transition so simultaneous manual
@@ -1366,11 +1385,12 @@ export class Queries {
         WHERE i.id=? FOR UPDATE`, [invoiceId]);
       const invoice = rows[0]; if (!invoice) { await connection.rollback(); return false; }
       if (!['manager', 'admin'].includes(role) && Number(invoice.sellerProfileOwnerUserId) !== Number(userId)) { const [members] = await connection.execute(`SELECT role FROM organization_members
-        WHERE organization_id=? AND user_id=? AND role IN ('owner','admin','manager')`, [invoice.sellerOrganizationId, userId]); if (!members[0]) { await connection.rollback(); return false; } }
+        WHERE organization_id=? AND user_id=? AND role IN ('owner','admin')`, [invoice.sellerOrganizationId, userId]); if (!members[0]) { await connection.rollback(); return false; } }
       if (!['issued', 'sent', 'overdue'].includes(invoice.status)) { await connection.rollback(); return { error: 'INVALID_STATE' }; }
-      await connection.execute(`UPDATE invoices SET status='paid', paid_at=NOW(), paid_by_user_id=?, manual_payment_reference=?, manual_payment_method=? WHERE id=?`, [userId, paymentReference, paymentMethod, invoiceId]);
+      await connection.execute(`UPDATE invoices SET status='paid', paid_at=NOW(), paid_date=COALESCE(?, CURDATE()), paid_by_user_id=?, manual_payment_reference=?, manual_payment_method=?, manual_payment_note=? WHERE id=?`, [paidDate, userId, paymentReference, paymentMethod, internalNote, invoiceId]);
       await connection.execute(`INSERT INTO payments (invoice_id, booking_id, provider, status, currency, amount, payment_method_type, metadata_json, paid_at)
-        VALUES (?, ?, 'manual', 'succeeded', ?, ?, ?, ?, NOW())`, [invoiceId, invoice.bookingId, invoice.currency, invoice.totalAmount, paymentMethod, JSON.stringify(paymentReference ? { reference: paymentReference } : {})]);
+        VALUES (?, ?, 'manual', 'succeeded', ?, ?, ?, ?, NOW())`, [invoiceId, invoice.bookingId, invoice.currency, invoice.totalAmount, paymentMethod, JSON.stringify({ ...(paymentReference ? { reference: paymentReference } : {}), ...(paidDate ? { paidDate } : {}), ...(internalNote ? { internalNote } : {}) })]);
+      if (invoice.bookingId) await connection.execute("UPDATE venue_bookings SET payment_status='paid' WHERE id=?", [invoice.bookingId]);
       await connection.execute(`INSERT INTO invoice_history (invoice_id, action, previous_status, new_status, performed_by_user_id) VALUES (?, 'marked_paid', ?, 'paid', ?)`, [invoiceId, invoice.status, userId]);
       await connection.commit(); return true;
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
@@ -1392,9 +1412,29 @@ export class Queries {
   async recordInvoicePdf(invoiceId, hash) {
     await this.database.execute('UPDATE invoices SET pdf_hash=COALESCE(pdf_hash, ?), pdf_generated_at=COALESCE(pdf_generated_at, NOW()) WHERE id=?', [hash, invoiceId]);
   }
+  async invoiceDocument(invoiceId) {
+    const [rows] = await this.database.execute('SELECT pdf_document AS pdfDocument, pdf_hash AS pdfHash, generated_at AS generatedAt FROM invoice_documents WHERE invoice_id=?', [invoiceId]);
+    return rows[0] || null;
+  }
+  async storeInvoiceDocument(invoiceId, pdfDocument, pdfHash) {
+    await this.database.execute(`INSERT IGNORE INTO invoice_documents (invoice_id, pdf_document, pdf_hash, generated_at)
+      VALUES (?, ?, ?, NOW())`, [invoiceId, pdfDocument, pdfHash]);
+    await this.database.execute('UPDATE invoices SET pdf_storage_key=COALESCE(pdf_storage_key, ?), pdf_hash=COALESCE(pdf_hash, ?), pdf_generated_at=COALESCE(pdf_generated_at, NOW()) WHERE id=?', [`database:invoice_documents/${invoiceId}`, pdfHash, invoiceId]);
+    return this.invoiceDocument(invoiceId);
+  }
+  async markVenueInvoiceGenerationFailed(bookingId, error) {
+    await this.database.execute("UPDATE venue_bookings SET invoice_generation_status='failed', invoice_generation_error=? WHERE id=?", [String(error || 'Invoice document generation failed').slice(0, 500), bookingId]);
+  }
   async canManageVenue(id, userId, role) {
     if (['manager', 'admin'].includes(role)) return true;
     const [rows] = await this.database.execute(`SELECT v.id FROM venues v LEFT JOIN organization_members om ON om.organization_id = v.organization_id AND om.user_id = ? WHERE v.id = ? AND (v.owner_user_id = ? OR om.role IN ('owner','admin','manager'))`, [userId, id, userId]);
+    return Boolean(rows[0]);
+  }
+  async canManageVenueBilling(id, userId, role) {
+    if (['manager', 'admin'].includes(role)) return true;
+    const [rows] = await this.database.execute(`SELECT v.id FROM venues v
+      LEFT JOIN organization_members member ON member.organization_id=v.organization_id AND member.user_id=?
+      WHERE v.id=? AND (member.role IN ('owner','admin') OR (v.organization_id IS NULL AND v.owner_user_id=?))`, [userId, id, userId]);
     return Boolean(rows[0]);
   }
   async venueAvailability(venueId) {
@@ -1420,6 +1460,87 @@ export class Queries {
       maximum_advance_days AS maximumAdvanceDays, currency, hourly_rate AS hourlyRate,
       daily_rate AS dailyRate, invoice_due_days AS invoiceDueDays FROM venue_booking_settings WHERE venue_id = ?`, [venueId]);
     return rows[0] || null;
+  }
+  async venueFinancialSettings(venueId, userId = null, role = null) {
+    if (userId !== null && !await this.canManageVenueBilling(venueId, userId, role)) return null;
+    const [rows] = await this.database.execute(`SELECT v.id AS venueId, v.organization_id AS organizationId,
+      COALESCE(finance.invoice_mode, 'ykcircle') AS invoiceMode,
+      COALESCE(finance.seller_billing_profile_id, v.billing_profile_id, organization.default_billing_profile_id) AS sellerBillingProfileId,
+      COALESCE(finance.payment_terms_days, booking.invoice_due_days, 30) AS paymentTermsDays,
+      COALESCE(finance.tax_mode, 'no_tax') AS taxMode, finance.default_tax_rate AS defaultTaxRate,
+      COALESCE(finance.prices_include_tax, FALSE) AS pricesIncludeTax,
+      COALESCE(finance.confirmation_policy, 'on_owner_approval') AS confirmationPolicy,
+      finance.accepted_terms_version AS acceptedTermsVersion, finance.accepted_at AS acceptedAt,
+      finance.accepted_by_user_id AS acceptedByUserId,
+      payment.methods_json AS methods, payment.bankgiro, payment.plusgiro, payment.iban, payment.bic,
+      payment.swish_number AS swishNumber, payment.bank_name AS bankName,
+      payment.account_details_text AS accountDetailsText, payment.additional_instructions AS additionalInstructions,
+      COALESCE(payment.payment_reference_mode, 'invoice_number') AS paymentReferenceMode
+      FROM venues v LEFT JOIN organizations organization ON organization.id=v.organization_id
+      LEFT JOIN venue_booking_settings booking ON booking.venue_id=v.id
+      LEFT JOIN venue_billing_settings finance ON finance.venue_id=v.id
+      LEFT JOIN venue_payment_settings payment ON payment.venue_id=v.id WHERE v.id=?`, [venueId]);
+    if (!rows[0]) return null;
+    return { ...rows[0], methods: jsonValue(rows[0].methods) || [], pricesIncludeTax: Boolean(rows[0].pricesIncludeTax) };
+  }
+  async saveVenueFinancialSettings(venueId, userId, role, settings) {
+    if (!await this.canManageVenueBilling(venueId, userId, role)) return { error: 'FORBIDDEN' };
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [venues] = await connection.execute(`SELECT venue.organization_id AS organizationId, finance.invoice_mode AS existingInvoiceMode,
+        finance.accepted_terms_version AS existingTermsVersion, finance.accepted_at AS existingAcceptedAt,
+        finance.accepted_by_user_id AS existingAcceptedByUserId FROM venues venue
+        LEFT JOIN venue_billing_settings finance ON finance.venue_id=venue.id WHERE venue.id=? FOR UPDATE`, [venueId]);
+      const venue = venues[0];
+      if (!venue) { await connection.rollback(); return { error: 'NOT_FOUND' }; }
+      if (settings.sellerBillingProfileId) {
+        const [profiles] = await connection.execute(`SELECT id, owner_organization_id AS ownerOrganizationId, profile_type AS profileType
+          FROM billing_profiles WHERE id=? AND is_active=TRUE FOR UPDATE`, [settings.sellerBillingProfileId]);
+        const seller = profiles[0];
+        if (!seller || seller.profileType !== 'organization' || Number(seller.ownerOrganizationId) !== Number(venue.organizationId)) {
+          await connection.rollback(); return { error: 'SELLER_PROFILE_ORGANIZATION_MISMATCH' };
+        }
+      }
+      const accepted = settings.acceptInvoiceAuthorization === true && settings.invoiceMode === 'ykcircle';
+      const preserveAcceptance = !accepted && settings.invoiceMode === 'ykcircle' && venue.existingInvoiceMode === 'ykcircle';
+      const acceptedTermsVersion = accepted ? settings.termsVersion : (preserveAcceptance ? venue.existingTermsVersion : null);
+      const acceptedAt = accepted ? new Date() : (preserveAcceptance ? venue.existingAcceptedAt : null);
+      const acceptedByUserId = accepted ? userId : (preserveAcceptance ? venue.existingAcceptedByUserId : null);
+      await connection.execute(`INSERT INTO venue_billing_settings
+        (venue_id, invoice_mode, seller_billing_profile_id, payment_terms_days, tax_mode, default_tax_rate, prices_include_tax, confirmation_policy,
+         accepted_terms_version, accepted_at, accepted_by_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE invoice_mode=VALUES(invoice_mode), seller_billing_profile_id=VALUES(seller_billing_profile_id),
+        payment_terms_days=VALUES(payment_terms_days), tax_mode=VALUES(tax_mode), default_tax_rate=VALUES(default_tax_rate),
+        prices_include_tax=VALUES(prices_include_tax), confirmation_policy=VALUES(confirmation_policy),
+        accepted_terms_version=VALUES(accepted_terms_version), accepted_at=VALUES(accepted_at), accepted_by_user_id=VALUES(accepted_by_user_id)`,
+      [venueId, settings.invoiceMode, settings.sellerBillingProfileId, settings.paymentTermsDays, settings.taxMode, settings.defaultTaxRate,
+        settings.pricesIncludeTax, settings.confirmationPolicy, acceptedTermsVersion, acceptedAt, acceptedByUserId]);
+      await connection.execute(`INSERT INTO venue_payment_settings
+        (venue_id, methods_json, bankgiro, plusgiro, iban, bic, swish_number, bank_name, account_details_text, additional_instructions, payment_reference_mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE methods_json=VALUES(methods_json), bankgiro=VALUES(bankgiro), plusgiro=VALUES(plusgiro), iban=VALUES(iban),
+        bic=VALUES(bic), swish_number=VALUES(swish_number), bank_name=VALUES(bank_name), account_details_text=VALUES(account_details_text),
+        additional_instructions=VALUES(additional_instructions), payment_reference_mode=VALUES(payment_reference_mode)`,
+      [venueId, JSON.stringify(settings.methods), settings.bankgiro, settings.plusgiro, settings.iban, settings.bic, settings.swishNumber,
+        settings.bankName, settings.accountDetailsText, settings.additionalInstructions, settings.paymentReferenceMode]);
+      await connection.execute('UPDATE venues SET billing_profile_id=? WHERE id=?', [settings.sellerBillingProfileId, venueId]);
+      await connection.commit();
+      await this.audit(userId, 'venue_financial_settings_changed', 'venue', venueId, { invoiceMode: settings.invoiceMode, sellerBillingProfileId: settings.sellerBillingProfileId, methods: settings.methods });
+      return this.venueFinancialSettings(venueId, userId, role);
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async getVenueFinancialReadiness(venueId, userId = null, role = null) {
+    const settings = await this.venueFinancialSettings(venueId, userId, role);
+    if (!settings) return null;
+    let seller = null;
+    if (settings.sellerBillingProfileId) {
+      const [profiles] = await this.database.execute(`SELECT ${this.billingProfileColumns('p')} FROM billing_profiles p WHERE p.id=?`, [settings.sellerBillingProfileId]);
+      seller = profiles[0] ? { ...profiles[0], isActive: Boolean(profiles[0].isActive) } : null;
+      if (seller && Number(seller.ownerOrganizationId) !== Number(settings.organizationId)) seller = null;
+    }
+    return { venueId, ...evaluateVenueFinancialReadiness(settings, seller, settings) };
   }
   async updateVenueBookingSettings(venueId, userId, role, settings) {
     if (!await this.canManageVenue(venueId, userId, role)) return false;
@@ -1796,17 +1917,27 @@ export class Queries {
   }
   async eventVenueBooking(eventId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.billing_status AS billingStatus, b.booking_type AS bookingType, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.venue_timezone AS timezone, b.booking_date AS bookingDate, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
-      v.name AS venueName, v.formatted_address AS venueLocation, v.owner_user_id AS venueOwnerUserId
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.billing_status AS billingStatus, b.booking_type AS bookingType, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.venue_timezone AS timezone, b.booking_date AS bookingDate, b.status, b.payment_status AS paymentStatus, b.currency, b.subtotal, b.tax_amount AS taxAmount, b.total_amount AS totalAmount, b.invoice_generation_status AS invoiceGenerationStatus, b.invoice_generation_error AS invoiceGenerationError, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+      v.name AS venueName, v.formatted_address AS venueLocation, v.owner_user_id AS venueOwnerUserId,
+      invoice.id AS invoiceId, invoice.invoice_number AS invoiceNumber, invoice.status AS invoiceStatus,
+      external.id AS externalInvoiceId, external.status AS externalInvoiceStatus, external.external_invoice_number AS externalInvoiceNumber,
+      external.external_invoice_url AS externalInvoiceUrl, external.due_date AS externalInvoiceDueDate
       FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id
+      LEFT JOIN invoices invoice ON invoice.booking_id=b.id LEFT JOIN booking_external_invoices external ON external.booking_id=b.id
       WHERE b.event_id = ? AND (${privileged ? 'TRUE' : 'e.manager_id = ? OR v.owner_user_id = ?'})`, privileged ? [eventId] : [eventId, userId, userId]);
     return rows[0] ? { ...rows[0], startAt: utcTimestamp(rows[0].startAt), endAt: utcTimestamp(rows[0].endAt), occupiedStartAt: utcTimestamp(rows[0].occupiedStartAt), occupiedEndAt: utcTimestamp(rows[0].occupiedEndAt), createdAt: utcTimestamp(rows[0].createdAt), updatedAt: utcTimestamp(rows[0].updatedAt) } : null;
   }
   async venueBookings(venueId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.booking_type AS bookingType, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.status, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
-      e.title AS eventTitle, e.timezone AS eventTimezone, organizer.name AS organizerName, organizer.email AS organizerEmail
+    const [rows] = await this.database.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.booking_type AS bookingType, b.booking_date AS bookingDate, b.venue_timezone AS venueTimezone, b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt, b.status, b.payment_status AS paymentStatus, b.currency, b.subtotal, b.tax_amount AS taxAmount, b.total_amount AS totalAmount, b.invoice_generation_status AS invoiceGenerationStatus, b.invoice_generation_error AS invoiceGenerationError, b.owner_note AS ownerNote, b.created_at AS createdAt, b.updated_at AS updatedAt,
+      e.title AS eventTitle, e.timezone AS eventTimezone, organizer.name AS organizerName, organizer.email AS organizerEmail,
+      buyer.legal_name AS buyerLegalName, invoice.id AS invoiceId, invoice.invoice_number AS invoiceNumber, invoice.status AS invoiceStatus,
+      external.id AS externalInvoiceId, external.status AS externalInvoiceStatus, external.external_invoice_number AS externalInvoiceNumber,
+      external.external_invoice_url AS externalInvoiceUrl, external.due_date AS externalInvoiceDueDate,
+      COALESCE(finance.invoice_mode, 'ykcircle') AS invoiceMode
       FROM venue_bookings b JOIN venues v ON v.id = b.venue_id JOIN events e ON e.id = b.event_id JOIN users organizer ON organizer.id = b.organizer_user_id
+      LEFT JOIN billing_profiles buyer ON buyer.id=b.buyer_billing_profile_id LEFT JOIN invoices invoice ON invoice.booking_id=b.id
+      LEFT JOIN booking_external_invoices external ON external.booking_id=b.id LEFT JOIN venue_billing_settings finance ON finance.venue_id=v.id
       LEFT JOIN organization_members venue_member ON venue_member.organization_id=v.organization_id AND venue_member.user_id=?
       WHERE b.venue_id = ? AND (${privileged ? 'TRUE' : "v.owner_user_id=? OR venue_member.role IN ('owner','admin','manager')"})
       ORDER BY CASE WHEN b.status = 'requested' THEN 0 ELSE 1 END, b.created_at DESC, b.id DESC`, privileged ? [userId, venueId] : [userId, venueId, userId]);
@@ -1831,7 +1962,7 @@ export class Queries {
     const [result] = await this.database.execute('INSERT INTO venue_booking_messages (booking_id, sender_user_id, body) VALUES (?, ?, ?)', [bookingId, userId, body]);
     return { id: result.insertId, bookingId, senderUserId: userId, body };
   }
-  async reviewVenueBooking(bookingId, userId, role, status, ownerNote = null) {
+  async reviewVenueBookingLegacy(bookingId, userId, role, status, ownerNote = null) {
     const connection = await this.database.getConnection();
     try { await connection.beginTransaction();
       const [rows] = await connection.execute(`SELECT b.venue_id AS venueId, b.organizer_user_id AS organizerUserId, b.buyer_billing_profile_id AS buyerBillingProfileId, b.billing_status AS billingStatus, b.currency, b.subtotal, b.tax_amount AS taxAmount, b.total_amount AS totalAmount,
@@ -1899,6 +2030,230 @@ export class Queries {
       }
       await connection.commit(); return { invoiceId };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async venueBookingFinancialContext(bookingId, executor = this.database, { lock = false } = {}) {
+    const [rows] = await executor.execute(`SELECT b.id, b.venue_id AS venueId, b.event_id AS eventId, b.organizer_user_id AS organizerUserId,
+      b.buyer_billing_profile_id AS buyerBillingProfileId, b.booking_type AS bookingType, b.booking_date AS bookingDate,
+      b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt,
+      b.venue_timezone AS venueTimezone, b.status, b.currency, b.subtotal AS storedSubtotal,
+      v.organization_id AS sellerOrganizationId, v.owner_user_id AS sellerOwnerUserId, v.billing_profile_id AS legacySellerBillingProfileId,
+      v.name AS venueName, v.formatted_address AS venueAddress, v.price_from AS fallbackRate,
+      organization.default_billing_profile_id AS organizationDefaultBillingProfileId, organization.name AS organizationName,
+      event.title AS eventTitle, booking.hourly_rate AS hourlyRate, booking.daily_rate AS dailyRate,
+      COALESCE(finance.invoice_mode, 'ykcircle') AS invoiceMode,
+      COALESCE(finance.seller_billing_profile_id, v.billing_profile_id, organization.default_billing_profile_id) AS sellerBillingProfileId,
+      COALESCE(finance.payment_terms_days, booking.invoice_due_days, 30) AS paymentTermsDays,
+      COALESCE(finance.tax_mode, 'no_tax') AS taxMode, finance.default_tax_rate AS defaultTaxRate,
+      COALESCE(finance.prices_include_tax, FALSE) AS pricesIncludeTax,
+      COALESCE(finance.confirmation_policy, 'on_owner_approval') AS confirmationPolicy,
+      finance.accepted_terms_version AS acceptedTermsVersion, finance.accepted_at AS acceptedAt,
+      finance.accepted_by_user_id AS acceptedByUserId,
+      payment.methods_json AS methods, payment.bankgiro, payment.plusgiro, payment.iban, payment.bic,
+      payment.swish_number AS swishNumber, payment.bank_name AS bankName, payment.account_details_text AS accountDetailsText,
+      payment.additional_instructions AS additionalInstructions, COALESCE(payment.payment_reference_mode, 'invoice_number') AS paymentReferenceMode
+      FROM venue_bookings b JOIN venues v ON v.id=b.venue_id
+      LEFT JOIN organizations organization ON organization.id=v.organization_id
+      LEFT JOIN events event ON event.id=b.event_id
+      JOIN venue_booking_settings booking ON booking.venue_id=v.id
+      LEFT JOIN venue_billing_settings finance ON finance.venue_id=v.id
+      LEFT JOIN venue_payment_settings payment ON payment.venue_id=v.id
+      WHERE b.id=?${lock ? ' FOR UPDATE' : ''}`, [bookingId]);
+    if (!rows[0]) return null;
+    const context = { ...rows[0], methods: jsonValue(rows[0].methods) || [], pricesIncludeTax: Boolean(rows[0].pricesIncludeTax) };
+    const [sellers] = context.sellerBillingProfileId ? await executor.execute(`SELECT ${this.billingProfileColumns('p')} FROM billing_profiles p WHERE p.id=?`, [context.sellerBillingProfileId]) : [[]];
+    const [buyers] = context.buyerBillingProfileId ? await executor.execute(`SELECT ${this.billingProfileColumns('p')} FROM billing_profiles p WHERE p.id=?`, [context.buyerBillingProfileId]) : [[]];
+    context.seller = sellers[0] ? { ...sellers[0], isActive: Boolean(sellers[0].isActive) } : null;
+    context.buyer = buyers[0] ? { ...buyers[0], isActive: Boolean(buyers[0].isActive) } : null;
+    return context;
+  }
+  async calculateVenueBookingPrice(bookingId, executor = this.database) {
+    const context = await this.venueBookingFinancialContext(bookingId, executor);
+    if (!context) return null;
+    return calculateVenueBookingPrice({
+      bookingType: context.bookingType, startAt: context.startAt, endAt: context.endAt,
+      hourlyRate: context.hourlyRate, dailyRate: context.dailyRate, fallbackRate: context.fallbackRate,
+      currency: context.currency, taxMode: context.taxMode, defaultTaxRate: context.defaultTaxRate,
+      pricesIncludeTax: context.pricesIncludeTax, venueName: context.venueName,
+    });
+  }
+  async getVenueBookingBillingReadiness(bookingId) {
+    const context = await this.venueBookingFinancialContext(bookingId);
+    if (!context) return null;
+    const price = calculateVenueBookingPrice({
+      bookingType: context.bookingType, startAt: context.startAt, endAt: context.endAt,
+      hourlyRate: context.hourlyRate, dailyRate: context.dailyRate, fallbackRate: context.fallbackRate,
+      currency: context.currency, taxMode: context.taxMode, defaultTaxRate: context.defaultTaxRate,
+      pricesIncludeTax: context.pricesIncludeTax, venueName: context.venueName,
+    });
+    const isInvoiceRequired = !price?.error && price.total > 0;
+    const buyerBillingProfileReady = !isInvoiceRequired || Boolean(context.buyer?.isActive && context.buyer.legalName && context.buyer.addressLine1 && context.buyer.postalCode && context.buyer.city && context.buyer.country && context.buyer.billingEmail);
+    const seller = context.seller && Number(context.seller.ownerOrganizationId) === Number(context.sellerOrganizationId) ? context.seller : null;
+    const venueReadiness = evaluateVenueFinancialReadiness(context, seller, context);
+    const priceReady = !price?.error;
+    return {
+      bookingId, invoiceMode: context.invoiceMode, isInvoiceRequired, buyerBillingProfileReady, priceReady,
+      price: priceReady ? price : null, priceError: price?.error || null, venue: venueReadiness,
+      canApprove: !isInvoiceRequired || (buyerBillingProfileReady && priceReady && (context.invoiceMode === 'external' || venueReadiness.canIssueInvoice)),
+    };
+  }
+  async ensureVenueBookingInvoice(bookingId, issuedByUserId) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const context = await this.venueBookingFinancialContext(bookingId, connection, { lock: true });
+      if (!context || context.status !== 'confirmed') { await connection.rollback(); return { error: 'BOOKING_NOT_CONFIRMED' }; }
+      const price = calculateVenueBookingPrice({
+        bookingType: context.bookingType, startAt: context.startAt, endAt: context.endAt,
+        hourlyRate: context.hourlyRate, dailyRate: context.dailyRate, fallbackRate: context.fallbackRate,
+        currency: context.currency, taxMode: context.taxMode, defaultTaxRate: context.defaultTaxRate,
+        pricesIncludeTax: context.pricesIncludeTax, venueName: context.venueName,
+      });
+      if (price?.error) { await connection.rollback(); return { error: price.error }; }
+      if (price.total <= 0) {
+        await connection.execute("UPDATE venue_bookings SET payment_status='unpaid', invoice_generation_status='not_required', invoice_generation_error=NULL WHERE id=?", [bookingId]);
+        await connection.commit(); return { invoiceId: null, invoiceMode: context.invoiceMode, paymentStatus: 'not_required' };
+      }
+      if (context.invoiceMode === 'external') {
+        const [existing] = await connection.execute('SELECT id FROM booking_external_invoices WHERE booking_id=? FOR UPDATE', [bookingId]);
+        let externalInvoiceId = existing[0]?.id;
+        if (!externalInvoiceId) {
+          const [created] = await connection.execute(`INSERT INTO booking_external_invoices (booking_id, amount, currency, status)
+            VALUES (?, ?, ?, 'awaiting_invoice')`, [bookingId, price.total, price.currency]);
+          externalInvoiceId = created.insertId;
+        }
+        await connection.execute("UPDATE venue_bookings SET payment_status='unpaid', invoice_generation_status='succeeded', invoice_generation_error=NULL WHERE id=?", [bookingId]);
+        await connection.commit();
+        return { invoiceId: null, externalInvoiceId, invoiceMode: 'external', paymentStatus: 'unpaid' };
+      }
+      const seller = context.seller && Number(context.seller.ownerOrganizationId) === Number(context.sellerOrganizationId) ? context.seller : null;
+      const readiness = evaluateVenueFinancialReadiness(context, seller, context);
+      if (!readiness.canIssueInvoice) { await connection.rollback(); return { error: 'FINANCIAL_SETUP_INCOMPLETE', missing: readiness.missing }; }
+      if (!context.buyer?.isActive) { await connection.rollback(); return { error: 'BUYER_PROFILE_INCOMPLETE' }; }
+      const [existing] = await connection.execute('SELECT id FROM invoices WHERE booking_id=? FOR UPDATE', [bookingId]);
+      if (existing[0]) {
+        await connection.execute("UPDATE venue_bookings SET payment_status='unpaid', invoice_generation_status='succeeded', invoice_generation_error=NULL WHERE id=?", [bookingId]);
+        await connection.commit(); return { invoiceId: existing[0].id, invoiceMode: 'ykcircle', paymentStatus: 'invoice_open' };
+      }
+      const allocation = await this.allocateInvoiceNumber(connection, seller.id, seller.invoicePrefix);
+      const sellerSnapshot = { legalName: seller.legalName, organizationNumber: seller.organizationNumber, vatNumber: seller.vatNumber, addressLine1: seller.addressLine1, addressLine2: seller.addressLine2, postalCode: seller.postalCode, city: seller.city, country: seller.country, billingEmail: seller.billingEmail, phone: seller.phone };
+      const buyerSnapshot = { legalName: context.buyer.legalName, profileType: context.buyer.profileType, organizationNumber: context.buyer.organizationNumber, vatNumber: context.buyer.vatNumber, addressLine1: context.buyer.addressLine1, addressLine2: context.buyer.addressLine2, postalCode: context.buyer.postalCode, city: context.buyer.city, country: context.buyer.country, billingEmail: context.buyer.billingEmail, phone: context.buyer.phone };
+      const bookingSnapshot = { venueName: context.venueName, venueAddress: context.venueAddress, bookingDate: context.bookingDate, startsAt: utcTimestamp(context.startAt), endsAt: utcTimestamp(context.endAt), venueTimezone: context.venueTimezone, bookingReference: `VB-${bookingId}`, eventId: context.eventId, eventTitle: context.eventTitle, pricingRuleVersion: price.pricingRuleVersion };
+      const paymentInstructions = { methods: context.methods, bankgiro: context.bankgiro, plusgiro: context.plusgiro, iban: context.iban, bic: context.bic, swishNumber: context.swishNumber, bankName: context.bankName, accountDetailsText: context.accountDetailsText, additionalInstructions: context.additionalInstructions, referenceMode: context.paymentReferenceMode };
+      paymentInstructions.text = [context.bankgiro && `Bankgiro: ${context.bankgiro}`, context.plusgiro && `Plusgiro: ${context.plusgiro}`, context.iban && `IBAN: ${context.iban}`, context.bic && `BIC: ${context.bic}`, context.swishNumber && `Swish: ${context.swishNumber}`, context.bankName, context.accountDetailsText, context.additionalInstructions, `Reference: ${allocation.invoiceNumber}`].filter(Boolean).join('\n');
+      const [invoice] = await connection.execute(`INSERT INTO invoices (seller_organization_id, seller_billing_profile_id, buyer_user_id, buyer_organization_id, buyer_billing_profile_id,
+        booking_id, context_type, context_id, invoice_series_id, invoice_number, status, delivery_status, issue_date, due_date, currency, subtotal, tax_amount, total_amount,
+        seller_snapshot_json, buyer_snapshot_json, booking_snapshot_json, tax_snapshot_json, payment_instructions_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, 'venue_booking', ?, ?, ?, 'issued', 'pending', CURDATE(), DATE_ADD(CURDATE(), INTERVAL ? DAY), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [context.sellerOrganizationId, seller.id, context.organizerUserId, context.buyer.ownerOrganizationId, context.buyer.id, bookingId, String(bookingId), allocation.seriesId,
+        allocation.invoiceNumber, context.paymentTermsDays, price.currency, price.subtotal, price.taxAmount, price.total, JSON.stringify(sellerSnapshot), JSON.stringify(buyerSnapshot),
+        JSON.stringify(bookingSnapshot), JSON.stringify({ mode: context.taxMode, rate: price.lineItems[0].taxRate, pricesIncludeTax: context.pricesIncludeTax }), JSON.stringify(paymentInstructions)]);
+      for (const item of price.lineItems) await connection.execute(`INSERT INTO invoice_items
+        (invoice_id, description, quantity, unit, unit_price, tax_rate, subtotal, tax_amount, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [invoice.insertId, item.description, item.quantity, item.unit, item.unitPrice, item.taxRate, item.subtotal, item.taxAmount, item.total]);
+      await connection.execute(`INSERT INTO invoice_history (invoice_id, action, new_status, performed_by_user_id, metadata_json)
+        VALUES (?, 'issued', 'issued', ?, ?)`, [invoice.insertId, issuedByUserId, JSON.stringify({ source: 'venue_booking_approval' })]);
+      await connection.execute("UPDATE venue_bookings SET payment_status='unpaid', invoice_generation_status='succeeded', invoice_generation_error=NULL, subtotal=?, tax_amount=?, total_amount=?, currency=? WHERE id=?", [price.subtotal, price.taxAmount, price.total, price.currency, bookingId]);
+      await connection.commit();
+      return { invoiceId: invoice.insertId, invoiceMode: 'ykcircle', invoiceNumber: allocation.invoiceNumber, paymentStatus: 'invoice_open' };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async externalInvoice(bookingId, userId, role) {
+    if (!await this.canAccessVenueBooking(bookingId, userId, role)) return null;
+    const [rows] = await this.database.execute(`SELECT external.id, external.booking_id AS bookingId,
+      external.external_invoice_number AS externalInvoiceNumber, external.external_invoice_date AS externalInvoiceDate,
+      external.amount, external.currency, external.due_date AS dueDate, external.external_invoice_url AS externalInvoiceUrl,
+      external.status, external.marked_paid_at AS markedPaidAt, external.created_at AS createdAt, external.updated_at AS updatedAt,
+      organization.name AS sellerName FROM booking_external_invoices external
+      JOIN venue_bookings booking ON booking.id=external.booking_id JOIN venues venue ON venue.id=booking.venue_id
+      LEFT JOIN organizations organization ON organization.id=venue.organization_id WHERE external.booking_id=?`, [bookingId]);
+    return rows[0] || null;
+  }
+  async saveExternalInvoice(bookingId, userId, role, data) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [bookings] = await connection.execute(`SELECT booking.id, booking.currency, booking.total_amount AS totalAmount,
+        COALESCE(finance.invoice_mode, 'ykcircle') AS invoiceMode FROM venue_bookings booking
+        JOIN venues venue ON venue.id=booking.venue_id LEFT JOIN venue_billing_settings finance ON finance.venue_id=venue.id
+        LEFT JOIN organization_members member ON member.organization_id=venue.organization_id AND member.user_id=?
+        WHERE booking.id=? AND (${['manager', 'admin'].includes(role) ? 'TRUE' : "member.role IN ('owner','admin') OR (venue.organization_id IS NULL AND venue.owner_user_id=?)"}) FOR UPDATE`,
+      ['manager', 'admin'].includes(role) ? [userId, bookingId] : [userId, bookingId, userId]);
+      const booking = bookings[0];
+      if (!booking) { await connection.rollback(); return { error: 'FORBIDDEN' }; }
+      if (booking.invoiceMode !== 'external') { await connection.rollback(); return { error: 'INVALID_MODE' }; }
+      await connection.execute(`INSERT INTO booking_external_invoices
+        (booking_id, external_invoice_number, external_invoice_date, amount, currency, due_date, external_invoice_url, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'issued') ON DUPLICATE KEY UPDATE external_invoice_number=VALUES(external_invoice_number),
+        external_invoice_date=VALUES(external_invoice_date), amount=VALUES(amount), currency=VALUES(currency), due_date=VALUES(due_date),
+        external_invoice_url=VALUES(external_invoice_url), status=IF(status='paid', status, 'issued')`,
+      [bookingId, data.externalInvoiceNumber, data.externalInvoiceDate, data.amount ?? booking.totalAmount, data.currency || booking.currency, data.dueDate, data.externalInvoiceUrl]);
+      await connection.execute("UPDATE venue_bookings SET payment_status='unpaid', invoice_generation_status='succeeded', invoice_generation_error=NULL WHERE id=?", [bookingId]);
+      await connection.commit();
+      await this.audit(userId, 'external_invoice_recorded', 'venue_booking', bookingId, { externalInvoiceNumber: data.externalInvoiceNumber });
+      return this.externalInvoice(bookingId, userId, role);
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async markExternalInvoicePaid(bookingId, userId, role) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [rows] = await connection.execute(`SELECT external.id FROM booking_external_invoices external
+        JOIN venue_bookings booking ON booking.id=external.booking_id JOIN venues venue ON venue.id=booking.venue_id
+        LEFT JOIN organization_members member ON member.organization_id=venue.organization_id AND member.user_id=?
+        WHERE external.booking_id=? AND external.status IN ('awaiting_invoice','issued')
+        AND (${['manager', 'admin'].includes(role) ? 'TRUE' : "member.role IN ('owner','admin') OR (venue.organization_id IS NULL AND venue.owner_user_id=?)"}) FOR UPDATE`,
+      ['manager', 'admin'].includes(role) ? [userId, bookingId] : [userId, bookingId, userId]);
+      if (!rows[0]) { await connection.rollback(); return false; }
+      await connection.execute("UPDATE booking_external_invoices SET status='paid', marked_paid_at=NOW(), marked_paid_by_user_id=? WHERE id=?", [userId, rows[0].id]);
+      await connection.execute("UPDATE venue_bookings SET payment_status='paid' WHERE id=?", [bookingId]);
+      await connection.commit();
+      await this.audit(userId, 'external_invoice_marked_paid', 'venue_booking', bookingId, { source: 'confirmed_by_venue' });
+      return true;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async reviewVenueBooking(bookingId, userId, role, status, ownerNote = null) {
+    let billingReadiness = null;
+    if (status === 'confirmed') {
+      billingReadiness = await this.getVenueBookingBillingReadiness(bookingId);
+      if (!billingReadiness) return false;
+      if (billingReadiness.isInvoiceRequired) {
+        const context = await this.venueBookingFinancialContext(bookingId);
+        if (!context || !await this.canManageVenueBilling(context.venueId, userId, role)) return { error: 'BILLING_PERMISSION_REQUIRED' };
+      }
+      if (!billingReadiness.priceReady) return { error: billingReadiness.priceError || 'PRICE_NOT_CONFIGURED' };
+      if (!billingReadiness.buyerBillingProfileReady) return { error: 'BUYER_PROFILE_INCOMPLETE' };
+      if (billingReadiness.isInvoiceRequired && billingReadiness.invoiceMode === 'ykcircle' && !billingReadiness.venue.canIssueInvoice) return { error: 'FINANCIAL_SETUP_INCOMPLETE', missing: billingReadiness.venue.missing };
+    }
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [rows] = await connection.execute(`SELECT b.id, b.venue_id AS venueId, b.booking_type AS bookingType, b.booking_date AS bookingDate,
+        b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt FROM venue_bookings b JOIN venues v ON v.id=b.venue_id
+        LEFT JOIN organization_members member ON member.organization_id=v.organization_id AND member.user_id=?
+        WHERE b.id=? AND b.status='requested' AND (${['manager', 'admin'].includes(role) ? 'TRUE' : "v.owner_user_id=? OR member.role IN ('owner','admin','manager')"}) FOR UPDATE`,
+      ['manager', 'admin'].includes(role) ? [userId, bookingId] : [userId, bookingId, userId]);
+      const booking = rows[0];
+      if (!booking) { await connection.rollback(); return false; }
+      await connection.execute('SELECT id FROM venues WHERE id=? FOR UPDATE', [booking.venueId]);
+      if (status === 'confirmed') {
+        const conflict = await this.checkBookingConflict({ venueId: booking.venueId, bookingType: booking.bookingType, bookingDate: booking.bookingDate, occupiedStartAt: booking.occupiedStartAt, occupiedEndAt: booking.occupiedEndAt, excludeBookingId: bookingId }, connection);
+        if (conflict.conflict) { await connection.rollback(); return { error: 'CONFLICT' }; }
+      }
+      const confirmed = status === 'confirmed';
+      await connection.execute(`UPDATE venue_bookings SET status=?, owner_note=?, venue_internal_note=?,
+        confirmed_at=CASE WHEN ? THEN NOW() ELSE confirmed_at END, confirmed_by=CASE WHEN ? THEN ? ELSE confirmed_by END,
+        invoice_generation_status=CASE WHEN ? THEN 'pending' ELSE invoice_generation_status END WHERE id=?`,
+      [status, ownerNote, ownerNote, confirmed, confirmed, userId, confirmed, bookingId]);
+      await connection.commit();
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+    if (status !== 'confirmed') return { invoiceId: null };
+    if (!billingReadiness?.isInvoiceRequired) return { invoiceId: null, invoiceMode: billingReadiness?.invoiceMode || null, paymentStatus: 'not_required' };
+    try {
+      return await this.ensureVenueBookingInvoice(bookingId, userId);
+    } catch (error) {
+      await this.database.execute("UPDATE venue_bookings SET invoice_generation_status='failed', invoice_generation_error=? WHERE id=?", [String(error.message || 'Invoice generation failed').slice(0, 500), bookingId]);
+      return { invoiceId: null, invoiceGenerationStatus: 'failed', warning: 'INVOICE_GENERATION_FAILED' };
+    }
   }
   async cancelVenueBooking(eventId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);
