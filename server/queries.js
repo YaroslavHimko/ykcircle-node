@@ -1950,6 +1950,27 @@ export class Queries {
       WHERE b.id=? AND (${privileged ? 'TRUE' : "b.organizer_user_id=? OR v.owner_user_id=? OR venue_member.role IN ('owner','admin','manager')"})`, privileged ? [userId, bookingId] : [userId, bookingId, userId, userId]);
     return Boolean(rows[0]);
   }
+  async updateVenueBookingBuyerBillingProfile(bookingId, userId, role, buyerBillingProfileId) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const privileged = ['manager', 'admin'].includes(role);
+      const [bookings] = await connection.execute(`SELECT booking.id, booking.event_id AS eventId FROM venue_bookings booking
+        JOIN events event_row ON event_row.id=booking.event_id
+        WHERE booking.id=? AND booking.status='requested' AND (${privileged ? 'TRUE' : 'event_row.manager_id=?'}) FOR UPDATE`,
+      privileged ? [bookingId] : [bookingId, userId]);
+      const booking = bookings[0];
+      if (!booking) { await connection.rollback(); return { error: 'BOOKING_NOT_EDITABLE' }; }
+      const profile = await this.billingProfile(buyerBillingProfileId, userId, role, connection);
+      if (!profile) { await connection.rollback(); return { error: 'BILLING_PROFILE_UNAVAILABLE' }; }
+      const completeness = this.billingProfileCompleteness(profile, 'venue_buyer');
+      if (!completeness.complete) { await connection.rollback(); return { error: 'BUYER_PROFILE_INCOMPLETE', missing: completeness.missing }; }
+      await connection.execute("UPDATE venue_bookings SET buyer_billing_profile_id=?, billing_status='complete' WHERE id=?", [profile.id, bookingId]);
+      await connection.commit();
+      await this.audit(userId, 'venue_booking_buyer_profile_updated', 'venue_booking', bookingId, { buyerBillingProfileId: profile.id });
+      return { id: bookingId, eventId: booking.eventId, buyerBillingProfileId: profile.id };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
   async venueBookingMessages(bookingId, userId, role) {
     if (!await this.canAccessVenueBooking(bookingId, userId, role)) return null;
     const [rows] = await this.database.execute(`SELECT m.id, m.booking_id AS bookingId, m.sender_user_id AS senderUserId,

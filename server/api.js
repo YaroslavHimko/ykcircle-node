@@ -1349,6 +1349,18 @@ export class Api {
       try { await ensureTable(); const invoice = await this.queries.externalInvoice(bookingId, req.user.id, req.user.role); return invoice ? res.json(invoice) : res.status(404).json({ error: 'External invoice not found or not available to you.' }); }
       catch (error) { console.error('External invoice lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load the external invoice.' }); }
     });
+    app.patch('/api/venue-bookings/:id/buyer-billing-profile', authenticate, async (req, res) => {
+      const bookingId = Number(req.params.id); const buyerBillingProfileId = Number(req.body.buyerBillingProfileId);
+      if (!Number.isInteger(bookingId) || bookingId < 1 || !Number.isInteger(buyerBillingProfileId) || buyerBillingProfileId < 1) return res.status(422).json({ error: 'Choose a valid buyer Billing Profile.' });
+      try {
+        await ensureTable();
+        const result = await this.queries.updateVenueBookingBuyerBillingProfile(bookingId, req.user.id, req.user.role, buyerBillingProfileId);
+        if (result?.error === 'BUYER_PROFILE_INCOMPLETE') return res.status(422).json({ code: result.error, missing: result.missing || [], error: 'Complete the selected buyer Billing Profile before using it for this Venue.' });
+        if (result?.error === 'BILLING_PROFILE_UNAVAILABLE') return res.status(422).json({ code: result.error, error: 'This Billing Profile is not available to you.' });
+        if (result?.error) return res.status(409).json({ code: result.error, error: 'Only the event organizer can update a requested booking.' });
+        return res.json({ booking: await this.queries.eventVenueBooking(result.eventId, req.user.id, req.user.role) });
+      } catch (error) { console.error('Venue booking buyer Billing Profile update failed:', error.message); return res.status(500).json({ error: 'Unable to update the booking buyer.' }); }
+    });
     app.put('/api/venue-bookings/:id/external-invoice', authenticate, requireVenueOwner, async (req, res) => {
       const bookingId = Number(req.params.id); const externalInvoiceNumber = req.body.externalInvoiceNumber == null ? null : String(req.body.externalInvoiceNumber).trim() || null; const externalInvoiceDate = req.body.externalInvoiceDate == null || req.body.externalInvoiceDate === '' ? null : String(req.body.externalInvoiceDate); const amount = req.body.amount == null || req.body.amount === '' ? null : Number(req.body.amount); const currency = req.body.currency == null || req.body.currency === '' ? null : String(req.body.currency).toUpperCase(); const dueDate = req.body.dueDate == null || req.body.dueDate === '' ? null : String(req.body.dueDate); const externalInvoiceUrl = req.body.externalInvoiceUrl == null || req.body.externalInvoiceUrl === '' ? null : String(req.body.externalInvoiceUrl).trim();
       const validUrl = !externalInvoiceUrl || (() => { try { return new URL(externalInvoiceUrl).protocol === 'https:'; } catch { return false; } })();
