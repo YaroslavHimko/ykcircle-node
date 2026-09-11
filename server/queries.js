@@ -9,6 +9,11 @@ const utcTimestamp = (value) => {
   const instant = value instanceof Date ? value : new Date(`${String(value).replace(' ', 'T').replace(/Z$/i, '')}Z`);
   return Number.isNaN(instant.getTime()) ? value : instant.toISOString();
 };
+const dateOnly = (value) => {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
+  const date = String(value ?? '').slice(0, 10);
+  return isDateOnly(date) ? date : null;
+};
 const jsonValue = (value) => {
   if (!value || typeof value === 'object') return value || null;
   try { return JSON.parse(value); } catch { return null; }
@@ -1637,11 +1642,13 @@ export class Queries {
     const timezone = venues[0].timezone;
     let start = occupiedStartAt ? new Date(occupiedStartAt) : null;
     let end = occupiedEndAt ? new Date(occupiedEndAt) : null;
-    if (bookingType === 'daily' && bookingDate) {
-      start = localDateTimeToUtc(bookingDate, '00:00', timezone, 'start');
-      end = localDateTimeToUtc(addDays(bookingDate, 1), '00:00', timezone, 'start');
+    if (bookingType === 'daily') {
+      const dailyDate = dateOnly(bookingDate);
+      if (!dailyDate) return { conflict: true, reason: 'INVALID_INTERVAL' };
+      start = localDateTimeToUtc(dailyDate, '00:00', timezone, 'start');
+      end = localDateTimeToUtc(addDays(dailyDate, 1), '00:00', timezone, 'start');
     }
-    if (!start || !end || Number.isNaN(start) || Number.isNaN(end) || start >= end) return { conflict: true, reason: 'INVALID_INTERVAL' };
+    if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) return { conflict: true, reason: 'INVALID_INTERVAL' };
     const [bookings] = await executor.execute(`SELECT id, booking_type AS bookingType, booking_date AS bookingDate, venue_timezone AS venueTimezone,
       occupied_start_at AS startAt, occupied_end_at AS endAt FROM venue_bookings
       WHERE venue_id=? AND status IN ('requested', 'confirmed')${excludeBookingId ? ' AND id <> ?' : ''} FOR UPDATE`, excludeBookingId ? [venueId, excludeBookingId] : [venueId]);
@@ -1649,7 +1656,8 @@ export class Queries {
       WHERE venue_id=? AND cancelled_at IS NULL${excludeExternalReservationId ? ' AND id <> ?' : ''} FOR UPDATE`, excludeExternalReservationId ? [venueId, excludeExternalReservationId] : [venueId]);
     const occupied = [...reservations, ...bookings.flatMap((booking) => {
       if (booking.bookingType !== 'daily') return [booking];
-      const date = booking.bookingDate instanceof Date ? booking.bookingDate.toISOString().slice(0, 10) : String(booking.bookingDate).slice(0, 10);
+      const date = dateOnly(booking.bookingDate);
+      if (!date) return [];
       const bookingTimezone = booking.venueTimezone || timezone;
       const startAt = localDateTimeToUtc(date, '00:00', bookingTimezone, 'start');
       const endAt = localDateTimeToUtc(addDays(date, 1), '00:00', bookingTimezone, 'start');

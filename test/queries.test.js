@@ -199,6 +199,24 @@ test('uses boolean confirmation flags when reviewing a venue booking', async () 
   assert.deepEqual(update.parameters, ['confirmed', 'Approved', 'Approved', true, true, 15, true, 22]);
 });
 
+test('checks a daily booking when MySQL returns its booking date as a Date', async () => {
+  const connection = {
+    execute: async (sql) => {
+      if (sql.startsWith('SELECT timezone FROM venues')) return [[{ timezone: 'UTC' }]];
+      if (sql.includes('SELECT id, booking_type AS bookingType')) return [[]];
+      if (sql.includes('FROM venue_external_reservations')) return [[]];
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+  const queries = new Queries({ execute: connection.execute });
+
+  assert.deepEqual(await queries.checkBookingConflict({
+    venueId: 3,
+    bookingType: 'daily',
+    bookingDate: new Date('2026-09-11T00:00:00.000Z'),
+  }, connection), { conflict: false });
+});
+
 test('returns booking messages only after verifying conversation access', async () => {
   const calls = [];
   const queries = new Queries({
