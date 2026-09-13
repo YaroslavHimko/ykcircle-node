@@ -930,7 +930,7 @@ export class Queries {
     if (!profile) return null;
     const [result] = await this.database.execute(`INSERT INTO payment_accounts
       (billing_profile_id, provider, provider_account_id, onboarding_status, charges_enabled, payouts_enabled, details_submitted, country, default_currency)
-      VALUES (?, ?, ?, 'pending', FALSE, FALSE, FALSE, ?, ?)`, [billingProfileId, account.provider, account.providerAccountId, profile.country, profile.defaultCurrency]);
+      VALUES (?, ?, ?, 'pending', FALSE, FALSE, FALSE, ?, ?) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)`, [billingProfileId, account.provider, account.providerAccountId, profile.country, profile.defaultCurrency]);
     await this.audit(userId, 'payment_account_connected', 'payment_account', result.insertId, { billingProfileId, provider: account.provider });
     return { id: result.insertId, billingProfileId, provider: account.provider, providerAccountId: account.providerAccountId, onboardingStatus: 'pending', chargesEnabled: false, payoutsEnabled: false, detailsSubmitted: false, country: profile.country, defaultCurrency: profile.defaultCurrency };
   }
@@ -974,16 +974,16 @@ export class Queries {
     return this.eventPaymentSettings(eventId, userId, role);
   }
   async canAcceptPaidRegistrations(eventId) {
-    const [rows] = await this.database.execute(`SELECT e.participation_fee AS fee, s.seller_billing_profile_id AS sellerBillingProfileId,
-      s.payment_account_id AS paymentAccountId, s.payments_enabled AS paymentsEnabled, s.ticket_sales_enabled AS ticketSalesEnabled,
-      account.billing_profile_id AS accountBillingProfileId, account.charges_enabled AS chargesEnabled, account.onboarding_status AS onboardingStatus
-      FROM events e LEFT JOIN event_payment_settings s ON s.event_id=e.id LEFT JOIN payment_accounts account ON account.id=s.payment_account_id WHERE e.id=?`, [eventId]);
-    const row = rows[0]; if (!row || Number(row.fee || 0) <= 0) return true;
-    return Boolean(row.sellerBillingProfileId && row.paymentAccountId && row.paymentsEnabled && row.ticketSalesEnabled && row.chargesEnabled && row.onboardingStatus === 'ready' && Number(row.accountBillingProfileId) === Number(row.sellerBillingProfileId));
+    const [rows] = await this.database.execute('SELECT participation_fee AS fee, pricing_type AS pricingType FROM events WHERE id=?', [eventId]);
+    const row = rows[0]; if (!row || row.pricingType !== 'paid' && Number(row.fee || 0) <= 0) return true;
+    // Paid attendance is created only by verified Checkout fulfillment.
+    return false;
   }
   async ticketTypes(eventId, { publicOnly = false } = {}) {
     const [rows] = await this.database.execute(`SELECT id, event_id AS eventId, name, description, price, currency,
       quantity_available AS quantityAvailable, quantity_sold AS quantitySold, sales_start_at AS salesStartAt, sales_end_at AS salesEndAt,
+      (SELECT COALESCE(SUM(item.quantity),0) FROM ticket_order_items item JOIN ticket_orders o ON o.id=item.ticket_order_id
+        WHERE item.ticket_type_id=event_ticket_types.id AND o.payment_status='pending') AS quantityReserved,
       is_active AS isActive FROM event_ticket_types WHERE event_id=?${publicOnly ? " AND is_active=TRUE AND (sales_start_at IS NULL OR sales_start_at<=NOW()) AND (sales_end_at IS NULL OR sales_end_at>=NOW())" : ''} ORDER BY id`, [eventId]);
     return rows.map((row) => ({ ...row, isActive: Boolean(row.isActive) }));
   }
@@ -1009,39 +1009,64 @@ export class Queries {
       profile.address_line_1 AS sellerAddressLine1, profile.address_line_2 AS sellerAddressLine2, profile.postal_code AS sellerPostalCode,
       profile.city AS sellerCity, profile.country AS sellerCountry, profile.billing_email AS sellerBillingEmail
       FROM events e JOIN event_payment_settings s ON s.event_id=e.id JOIN payment_accounts account ON account.id=s.payment_account_id
-      JOIN billing_profiles profile ON profile.id=s.seller_billing_profile_id WHERE e.id=? AND e.status='Published' AND profile.is_active=TRUE AND s.payments_enabled=TRUE
+      JOIN billing_profiles profile ON profile.id=s.seller_billing_profile_id WHERE e.id=? AND e.status='Published' AND e.visibility='Public'
+      AND e.deleted_at IS NULL AND e.starts_at>NOW() AND e.pricing_type='paid' AND e.registration_type='yaroko'
+      AND (e.registration_deadline IS NULL OR e.registration_deadline>NOW())
+      AND account.billing_profile_id=profile.id AND profile.is_active=TRUE AND s.payments_enabled=TRUE
       AND s.ticket_sales_enabled=TRUE AND account.charges_enabled=TRUE AND account.onboarding_status='ready'`, [eventId]);
     if (!rows[0]) return null;
     const row = rows[0];
     return { ...row, chargesEnabled: Boolean(row.chargesEnabled), refundPolicy: jsonValue(row.refundPolicy), seller: { legalName: row.sellerLegalName, organizationNumber: row.sellerOrganizationNumber, vatNumber: row.sellerVatNumber, addressLine1: row.sellerAddressLine1, addressLine2: row.sellerAddressLine2, postalCode: row.sellerPostalCode, city: row.sellerCity, country: row.sellerCountry, billingEmail: row.sellerBillingEmail, capacity: row.sellerCapacity } };
   }
-  async createTicketOrder(eventId, attendee, selections) {
+  async createTicketOrder(eventId, attendee, selections, checkoutKey = null) {
     const connection = await this.database.getConnection();
     try {
       await connection.beginTransaction();
+      // Serialize reservations for this event, including purchases of different ticket types.
+      const [eventRows] = await connection.execute('SELECT id, capacity, starts_at AS startsAt FROM events WHERE id=? FOR UPDATE', [eventId]);
+      if (!eventRows[0] || new Date(utcTimestamp(eventRows[0].startsAt)) <= new Date()) { await connection.rollback(); return { error: 'EVENT_UNAVAILABLE' }; }
+      if (checkoutKey) {
+        const [existing] = await connection.execute('SELECT id FROM ticket_orders WHERE event_id=? AND attendee_user_id=? AND checkout_key=?', [eventId, attendee.userId, checkoutKey]);
+        if (existing[0]) { await connection.commit(); return this.ticketOrder(existing[0].id, attendee.userId, 'customer'); }
+      }
       const context = await this.ticketCheckoutContext(eventId, connection);
       if (!context) { await connection.rollback(); return { error: 'PAYMENT_SETUP_REQUIRED' }; }
       const ids = selections.map((selection) => Number(selection.ticketTypeId));
       if (!ids.length || ids.some((id) => !Number.isInteger(id))) { await connection.rollback(); return { error: 'INVALID_TICKETS' }; }
       const placeholders = ids.map(() => '?').join(',');
       const [types] = await connection.execute(`SELECT id, name, description, price, currency, quantity_available AS quantityAvailable,
-        quantity_sold AS quantitySold FROM event_ticket_types WHERE event_id=? AND id IN (${placeholders}) AND is_active=TRUE FOR UPDATE`, [eventId, ...ids]);
+        quantity_sold AS quantitySold FROM event_ticket_types WHERE event_id=? AND id IN (${placeholders}) AND is_active=TRUE
+        AND (sales_start_at IS NULL OR sales_start_at<=NOW()) AND (sales_end_at IS NULL OR sales_end_at>=NOW()) FOR UPDATE`, [eventId, ...ids]);
       if (types.length !== ids.length || new Set(ids).size !== ids.length) { await connection.rollback(); return { error: 'INVALID_TICKETS' }; }
       let subtotal = 0; const items = [];
+      // Pending Checkouts hold stock until Stripe confirms expiry/failure. A browser
+      // cancellation alone cannot release stock: that Checkout might still be paid.
+      const [reserved] = await connection.execute(`SELECT item.ticket_type_id AS ticketTypeId, SUM(item.quantity) AS quantity
+        FROM ticket_order_items item JOIN ticket_orders o ON o.id=item.ticket_order_id
+        WHERE o.event_id=? AND o.payment_status='pending' GROUP BY item.ticket_type_id`, [eventId]);
+      const [capacityRows] = await connection.execute(`SELECT COALESCE(SUM(item.quantity),0) AS quantity FROM ticket_order_items item
+        JOIN ticket_orders o ON o.id=item.ticket_order_id WHERE o.event_id=? AND o.payment_status IN ('pending','paid','partially_refunded','disputed')`, [eventId]);
+      const requestedQuantity = selections.reduce((sum, item) => sum + Number(item.quantity), 0);
+      if (eventRows[0].capacity != null && Number(capacityRows[0].quantity) + requestedQuantity > Number(eventRows[0].capacity)) { await connection.rollback(); return { error: 'TICKETS_UNAVAILABLE' }; }
       for (const selection of selections) {
         const type = types.find((candidate) => Number(candidate.id) === Number(selection.ticketTypeId)); const quantity = Number(selection.quantity);
-        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20 || (type.quantityAvailable !== null && Number(type.quantitySold) + quantity > Number(type.quantityAvailable))) { await connection.rollback(); return { error: 'TICKETS_UNAVAILABLE' }; }
+        const held = Number(reserved.find((row) => Number(row.ticketTypeId) === Number(type.id))?.quantity || 0);
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20 || (type.quantityAvailable !== null && Number(type.quantitySold) + held + quantity > Number(type.quantityAvailable))) { await connection.rollback(); return { error: 'TICKETS_UNAVAILABLE' }; }
         if (type.currency !== (context.paymentCurrency || context.currency)) { await connection.rollback(); return { error: 'CURRENCY_MISMATCH' }; }
-        const amount = Number(type.price) * quantity; subtotal += amount;
+        const amount = Math.round(Number(type.price) * 100) * quantity / 100; subtotal = Math.round((subtotal + amount) * 100) / 100;
         items.push({ type, quantity, amount });
       }
       const orderNumber = `TKT-${new Date().getUTCFullYear()}-${crypto.randomBytes(7).toString('hex').toUpperCase()}`;
+      if (subtotal <= 0) { await connection.rollback(); return { error: 'INVALID_TICKETS' }; }
       const [order] = await connection.execute(`INSERT INTO ticket_orders (order_number, event_id, attendee_user_id, attendee_email, seller_billing_profile_id, payment_account_id, currency, subtotal, tax_amount, total_amount, provider, seller_snapshot_json, refund_policy_snapshot)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`, [orderNumber, eventId, attendee.userId || null, attendee.email, context.sellerBillingProfileId, context.paymentAccountId, context.paymentCurrency || context.currency, subtotal, subtotal, context.provider, JSON.stringify(context.seller), context.refundPolicy || null]);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`, [orderNumber, eventId, attendee.userId || null, attendee.email, context.sellerBillingProfileId, context.paymentAccountId, context.paymentCurrency || context.currency, subtotal, subtotal, context.provider, JSON.stringify(context.seller), context.refundPolicy ? JSON.stringify(context.refundPolicy) : null]);
+      await connection.execute('UPDATE ticket_orders SET checkout_key=? WHERE id=?', [checkoutKey, order.insertId]);
       for (const item of items) await connection.execute(`INSERT INTO ticket_order_items (ticket_order_id, ticket_type_id, ticket_type_snapshot_json, quantity, unit_price, subtotal, tax_amount, total_amount)
         VALUES (?, ?, ?, ?, ?, ?, 0, ?)`, [order.insertId, item.type.id, JSON.stringify({ id: item.type.id, name: item.type.name, description: item.type.description, currency: item.type.currency }), item.quantity, item.type.price, item.amount, item.amount]);
       await connection.commit();
-      return { id: order.insertId, orderNumber, totalAmount: subtotal, currency: context.paymentCurrency || context.currency, provider: context.provider, providerAccountId: context.providerAccountId };
+      // Do not await the pool read here: finally must release the transaction's
+      // connection first, including when all pool slots are serving checkouts.
+      return this.ticketOrder(order.insertId, attendee.userId, 'customer');
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async attachTicketProviderPayment(orderId, provider, providerPaymentId) {
@@ -1052,7 +1077,7 @@ export class Queries {
     const [rows] = await this.database.execute(`SELECT o.id, o.order_number AS orderNumber, o.event_id AS eventId, e.title AS eventTitle,
       o.attendee_user_id AS attendeeUserId, o.attendee_email AS attendeeEmail, o.currency, o.subtotal, o.tax_amount AS taxAmount,
       o.total_amount AS totalAmount, o.payment_status AS paymentStatus, o.provider, o.created_at AS createdAt, o.paid_at AS paidAt,
-      o.seller_snapshot_json AS sellerSnapshot, o.refund_policy_snapshot AS refundPolicy
+      o.seller_snapshot_json AS sellerSnapshot, o.refund_policy_snapshot AS refundPolicy, o.test_mode AS testMode
       FROM ticket_orders o LEFT JOIN events e ON e.id=o.event_id LEFT JOIN event_payment_settings settings ON settings.event_id=o.event_id
       LEFT JOIN billing_profiles seller ON seller.id=settings.seller_billing_profile_id
       LEFT JOIN organization_members seller_member ON seller_member.organization_id=seller.owner_organization_id AND seller_member.user_id=?
@@ -1106,13 +1131,10 @@ export class Queries {
         account.provider_account_id AS providerAccountId FROM ticket_orders ticket JOIN payment_accounts account ON account.id=ticket.payment_account_id
         WHERE ticket.id=? FOR UPDATE`, [orderId]);
       const order = orders[0];
-      if (!order || (payload.account && payload.account !== order.providerAccountId)) { await connection.execute(`UPDATE payment_provider_events SET processing_error=? WHERE provider=? AND provider_event_id=?`, ['Ticket order/payment account mismatch', provider, providerEventId]); await connection.commit(); return { ignored: true }; }
-      const paid = ['checkout.session.completed', 'payment_intent.succeeded'].includes(eventType) && (eventType !== 'checkout.session.completed' || object.payment_status === 'paid');
-      if (paid && order.paymentStatus === 'pending') {
-        await connection.execute(`UPDATE ticket_orders SET payment_status='paid', paid_at=NOW(), provider_payment_id=? WHERE id=?`, [object.payment_intent || object.id || null, orderId]);
-        const [items] = await connection.execute('SELECT ticket_type_id AS ticketTypeId, quantity FROM ticket_order_items WHERE ticket_order_id=?', [orderId]);
-        for (const item of items) await connection.execute(`UPDATE event_ticket_types SET quantity_sold=quantity_sold+? WHERE id=?`, [item.quantity, item.ticketTypeId]);
-      } else if (['charge.refunded', 'refund.created', 'refund.updated'].includes(eventType) && ['paid', 'partially_refunded'].includes(order.paymentStatus)) {
+      if (!order || payload.account !== order.providerAccountId) { await connection.execute(`UPDATE payment_provider_events SET processing_error=? WHERE provider=? AND provider_event_id=?`, ['Ticket order/payment account mismatch', provider, providerEventId]); await connection.commit(); return { ignored: true }; }
+      // TicketSales verifies Checkout and commits tickets + delivery together.
+      // PaymentIntent notifications alone must never bypass that fulfillment path.
+      if (['charge.refunded', 'refund.created', 'refund.updated'].includes(eventType) && ['paid', 'partially_refunded'].includes(order.paymentStatus)) {
         const fullyRefunded = object.refunded === true || object.status === 'succeeded' && Number(object.amount_refunded || 0) >= Number(object.amount || 0);
         await connection.execute(`UPDATE ticket_orders SET payment_status=? WHERE id=?`, [fullyRefunded ? 'refunded' : 'partially_refunded', orderId]);
       } else if (eventType.startsWith('charge.dispute.')) {
@@ -1422,9 +1444,12 @@ export class Queries {
     return rows[0] || null;
   }
   async storeInvoiceDocument(invoiceId, pdfDocument, pdfHash) {
-    await this.database.execute(`INSERT IGNORE INTO invoice_documents (invoice_id, pdf_document, pdf_hash, generated_at)
-      VALUES (?, ?, ?, NOW())`, [invoiceId, pdfDocument, pdfHash]);
-    await this.database.execute('UPDATE invoices SET pdf_storage_key=COALESCE(pdf_storage_key, ?), pdf_hash=COALESCE(pdf_hash, ?), pdf_generated_at=COALESCE(pdf_generated_at, NOW()) WHERE id=?', [`database:invoice_documents/${invoiceId}`, pdfHash, invoiceId]);
+    // The invoice snapshots are immutable, but the document renderer can be
+    // corrected. Keep the cached PDF in sync with that snapshot so an already
+    // issued invoice does not keep a known formatting defect forever.
+    await this.database.execute(`INSERT INTO invoice_documents (invoice_id, pdf_document, pdf_hash, generated_at)
+      VALUES (?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE pdf_document=VALUES(pdf_document), pdf_hash=VALUES(pdf_hash), generated_at=VALUES(generated_at)`, [invoiceId, pdfDocument, pdfHash]);
+    await this.database.execute('UPDATE invoices SET pdf_storage_key=COALESCE(pdf_storage_key, ?), pdf_hash=?, pdf_generated_at=NOW() WHERE id=?', [`database:invoice_documents/${invoiceId}`, pdfHash, invoiceId]);
     return this.invoiceDocument(invoiceId);
   }
   async markVenueInvoiceGenerationFailed(bookingId, error) {

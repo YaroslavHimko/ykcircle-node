@@ -1,14 +1,4 @@
-import crypto from 'node:crypto';
-
-const asForm = (value, prefix = '', target = new URLSearchParams()) => {
-  for (const [key, entry] of Object.entries(value || {})) {
-    if (entry === undefined || entry === null || entry === '') continue;
-    const name = prefix ? `${prefix}[${key}]` : key;
-    if (typeof entry === 'object' && !Array.isArray(entry)) asForm(entry, name, target);
-    else target.append(name, String(entry));
-  }
-  return target;
-};
+import Stripe from 'stripe';
 
 const stripeCountryCode = (country) => {
   const value = String(country || '').trim();
@@ -26,23 +16,39 @@ const stripeCountryCode = (country) => {
 };
 
 export class StripeConnectService {
-  constructor(stripe = {}) {
+  constructor(stripe = {}, stripeClient = null) {
     this.secretKey = stripe.secretKey || null;
     this.publishableKey = stripe.publishableKey || null;
     this.webhookSecret = stripe.webhookSecret || null;
+    this.thinWebhookSecret = stripe.thinWebhookSecret || null;
+    this.applicationFeePercent = Number(stripe.applicationFeePercent || 0);
+    // Placeholder: STRIPE_SECRET_KEY must be a sandbox sk_test_… key for testing.
+    // The SDK selects its supported API version; never send credentials to the browser.
+    this.stripeClient = stripeClient || (this.secretKey ? new Stripe(this.secretKey, { maxNetworkRetries: 2, timeout: 20000 }) : null);
   }
 
   configured() { return Boolean(this.secretKey); }
+  testMode() { return /^(sk|rk)_test_/.test(this.secretKey || ''); }
+
+  onboardingStatus(account) {
+    const chargesEnabled = account?.configuration?.merchant?.capabilities?.card_payments?.status === 'active';
+    const requirementsStatus = account?.requirements?.summary?.minimum_deadline?.status;
+    const requirementsComplete = !['currently_due', 'past_due'].includes(requirementsStatus);
+    return {
+      chargesEnabled,
+      payoutsEnabled: account?.configuration?.merchant?.capabilities?.stripe_balance?.payouts?.status === 'active',
+      detailsSubmitted: Boolean(chargesEnabled || requirementsComplete),
+      onboardingStatus: chargesEnabled ? 'ready' : requirementsComplete ? 'restricted' : 'pending',
+      requirementsStatus: requirementsStatus || null,
+    };
+  }
 
   async request(path, data = {}, connectedAccountId = null, idempotencyKey = null) {
-    if (!this.configured()) throw new Error('Stripe is not configured.');
-    const headers = { Authorization: `Bearer ${this.secretKey}`, 'Content-Type': 'application/x-www-form-urlencoded' };
-    if (connectedAccountId) headers['Stripe-Account'] = connectedAccountId;
-    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
-    const response = await fetch(`https://api.stripe.com/v1${path}`, { method: data === null ? 'GET' : 'POST', headers, body: data === null ? undefined : asForm(data).toString() });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body?.error?.message || 'Stripe request failed.');
-    return body;
+    if (!this.configured()) throw new Error('Set STRIPE_SECRET_KEY to your Stripe sandbox secret key before accepting ticket payments.');
+    return this.stripeClient.rawRequest(data === null ? 'GET' : 'POST', `/v1${path}`, data || {}, {
+      ...(connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
   }
 
   async createConnectedAccount(profile) {
@@ -52,27 +58,52 @@ export class StripeConnectService {
       error.code = 'UNSUPPORTED_STRIPE_COUNTRY';
       throw error;
     }
-    return this.request('/accounts', {
-      type: 'express', country, email: profile.billingEmail,
-      business_type: profile.profileType === 'organization' ? 'company' : 'individual',
-      business_profile: { name: profile.legalName },
-      capabilities: { card_payments: { requested: true }, transfers: { requested: true } },
-    });
+    if (!this.stripeClient) throw new Error('Set STRIPE_SECRET_KEY before onboarding a seller.');
+    return this.stripeClient.v2.core.accounts.create({
+      display_name: profile.legalName, contact_email: profile.billingEmail,
+      identity: { country }, dashboard: 'full',
+      defaults: { responsibilities: { fees_collector: 'stripe', losses_collector: 'stripe' } },
+      configuration: { customer: {}, merchant: { capabilities: { card_payments: { requested: true } } } },
+    }, { idempotencyKey: `seller-${profile.id}-${this.testMode() ? 'test' : 'live'}` });
   }
 
   async createOnboardingLink(accountId, { refreshUrl, returnUrl }) {
-    return this.request('/account_links', { account: accountId, refresh_url: refreshUrl, return_url: returnUrl, type: 'account_onboarding' });
+    const account = await this.account(accountId);
+    // Existing Express accounts retain their original onboarding flow.
+    if (account.legacy) return this.stripeClient.accountLinks.create({ account: accountId, refresh_url: refreshUrl, return_url: returnUrl, type: 'account_onboarding' });
+    return this.stripeClient.v2.core.accountLinks.create({ account: accountId, use_case: {
+      type: 'account_onboarding', account_onboarding: { configurations: ['merchant', 'customer'], refresh_url: refreshUrl, return_url: returnUrl },
+    } });
   }
 
-  async account(accountId) { return this.request(`/accounts/${encodeURIComponent(accountId)}`, null); }
+  async account(accountId) {
+    try {
+      const account = await this.stripeClient.v2.core.accounts.retrieve(accountId, { include: ['configuration.merchant', 'requirements'] });
+      const status = this.onboardingStatus(account);
+      return { ...account, charges_enabled: status.chargesEnabled, payouts_enabled: status.payoutsEnabled, details_submitted: status.detailsSubmitted, onboarding_status: status.onboardingStatus, requirements_status: status.requirementsStatus };
+    } catch (error) {
+      if (!['resource_missing', 'account_invalid', 'v2_account_not_found'].includes(error.code)) throw error;
+      return { ...await this.stripeClient.accounts.retrieve(accountId), legacy: true };
+    }
+  }
+
+  checkoutSession(sessionId, accountId) {
+    return this.stripeClient.checkout.sessions.retrieve(sessionId, {}, { stripeAccount: accountId });
+  }
 
   async createDirectCheckout({ order, context, successUrl, cancelUrl }) {
-    return this.request('/checkout/sessions', {
+    const fee = Math.round(Number(order.totalAmount) * this.applicationFeePercent);
+    if (!Number.isFinite(fee) || fee < 0 || fee > Math.round(Number(order.totalAmount) * 100)) throw new Error('STRIPE_APPLICATION_FEE_PERCENT must be between 0 and 100.');
+    return this.stripeClient.checkout.sessions.create({
       mode: 'payment', success_url: successUrl, cancel_url: cancelUrl, client_reference_id: String(order.id),
+      customer_email: order.attendeeEmail,
+      payment_method_types: ['card'],
+      expires_at: Math.floor(new Date(order.createdAt || Date.now()).getTime() / 1000) + 35 * 60,
       metadata: { ticketOrderId: String(order.id) },
-      payment_intent_data: { metadata: { ticketOrderId: String(order.id) } },
-      line_items: { 0: { price_data: { currency: order.currency.toLowerCase(), product_data: { name: `${context.title} tickets` }, unit_amount: Math.round(Number(order.totalAmount) * 100) }, quantity: 1 } },
-    }, context.providerAccountId, `ticket-checkout-${order.id}`);
+      payment_intent_data: { metadata: { ticketOrderId: String(order.id) }, ...(fee ? { application_fee_amount: fee } : {}) },
+      // Prices and quantities come from the locked database order, not the browser.
+      line_items: order.items.map((item) => ({ price_data: { currency: order.currency.toLowerCase(), product_data: { name: `${context.title}: ${item.ticketType.name}` }, unit_amount: Math.round(Number(item.unitPrice) * 100) }, quantity: item.quantity })),
+    }, { stripeAccount: context.providerAccountId, idempotencyKey: `ticket-checkout-${order.id}` });
   }
 
   async createPlatformCheckout({ order, successUrl, cancelUrl }) {
@@ -99,12 +130,11 @@ export class StripeConnectService {
 
   verifyWebhook(rawBody, signature) {
     if (!this.webhookSecret || !signature) return null;
-    const parts = Object.fromEntries(String(signature).split(',').map((part) => part.split('=', 2)).filter(([key, value]) => key && value));
-    const timestamp = Number(parts.t); const signatureValue = parts.v1;
-    if (!Number.isInteger(timestamp) || !signatureValue || Math.abs(Date.now() / 1000 - timestamp) > 300) return null;
-    const expected = crypto.createHmac('sha256', this.webhookSecret).update(`${timestamp}.${rawBody}`).digest('hex');
-    const supplied = Buffer.from(signatureValue, 'hex'); const expectedBuffer = Buffer.from(expected, 'hex');
-    if (supplied.length !== expectedBuffer.length || !crypto.timingSafeEqual(supplied, expectedBuffer)) return null;
-    try { return JSON.parse(rawBody); } catch { return null; }
+    try { return Stripe.webhooks.constructEvent(rawBody, signature, this.webhookSecret); } catch { return null; }
+  }
+
+  verifyThinWebhook(rawBody, signature) {
+    if (!this.thinWebhookSecret || !signature || !this.stripeClient) return null;
+    try { return this.stripeClient.parseEventNotification(rawBody, signature, this.thinWebhookSecret); } catch { return null; }
   }
 }

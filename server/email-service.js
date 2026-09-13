@@ -76,6 +76,26 @@ export class EmailService {
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Confirm your email address</h1><p style="font-size:16px;line-height:1.6;color:#526078">Thanks for creating your account. Click the button below to verify your email and finish setting up your profile.</p><p style="margin:28px 0"><a href="${url}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Verify my email</a></p><p style="font-size:13px;line-height:1.5;color:#7b879b">This verification link expires in 24 hours. If you did not create this account, you can safely ignore this email.</p>`) });
   }
 
+  async sendTickets(order, orderUrl) {
+    if (!this.smtp?.host) throw new Error('Set SMTP_HOST and the transactional SMTP credentials to deliver ticket emails.');
+    const when = formatEventDate(order.event?.startsAt, order.event?.timezone);
+    const location = order.event?.location || 'Location to be announced';
+    const testLabel = order.testMode ? 'TEST TICKETS — no real payment was taken.\n\n' : '';
+    const ticketText = order.tickets.map((ticket) => `${ticket.name}: ${ticket.code}`).join('\n');
+    const text = `${testLabel}Your tickets for ${order.eventTitle}\n\nOrder: ${order.orderNumber}\nWhen: ${when}\nLocation: ${location}\n\n${ticketText}\n\nTotal: ${Number(order.totalAmount).toFixed(2)} ${order.currency}\nSeller: ${order.seller?.legalName || ''}\n\nShow these ticket codes at the event.\nView your tickets: ${orderUrl}`;
+    const result = await this.mailer.sendMail({
+      from: this.noReplyFrom, to: order.attendeeEmail,
+      messageId: `<ticket-order-${order.id}@${this.domain}>`,
+      subject: `${order.testMode ? '[TEST] ' : ''}Your tickets: ${order.eventTitle}`,
+      text,
+      html: this.layout(`${order.testMode ? '<p><strong>TEST TICKETS — no real payment was taken.</strong></p>' : ''}<h1>Your event tickets</h1><h2>${escapeHtml(order.eventTitle)}</h2><p>${escapeHtml(when)}<br>${escapeHtml(location)}</p><p>Order: ${escapeHtml(order.orderNumber)}</p>${order.tickets.map((ticket) => `<div style="border:1px solid #dfd2c7;padding:16px;margin:12px 0"><strong>${escapeHtml(ticket.name)}</strong><p style="font-family:monospace;overflow-wrap:anywhere">${escapeHtml(ticket.code)}</p></div>`).join('')}<p>Show these codes at the event. Each code admits one person.</p><p><a href="${escapeHtml(orderUrl)}">View your tickets</a></p><p>Sold by ${escapeHtml(order.seller?.legalName)} · ${escapeHtml(Number(order.totalAmount).toFixed(2))} ${escapeHtml(order.currency)}</p>`),
+      // A plain-text attachment works offline and does not load remote assets.
+      attachments: [{ filename: `tickets-${order.orderNumber}.txt`, content: text, contentType: 'text/plain; charset=utf-8' }],
+    });
+    if (!result.accepted?.length || result.rejected?.length) throw new Error('The email server did not accept the ticket email.');
+    return result;
+  }
+
   sendPasswordReset(email, name, token) {
     const url = `${this.passwordResetUrl}?token=${encodeURIComponent(token)}`;
     return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Reset your ${this.brandName} password`,

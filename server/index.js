@@ -80,6 +80,7 @@ const start = async () => {
   app.use(securityHeaders);
   app.use(cors({ origin: config.runtime.allowedOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], maxAge: 86400 }));
   app.post('/api/payment-webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }));
+  app.post('/api/payment-webhooks/stripe/thin', express.raw({ type: 'application/json', limit: '1mb' }));
   api.registerPaymentWebhooks(app);
   app.use(express.json());
   const byIpAndEmail = (req) => `${req.ip}:${String(req.body?.email || req.body?.reporterEmail || '').trim().toLowerCase()}`;
@@ -129,9 +130,13 @@ const start = async () => {
   await runRetention();
   const retentionTimer = setInterval(runRetention, 24 * 60 * 60 * 1000);
   retentionTimer.unref();
+  const recoverTickets = () => api.ticketSales.recover().catch((error) => console.error('Ticket recovery failed:', error.message));
+  const ticketTimer = setInterval(recoverTickets, 60 * 1000);
+  ticketTimer.unref();
+  void recoverTickets();
 
   const server = app.listen(config.runtime.port, () => console.log(`API listening on port ${config.runtime.port}`));
-  const shutdown = () => server.close(async () => { await database.close(); process.exit(0); });
+  const shutdown = () => { clearInterval(ticketTimer); server.close(async () => { await database.close(); process.exit(0); }); };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 };

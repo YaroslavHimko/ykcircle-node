@@ -12,6 +12,7 @@ import { createRateLimiter } from './rate-limit.js';
 import { isValidIanaTimezone, localDateTimeToUtc, mysqlUtc, parseUtcInstant, zonedDateTime } from './time.js';
 import { renderInvoicePdf } from './invoice-pdf.js';
 import { StripeConnectService } from './stripe-connect.js';
+import { TicketSales } from './ticket-sales.js';
 
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const legalHtml = (markdown) => {
@@ -52,6 +53,7 @@ export class Api {
     this.articleFtpService = articleFtpService;
     this.authSecret = config.runtime.authSecret;
     this.stripe = new StripeConnectService(config.runtime.stripe);
+    this.ticketSales = new TicketSales({ queries, stripe: this.stripe, emailService, siteUrl: config.site.siteUrl });
   }
 
   registerPaymentWebhooks(app) {
@@ -63,10 +65,38 @@ export class Api {
       if (!event) return res.status(400).json({ error: 'Invalid Stripe webhook signature.' });
       try {
         await this.queries.initialize();
+        const object = event.data?.object;
+        if (object?.metadata?.ticketOrderId && event.type.startsWith('checkout.session.')) {
+          if (!event.account) return res.status(400).json({ error: 'A connected-account event is required.' });
+          await this.ticketSales.confirm(Number(object.metadata.ticketOrderId), object.id, event.account);
+          return res.json({ received: true });
+        }
         await this.queries.processTicketProviderEvent({ provider: 'stripe', providerEventId: event.id, eventType: event.type, payload: event });
         return res.status(200).json({ received: true });
       } catch (error) { console.error('Stripe webhook processing failed:', error.message); return res.status(500).json({ error: 'Webhook processing failed.' }); }
     });
+    app.post('/api/payment-webhooks/stripe/thin', async (req, res) => {
+      const notification = this.stripe.verifyThinWebhook(req.body, req.get('stripe-signature'));
+      if (!notification) return res.status(400).json({ error: 'Invalid Stripe thin event signature.' });
+      try {
+        const event = await this.stripe.stripeClient.v2.core.events.retrieve(notification.id);
+        const accountId = event.related_object?.id;
+        if (accountId && event.type.startsWith('v2.core.account')) {
+          await this.queries.initialize();
+          await this.refreshStripeAccount(accountId);
+        }
+        return res.json({ received: true });
+      } catch (error) { console.error('Stripe account refresh failed:', error.message); return res.status(500).json({ error: 'Unable to refresh connected account.' }); }
+    });
+  }
+
+  async refreshStripeAccount(accountId) {
+    const account = await this.stripe.account(accountId);
+    await this.queries.updatePaymentAccountCapabilities('stripe', accountId, {
+      onboardingStatus: account.onboarding_status || (account.charges_enabled ? 'ready' : account.details_submitted ? 'restricted' : 'pending'),
+      chargesEnabled: account.charges_enabled, payoutsEnabled: account.payouts_enabled, detailsSubmitted: account.details_submitted,
+    });
+    return account;
   }
 
   register(app) {
@@ -999,28 +1029,147 @@ export class Api {
       catch (error) { console.error('Billing profile update failed:', error.message); return res.status(500).json({ error: 'Unable to update billing profile.' }); }
     });
     app.delete('/api/me/billing-profiles/:id', authenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid billing profile is required.' }); try { await ensureTable(); const result = await this.queries.archiveBillingProfile(id, req.user.id, req.user.role); if (result?.error === 'REFERENCED') return res.status(409).json({ error: 'This billing profile is referenced by financial records and cannot be archived.' }); return result ? res.status(204).end() : res.status(403).json({ error: 'Billing profile not found or not available to you.' }); } catch (error) { return res.status(500).json({ error: 'Unable to archive billing profile.' }); } });
-    app.get('/api/me/billing-profiles/:id/payment-accounts', authenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid billing profile is required.' }); try { await ensureTable(); const accounts = await this.queries.paymentAccounts(id, req.user.id, req.user.role); return accounts === null ? res.status(403).json({ error: 'Billing profile not available to you.' }) : res.json(accounts); } catch (error) { return res.status(500).json({ error: 'Unable to load payment accounts.' }); } });
+    app.get('/api/me/billing-profiles/:id/payment-accounts', authenticate, async (req, res) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid billing profile is required.' });
+      try {
+        await ensureTable();
+        const accounts = await this.queries.paymentAccounts(id, req.user.id, req.user.role);
+        if (accounts === null) return res.status(403).json({ error: 'Billing profile not available to you.' });
+        // Read fresh Stripe status after hosted onboarding; its redirect does not prove readiness.
+        const result = await Promise.all(accounts.map(async (account) => {
+          if (account.provider !== 'stripe' || !this.stripe.configured()) return account;
+          const remote = await this.refreshStripeAccount(account.providerAccountId);
+          return { ...account, onboardingStatus: remote.onboarding_status, chargesEnabled: remote.charges_enabled, payoutsEnabled: remote.payouts_enabled, detailsSubmitted: remote.details_submitted, requirementsStatus: remote.requirements_status, testMode: this.stripe.testMode() };
+        }));
+        return res.json(result);
+      } catch (error) { console.error('Payment account refresh failed:', error.message); return res.status(502).json({ error: 'Unable to refresh payment accounts from Stripe. Verify that the seller account belongs to the configured Stripe environment.' }); }
+    });
     app.post('/api/me/billing-profiles/:id/payment-accounts', authenticate, requireVerifiedUser, async (req, res) => {
       const profileId = Number(req.params.id); if (!Number.isInteger(profileId) || profileId < 1) return res.status(422).json({ error: 'A valid billing profile is required.' });
       if (!this.stripe.configured()) return res.status(503).json({ code: 'PAYMENT_PROVIDER_UNAVAILABLE', error: 'Connected payments are not configured.' });
-      try { await ensureTable(); const profile = await this.queries.billingProfile(profileId, req.user.id, req.user.role); if (!profile) return res.status(403).json({ error: 'Billing profile not found or not available to you.' }); const stripeAccount = await this.stripe.createConnectedAccount(profile); const account = await this.queries.createPaymentAccount(profileId, req.user.id, req.user.role, { provider: 'stripe', providerAccountId: stripeAccount.id }); const link = await this.stripe.createOnboardingLink(stripeAccount.id, { refreshUrl: `${this.config.site.siteUrl}/billing/payment-account/refresh`, returnUrl: `${this.config.site.siteUrl}/billing/payment-account/complete` }); return res.status(201).json({ account, onboardingUrl: link.url }); }
-      catch (error) { console.error('Stripe connected-account creation failed:', error.message); if (error.code === 'UNSUPPORTED_STRIPE_COUNTRY') return res.status(422).json({ code: error.code, error: error.message }); return res.status(502).json({ error: 'Unable to start payment-account onboarding.' }); }
+      try { await ensureTable(); const profile = await this.queries.billingProfile(profileId, req.user.id, req.user.role); if (!profile) return res.status(403).json({ error: 'Billing profile not found or not available to you.' }); const stripeAccount = await this.stripe.createConnectedAccount(profile); const account = await this.queries.createPaymentAccount(profileId, req.user.id, req.user.role, { provider: 'stripe', providerAccountId: stripeAccount.id }); const base = `${this.config.site.siteUrl}/billing/payment-account`; const link = await this.stripe.createOnboardingLink(stripeAccount.id, { refreshUrl: `${base}/refresh?accountId=${account.id}`, returnUrl: `${base}/complete?accountId=${account.id}` }); return res.status(201).json({ account, onboardingUrl: link.url }); }
+      catch (error) { console.error('Stripe connected-account creation failed:', error.message); if (error.code === 'UNSUPPORTED_STRIPE_COUNTRY') return res.status(422).json({ code: error.code, error: error.message }); if (['accounts_v2_access_blocked', 'account_create_activation_required', 'connect_profile_not_submitted'].includes(error.code)) return res.status(422).json({ code: 'STRIPE_CONNECT_NOT_READY', error: 'Stripe Connect Accounts v2 is not ready for this sandbox. Activate Connect and complete the platform profile in Stripe before onboarding a seller.' }); return res.status(502).json({ error: 'Unable to start payment-account onboarding.' }); }
     });
     app.post('/api/payment-accounts/:id/onboarding-link', authenticate, async (req, res) => {
       const accountId = Number(req.params.id); if (!Number.isInteger(accountId) || accountId < 1) return res.status(422).json({ error: 'A valid payment account is required.' });
       if (!this.stripe.configured()) return res.status(503).json({ code: 'PAYMENT_PROVIDER_UNAVAILABLE', error: 'Connected payments are not configured.' });
-      try { await ensureTable(); const account = await this.queries.paymentAccount(accountId, req.user.id, req.user.role); if (!account || account.provider !== 'stripe') return res.status(404).json({ error: 'Payment account not found or not available to you.' }); const stripeAccount = await this.stripe.account(account.providerAccountId); await this.queries.updatePaymentAccountCapabilities('stripe', account.providerAccountId, { onboardingStatus: stripeAccount.charges_enabled ? 'ready' : stripeAccount.details_submitted ? 'restricted' : 'pending', chargesEnabled: Boolean(stripeAccount.charges_enabled), payoutsEnabled: Boolean(stripeAccount.payouts_enabled), detailsSubmitted: stripeAccount.details_submitted }); const link = await this.stripe.createOnboardingLink(account.providerAccountId, { refreshUrl: `${this.config.site.siteUrl}/billing/payment-account/refresh`, returnUrl: `${this.config.site.siteUrl}/billing/payment-account/complete` }); return res.json({ onboardingUrl: link.url }); }
-      catch (error) { console.error('Stripe onboarding link creation failed:', error.message); return res.status(502).json({ error: 'Unable to create payment-account onboarding link.' }); }
+      try { await ensureTable(); const account = await this.queries.paymentAccount(accountId, req.user.id, req.user.role); if (!account || account.provider !== 'stripe') return res.status(404).json({ error: 'Payment account not found or not available to you.' }); const stripeAccount = await this.refreshStripeAccount(account.providerAccountId); if (stripeAccount.charges_enabled) return res.json({ account: { ...account, onboardingStatus: stripeAccount.onboarding_status, chargesEnabled: true }, onboardingUrl: null }); const base = `${this.config.site.siteUrl}/billing/payment-account`; const link = await this.stripe.createOnboardingLink(account.providerAccountId, { refreshUrl: `${base}/refresh?accountId=${account.id}`, returnUrl: `${base}/complete?accountId=${account.id}` }); return res.json({ onboardingUrl: link.url }); }
+      catch (error) { console.error('Stripe onboarding link creation failed:', error.message); if (['accounts_v2_access_blocked', 'account_create_activation_required', 'connect_profile_not_submitted'].includes(error.code)) return res.status(422).json({ code: 'STRIPE_CONNECT_NOT_READY', error: 'Stripe Connect Accounts v2 is not ready for this sandbox. Activate Connect and complete the platform profile in Stripe before onboarding a seller.' }); return res.status(502).json({ error: 'Unable to create payment-account onboarding link.' }); }
+    });
+    app.get('/api/payment-accounts/:id/status', authenticate, async (req, res) => {
+      const accountId = Number(req.params.id); if (!Number.isInteger(accountId) || accountId < 1) return res.status(422).json({ error: 'A valid payment account is required.' });
+      try {
+        await ensureTable(); const account = await this.queries.paymentAccount(accountId, req.user.id, req.user.role);
+        if (!account || account.provider !== 'stripe') return res.status(404).json({ error: 'Payment account not found or not available to you.' });
+        if (!this.stripe.configured()) return res.status(503).json({ error: 'Connected payments are not configured.' });
+        const remote = await this.refreshStripeAccount(account.providerAccountId);
+        return res.json({ id: account.id, testMode: this.stripe.testMode(), onboardingStatus: remote.onboarding_status, chargesEnabled: remote.charges_enabled, payoutsEnabled: remote.payouts_enabled, detailsSubmitted: remote.details_submitted, requirementsStatus: remote.requirements_status, needsOnboarding: !remote.charges_enabled });
+      } catch (error) { console.error('Stripe account status lookup failed:', error.message); return res.status(502).json({ error: 'Unable to read payment-account status from Stripe.' }); }
     });
     app.get('/api/events/:id/payment-settings', authenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid event id is required.' }); try { await ensureTable(); const settings = await this.queries.eventPaymentSettings(id, req.user.id, req.user.role); return settings ? res.json(settings) : res.json({ eventId: id, sellerBillingProfileId: null, paymentAccountId: null, paymentsEnabled: false, ticketSalesEnabled: false }); } catch (error) { return res.status(500).json({ error: 'Unable to load event payment settings.' }); } });
     app.get('/api/events/:id/financial-readiness', authenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid event id is required.' }); try { await ensureTable(); return res.json(await this.queries.eventFinancialReadiness(id, req.user.id, req.user.role)); } catch (error) { return res.status(500).json({ error: 'Unable to load event financial readiness.' }); } });
     app.put('/api/events/:id/payment-settings', authenticate, requireManager, async (req, res) => { const id = Number(req.params.id); const sellerBillingProfileId = req.body.sellerBillingProfileId == null || req.body.sellerBillingProfileId === '' ? null : Number(req.body.sellerBillingProfileId); const paymentAccountId = req.body.paymentAccountId == null || req.body.paymentAccountId === '' ? null : Number(req.body.paymentAccountId); const sellerCapacity = req.body.sellerCapacity == null || req.body.sellerCapacity === '' ? null : String(req.body.sellerCapacity); const currency = req.body.currency ? String(req.body.currency).toUpperCase() : null; const refundPolicy = req.body.refundPolicy == null ? null : req.body.refundPolicy; if (!Number.isInteger(id) || id < 1 || (sellerBillingProfileId !== null && (!Number.isInteger(sellerBillingProfileId) || sellerBillingProfileId < 1)) || (paymentAccountId !== null && (!Number.isInteger(paymentAccountId) || paymentAccountId < 1)) || (sellerCapacity !== null && !['trader', 'private'].includes(sellerCapacity)) || (currency && !/^[A-Z]{3}$/.test(currency)) || (refundPolicy !== null && (typeof refundPolicy !== 'object' || Array.isArray(refundPolicy)))) return res.status(422).json({ error: 'Payment settings are invalid.' }); try { await ensureTable(); const result = await this.queries.saveEventPaymentSettings(id, req.user.id, req.user.role, { sellerBillingProfileId, paymentAccountId, sellerCapacity, currency, refundPolicy, paymentsEnabled: Boolean(req.body.paymentsEnabled), ticketSalesEnabled: Boolean(req.body.ticketSalesEnabled) }); const messages = { EVENT_NOT_FOUND: 'Event not found or not managed by you.', SELLER_PROFILE_UNAVAILABLE: 'This billing profile is no longer available to your account.', PAYMENT_ACCOUNT_MISMATCH: 'The payment account must belong to the selected seller billing profile.', PAYMENT_ACCOUNT_NOT_READY: 'Complete payment setup before starting ticket sales.', PAYMENT_SETUP_REQUIRED: 'Select a seller billing profile and ready payment account before starting ticket sales.', SELLER_CAPACITY_REQUIRED: 'Choose whether you are selling as a trader or a private individual before starting ticket sales.' }; return result?.error ? res.status(result.error === 'EVENT_NOT_FOUND' ? 404 : 422).json({ code: result.error, error: messages[result.error] }) : res.json(result); } catch (error) { return res.status(500).json({ error: 'Unable to save event payment settings.' }); } });
     app.get('/api/events/:id/ticket-types', async (req, res) => { const eventId = Number(req.params.id); if (!Number.isInteger(eventId) || eventId < 1) return res.status(422).json({ error: 'A valid event id is required.' }); try { await ensureTable(); if (!await this.queries.ticketCheckoutContext(eventId)) return res.status(404).json({ error: 'Paid ticket sales are not available for this event.' }); return res.json(await this.queries.ticketTypes(eventId, { publicOnly: true })); } catch (error) { return res.status(500).json({ error: 'Unable to load ticket types.' }); } });
-    app.get('/api/events/:id/ticket-checkout', async (req, res) => { const eventId = Number(req.params.id); if (!Number.isInteger(eventId) || eventId < 1) return res.status(422).json({ error: 'A valid event id is required.' }); try { await ensureTable(); const context = await this.queries.ticketCheckoutContext(eventId); if (!context) return res.status(404).json({ error: 'Paid ticket sales are not available for this event.' }); return res.json({ eventId, title: context.title, currency: context.paymentCurrency || context.currency, seller: { legalName: context.seller.legalName, capacity: context.seller.capacity }, refundPolicy: context.refundPolicy, tickets: await this.queries.ticketTypes(eventId, { publicOnly: true }), paymentProvider: 'stripe' }); } catch (error) { return res.status(500).json({ error: 'Unable to load ticket checkout.' }); } });
+    app.get('/api/events/:id/ticket-checkout', async (req, res) => {
+      const eventId = Number(req.params.id);
+      if (!Number.isInteger(eventId) || eventId < 1) return res.status(422).json({ error: 'A valid event id is required.' });
+      try {
+        await ensureTable();
+        const context = await this.queries.ticketCheckoutContext(eventId);
+        if (!context) return res.status(404).json({ error: 'Ticket sales are not open yet. The organizer must finish payment setup and open ticket sales.' });
+        if (!this.stripe.configured()) return res.status(503).json({ error: 'Ticket payments are not configured. Set STRIPE_SECRET_KEY on the API server.' });
+        return res.json({ eventId, title: context.title, currency: context.paymentCurrency || context.currency, seller: { legalName: context.seller.legalName, capacity: context.seller.capacity }, refundPolicy: context.refundPolicy, tickets: await this.queries.ticketTypes(eventId, { publicOnly: true }), paymentProvider: 'stripe', testMode: this.stripe.testMode() });
+      } catch (error) { return res.status(500).json({ error: 'Unable to load ticket checkout.' }); }
+    });
     app.post('/api/events/:id/ticket-types', authenticate, requireManager, async (req, res) => { const eventId = Number(req.params.id); const ticket = { name: String(req.body.name || '').trim(), description: req.body.description == null ? null : String(req.body.description).trim() || null, price: Number(req.body.price), currency: String(req.body.currency || '').toUpperCase(), quantityAvailable: req.body.quantityAvailable == null || req.body.quantityAvailable === '' ? null : Number(req.body.quantityAvailable), salesStartAt: req.body.salesStartAt || null, salesEndAt: req.body.salesEndAt || null, isActive: req.body.isActive !== false }; if (!Number.isInteger(eventId) || eventId < 1 || !ticket.name || ticket.name.length > 160 || !Number.isFinite(ticket.price) || ticket.price < 0 || !/^[A-Z]{3}$/.test(ticket.currency) || (ticket.quantityAvailable !== null && (!Number.isInteger(ticket.quantityAvailable) || ticket.quantityAvailable < 1))) return res.status(422).json({ error: 'Ticket type is invalid.' }); try { await ensureTable(); const result = await this.queries.saveTicketType(eventId, req.user.id, req.user.role, null, ticket); return result ? res.status(201).json(result) : res.status(404).json({ error: 'Event not found or not managed by you.' }); } catch (error) { return res.status(500).json({ error: 'Unable to save ticket type.' }); } });
-    app.post('/api/events/:id/ticket-checkout', authenticate, requireVerifiedUser, async (req, res) => { const eventId = Number(req.params.id); const selections = Array.isArray(req.body.items) ? req.body.items : []; const successUrl = typeof req.body.successUrl === 'string' ? req.body.successUrl : `${this.config.site.siteUrl}/tickets/success`; const cancelUrl = typeof req.body.cancelUrl === 'string' ? req.body.cancelUrl : `${this.config.site.siteUrl}/events/${eventId}`; if (!Number.isInteger(eventId) || eventId < 1 || !selections.length || selections.length > 10 || !sameSiteUrl(successUrl) || !sameSiteUrl(cancelUrl)) return res.status(422).json({ error: 'Ticket checkout is invalid.' }); if (!this.stripe.configured()) return res.status(503).json({ code: 'PAYMENT_PROVIDER_UNAVAILABLE', error: 'Ticket payments are not configured.' }); try { await ensureTable(); const context = await this.queries.ticketCheckoutContext(eventId); if (!context || context.provider !== 'stripe') return res.status(422).json({ code: 'PAYMENT_SETUP_REQUIRED', error: 'Ticket payments are not available for this event.' }); const order = await this.queries.createTicketOrder(eventId, { userId: req.user.id, email: req.user.email }, selections); if (order.error) return res.status(422).json({ code: order.error, error: 'Selected tickets are unavailable.' }); const checkout = await this.stripe.createDirectCheckout({ order, context, successUrl, cancelUrl }); await this.queries.attachTicketProviderPayment(order.id, 'stripe', checkout.id); return res.status(201).json({ orderId: order.id, orderNumber: order.orderNumber, checkoutUrl: checkout.url, publishableKey: this.stripe.publishableKey }); } catch (error) { console.error('Stripe direct checkout creation failed:', error.message); return res.status(502).json({ error: 'Unable to start ticket checkout.' }); } });
+    app.post('/api/events/:id/ticket-checkout', authenticate, requireVerifiedUser, async (req, res) => {
+      const eventId = Number(req.params.id);
+      const selections = Array.isArray(req.body.items) ? req.body.items : [];
+      const checkoutKey = String(req.body.checkoutKey || '');
+      if (!Number.isInteger(eventId) || eventId < 1 || !selections.length || selections.length > 10 ||
+        selections.some((item) => !item || !Number.isInteger(item.ticketTypeId) || item.ticketTypeId < 1 || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20) ||
+        !/^[a-zA-Z0-9_-]{16,100}$/.test(checkoutKey)) return res.status(422).json({ error: 'Choose valid tickets and retry checkout.' });
+      if (!this.stripe.configured()) return res.status(503).json({ code: 'PAYMENT_PROVIDER_UNAVAILABLE', error: 'Set STRIPE_SECRET_KEY on the API server to enable ticket payments.' });
+      try {
+        await ensureTable();
+        const context = await this.queries.ticketCheckoutContext(eventId);
+        if (!context || context.provider !== 'stripe') return res.status(422).json({ code: 'PAYMENT_SETUP_REQUIRED', error: 'Ticket payments are not available for this event.' });
+        const seller = await this.refreshStripeAccount(context.providerAccountId);
+        if (!seller.charges_enabled) return res.status(422).json({ error: 'The organizer must complete Stripe onboarding before selling tickets.' });
+        const order = await this.queries.createTicketOrder(eventId, { userId: req.user.id, email: req.user.email }, selections, checkoutKey);
+        if (order.error) return res.status(422).json({ code: order.error, error: 'Selected tickets are unavailable or sales have ended. Refresh and choose available tickets.' });
+        if (order.paymentStatus !== 'pending') return res.status(409).json({ error: 'This checkout is already completed or expired. Check My tickets before starting another purchase.', orderId: order.id });
+        // Return destinations are generated by the server and contain only this buyer's order.
+        const successUrl = `${this.config.site.siteUrl}/tickets/${order.id}?checkout=success`;
+        const cancelUrl = `${this.config.site.siteUrl}/tickets/${order.id}?checkout=cancelled`;
+        const existing = await this.ticketSales.checkoutOrder(order.id);
+        const checkout = existing?.checkoutSessionId
+          ? await this.stripe.checkoutSession(existing.checkoutSessionId, existing.providerAccountId)
+          : await this.stripe.createDirectCheckout({ order, context, successUrl, cancelUrl });
+        if (!checkout.url || checkout.status === 'expired') return res.status(409).json({ error: 'Checkout has expired. Start a new purchase.' });
+        await this.ticketSales.attachCheckout(order.id, checkout);
+        return res.status(201).json({ orderId: order.id, orderNumber: order.orderNumber, checkoutUrl: checkout.url, testMode: this.stripe.testMode() });
+      } catch (error) { console.error('Stripe ticket checkout failed:', error.message); return res.status(502).json({ error: this.stripe.testMode() ? 'Unable to start test checkout. Check the sandbox API key, connected account onboarding, and ticket currency on the server.' : 'Unable to start ticket checkout. Please try again.' }); }
+    });
     app.get('/api/me/tickets', authenticate, async (req, res) => { try { await ensureTable(); return res.json(await this.queries.ticketOrdersForAttendee(req.user.id)); } catch (error) { return res.status(500).json({ error: 'Unable to load tickets.' }); } });
-    app.get('/api/ticket-orders/:id', authenticate, async (req, res) => { const id = Number(req.params.id); if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid ticket order is required.' }); try { await ensureTable(); const order = await this.queries.ticketOrder(id, req.user.id, req.user.role); return order ? res.json(order) : res.status(404).json({ error: 'Ticket order not found or not available to you.' }); } catch (error) { return res.status(500).json({ error: 'Unable to load ticket order.' }); } });
+    app.get('/api/ticket-orders/:id', authenticate, async (req, res) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid ticket order is required.' });
+      try {
+        await ensureTable();
+        const order = await this.queries.ticketOrder(id, req.user.id, req.user.role);
+        res.set('Cache-Control', 'private, no-store');
+        return order ? res.json(await this.ticketSales.details(order)) : res.status(404).json({ error: 'Ticket order not found or not available to you.' });
+      } catch (error) { return res.status(500).json({ error: 'Unable to load ticket order.' }); }
+    });
+    app.post('/api/ticket-orders/:id/confirm', authenticate, async (req, res) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid ticket order is required.' });
+      try {
+        await ensureTable();
+        const order = await this.queries.ticketOrder(id, req.user.id, req.user.role);
+        if (!order || Number(order.attendeeUserId) !== Number(req.user.id)) return res.status(404).json({ error: 'Ticket order not found.' });
+        if (!this.stripe.configured()) return res.status(503).json({ error: 'Ticket payments are not configured.' });
+        await this.ticketSales.confirm(id);
+        res.set('Cache-Control', 'private, no-store');
+        return res.json(await this.ticketSales.details(await this.queries.ticketOrder(id, req.user.id, req.user.role)));
+      } catch (error) { console.error('Ticket confirmation failed:', error.message); return res.status(502).json({ error: 'Payment confirmation is still pending. Your tickets will be emailed after Stripe confirms payment.' }); }
+    });
+    app.post('/api/ticket-orders/:id/resend', authenticate, async (req, res) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid ticket order is required.' });
+      try {
+        await ensureTable();
+        const order = await this.queries.ticketOrder(id, req.user.id, req.user.role);
+        if (!order || Number(order.attendeeUserId) !== Number(req.user.id)) return res.status(404).json({ error: 'Ticket order not found.' });
+        if (order.paymentStatus !== 'paid') return res.status(409).json({ error: 'Only paid tickets can be emailed.' });
+        const [result] = await this.database.execute(`UPDATE ticket_email_deliveries SET sent_at=NULL,next_attempt_at=NOW()
+          WHERE ticket_order_id=? AND sent_at<DATE_SUB(NOW(),INTERVAL 5 MINUTE)`, [id]);
+        if (!result.affectedRows) return res.status(429).json({ error: 'Your email is already queued or was sent recently. Please wait five minutes.' });
+        await this.ticketSales.deliver(id);
+        return res.json({ message: 'Your ticket email has been queued.' });
+      } catch (error) { return res.status(500).json({ error: 'Unable to resend tickets.' }); }
+    });
+    for (const action of ['checkout', 'cancel']) app.post(`/api/ticket-orders/:id/${action}`, authenticate, async (req, res) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return res.status(422).json({ error: 'A valid ticket order is required.' });
+      try {
+        await ensureTable();
+        const order = await this.ticketSales.checkoutOrder(id);
+        if (!order || Number(order.attendeeUserId) !== Number(req.user.id)) return res.status(404).json({ error: 'Ticket order not found.' });
+        if (order.paymentStatus !== 'pending' || !order.checkoutSessionId) return res.status(409).json({ error: 'No open Stripe checkout is available for this order.' });
+        if (!this.stripe.configured()) return res.status(503).json({ error: 'Ticket payments are not configured.' });
+        const session = await this.stripe.checkoutSession(order.checkoutSessionId, order.providerAccountId);
+        if (action === 'checkout' && session.status === 'open') return res.json({ checkoutUrl: session.url });
+        if (action === 'cancel' && session.status === 'open') {
+          // Expire at Stripe before releasing stock, so the old payment link cannot charge later.
+          await this.stripe.stripeClient.checkout.sessions.expire(session.id, {}, { stripeAccount: order.providerAccountId });
+        }
+        await this.ticketSales.confirm(id);
+        return res.json({ message: 'Order status updated.' });
+      } catch (error) { return res.status(502).json({ error: 'Unable to update checkout. Refresh payment status and try again.' }); }
+    });
     app.post('/api/ticket-orders/:id/refunds', authenticate, async (req, res) => { const orderId = Number(req.params.id); const amount = req.body.amount == null || req.body.amount === '' ? null : Number(req.body.amount); if (!Number.isInteger(orderId) || orderId < 1 || (amount !== null && (!Number.isFinite(amount) || amount <= 0))) return res.status(422).json({ error: 'Refund request is invalid.' }); if (!this.stripe.configured()) return res.status(503).json({ code: 'PAYMENT_PROVIDER_UNAVAILABLE', error: 'Ticket payments are not configured.' }); try { await ensureTable(); const order = await this.queries.ticketRefundContext(orderId, req.user.id, req.user.role); if (!order || order.provider !== 'stripe') return res.status(404).json({ error: 'Ticket order not found or not managed by you.' }); if (order.paymentStatus !== 'paid' || !order.providerPaymentId) return res.status(409).json({ error: 'Only a paid ticket order can be refunded.' }); if (amount !== null && amount > Number(order.totalAmount)) return res.status(422).json({ error: 'Refund amount exceeds the ticket order total.' }); const refund = await this.stripe.createDirectRefund(order.providerPaymentId, order.providerAccountId, amount === null ? null : Math.round(amount * 100)); return res.status(202).json({ refundId: refund.id, status: refund.status }); } catch (error) { console.error('Stripe direct refund creation failed:', error.message); return res.status(502).json({ error: 'Unable to create organizer refund.' }); } });
     app.get('/api/invoices', authenticate, async (req, res) => {
       try { await ensureTable(); return res.json(await this.queries.invoicesForViewer(req.user.id, req.user.role)); }
@@ -1033,7 +1182,7 @@ export class Api {
     });
     const downloadInvoicePdf = async (req, res) => {
       const invoiceId = Number(req.params.id); if (!Number.isInteger(invoiceId) || invoiceId < 1) return res.status(422).json({ error: 'A valid invoice id is required.' });
-      try { await ensureTable(); const invoice = await this.queries.invoice(invoiceId, req.user.id, req.user.role); if (!invoice) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); let document = await this.queries.invoiceDocument(invoiceId); if (!document) { const generated = renderInvoicePdf(invoice); const hash = crypto.createHash('sha256').update(generated).digest('hex'); document = await this.queries.storeInvoiceDocument(invoiceId, generated, hash); } const pdf = document.pdfDocument; res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="invoice-${invoice.invoiceNumber || invoiceId}.pdf"`, 'Cache-Control': 'private, no-store', ETag: `"${document.pdfHash}"` }); return res.send(pdf); }
+      try { await ensureTable(); const invoice = await this.queries.invoice(invoiceId, req.user.id, req.user.role); if (!invoice) return res.status(403).json({ error: 'Invoice not found or not available to you.' }); const generated = renderInvoicePdf(invoice); const hash = crypto.createHash('sha256').update(generated).digest('hex'); const document = await this.queries.storeInvoiceDocument(invoiceId, generated, hash); const pdf = document.pdfDocument; res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="invoice-${invoice.invoiceNumber || invoiceId}.pdf"`, 'Cache-Control': 'private, no-store', ETag: `"${document.pdfHash}"` }); return res.send(pdf); }
       catch (error) { console.error('Invoice PDF generation failed:', error.message); return res.status(500).json({ error: 'Unable to download invoice.' }); }
     };
     app.get('/api/invoices/:id/download', authenticate, downloadInvoicePdf);

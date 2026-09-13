@@ -894,6 +894,25 @@ export class Database {
         CONSTRAINT ticket_order_items_order_fk FOREIGN KEY (ticket_order_id) REFERENCES ticket_orders(id) ON DELETE RESTRICT,
         CONSTRAINT ticket_order_items_type_fk FOREIGN KEY (ticket_type_id) REFERENCES event_ticket_types(id) ON DELETE SET NULL
       )`);
+      await this.ensureColumn('ticket_orders', 'checkout_session_id', 'VARCHAR(255) NULL');
+      await this.ensureColumn('ticket_orders', 'checkout_key', 'VARCHAR(100) NULL');
+      await this.ensureColumn('ticket_orders', 'checkout_expires_at', 'DATETIME NULL');
+      await this.ensureColumn('ticket_orders', 'test_mode', 'BOOLEAN NOT NULL DEFAULT FALSE');
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS issued_tickets (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ticket_order_id INT UNSIGNED NOT NULL,
+        ticket_order_item_id INT UNSIGNED NOT NULL, ordinal INT UNSIGNED NOT NULL,
+        code VARCHAR(64) NOT NULL UNIQUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY ticket_item_ordinal (ticket_order_item_id, ordinal),
+        FOREIGN KEY (ticket_order_id) REFERENCES ticket_orders(id) ON DELETE RESTRICT,
+        FOREIGN KEY (ticket_order_item_id) REFERENCES ticket_order_items(id) ON DELETE RESTRICT
+      )`);
+      // Durable delivery jobs are committed with tickets. SMTP failure cannot lose a purchase.
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS ticket_email_deliveries (
+        ticket_order_id INT UNSIGNED PRIMARY KEY, sent_at DATETIME NULL, attempts INT UNSIGNED NOT NULL DEFAULT 0,
+        next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, locked_until DATETIME NULL,
+        lock_token VARCHAR(64) NULL, last_error VARCHAR(500) NULL,
+        FOREIGN KEY (ticket_order_id) REFERENCES ticket_orders(id) ON DELETE RESTRICT
+      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS payment_provider_events (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, provider VARCHAR(80) NOT NULL, provider_event_id VARCHAR(255) NOT NULL,
         event_type VARCHAR(120) NOT NULL, payload_json JSON NOT NULL, processed_at DATETIME NULL, processing_error TEXT NULL,

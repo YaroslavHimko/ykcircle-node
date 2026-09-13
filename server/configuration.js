@@ -232,6 +232,8 @@ export class Configuration {
         secretKey: process.env.STRIPE_SECRET_KEY ?? runtimeValues.stripe?.secretKey ?? values.stripe?.secretKey ?? null,
         publishableKey: process.env.STRIPE_PUBLISHABLE_KEY ?? runtimeValues.stripe?.publishableKey ?? values.stripe?.publishableKey ?? null,
         webhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? runtimeValues.stripe?.webhookSecret ?? values.stripe?.webhookSecret ?? null,
+        thinWebhookSecret: process.env.STRIPE_THIN_WEBHOOK_SECRET ?? runtimeValues.stripe?.thinWebhookSecret ?? null,
+        applicationFeePercent: Number(process.env.STRIPE_APPLICATION_FEE_PERCENT ?? runtimeValues.stripe?.applicationFeePercent ?? 0),
       },
       retention: {
         passwordResetDays: Number(process.env.RETENTION_PASSWORD_RESET_DAYS || retentionValues.passwordResetDays || 7),

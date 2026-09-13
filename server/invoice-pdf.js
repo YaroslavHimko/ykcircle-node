@@ -16,6 +16,13 @@ const pdfText = (value) => {
 
 const cleanLines = (values) => values.filter((value) => value != null && String(value).trim() !== '').map((value) => String(value).trim());
 const date = (value) => value ? String(value).slice(0, 10) : '—';
+const dateTime = (value, timeZone = 'UTC') => {
+  const instant = value && new Date(value);
+  if (!instant || Number.isNaN(instant.getTime())) return text(value).replace('T', ' ').replace(/\.\d{3}Z$/, '');
+  const options = { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+  try { return new Intl.DateTimeFormat('sv-SE', options).format(instant).replace(',', ''); }
+  catch { return new Intl.DateTimeFormat('sv-SE', { ...options, timeZone: 'UTC' }).format(instant).replace(',', ''); }
+};
 const text = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
 const money = (value, currency) => {
   const amount = Number(value);
@@ -157,7 +164,7 @@ export const renderInvoicePdf = (invoice) => {
   const bookingRows = cleanLines([
     booking.bookingReference && `Bokningsreferens: ${booking.bookingReference}`, booking.venueName && `Lokal: ${booking.venueName}`,
     booking.venueAddress, booking.eventTitle && `Evenemang: ${booking.eventTitle}`,
-    booking.startsAt && `Tjänsteperiod: ${booking.startsAt}${booking.endsAt ? ` – ${booking.endsAt}` : ''}`, booking.venueTimezone && `Tidszon: ${booking.venueTimezone}`,
+    booking.startsAt && `Tjänsteperiod: ${dateTime(booking.startsAt, booking.venueTimezone)}${booking.endsAt ? ` – ${dateTime(booking.endsAt, booking.venueTimezone)}` : ''}`, booking.venueTimezone && `Tidszon: ${booking.venueTimezone}`,
   ]).flatMap((line) => wrap(line, 96));
   if (bookingRows.length) {
     section('BOKNINGSUPPGIFTER');

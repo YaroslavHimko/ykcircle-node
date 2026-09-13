@@ -18,3 +18,14 @@ test('renders a structured invoice and preserves Swedish WinAnsi characters', ()
   assert.match(contents, /<4DE46C6172F6/); // Mälarö encoded as WinAnsi bytes
   assert.doesNotMatch(contents, /<3F73747261/); // not ?stra
 });
+
+test('renders booking service periods as Swedish venue-local date and time', () => {
+  const pdf = renderInvoicePdf({
+    id: 13, invoiceNumber: 'YK-2026-13', issueDate: '2026-09-11', dueDate: '2026-10-11', currency: 'SEK', subtotal: 1, taxAmount: 0, totalAmount: 1,
+    booking: { startsAt: '2026-09-14T00:00:00.000Z', endsAt: '2026-09-14T23:59:00.000Z', venueTimezone: 'Europe/Stockholm' },
+    items: [],
+  });
+  const contents = pdf.toString('latin1');
+  assert.match(contents, /323032362D30392D31342030323A3030/); // 2026-09-14 02:00
+  assert.doesNotMatch(contents, /323032362D30392D31345430303A30303A30302E3030305A/); // raw ISO timestamp
+});

@@ -149,6 +149,9 @@ export default {
       secretKey: process.env.STRIPE_SECRET_KEY,
       publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
       webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+      // Placeholder: the separate signing secret for Accounts v2 thin events.
+      thinWebhookSecret: process.env.STRIPE_THIN_WEBHOOK_SECRET,
+      applicationFeePercent: Number(process.env.STRIPE_APPLICATION_FEE_PERCENT || 0),
     },
     minimumUserAge: Number(process.env.MINIMUM_USER_AGE || 18),
     paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true',
