@@ -56,9 +56,16 @@ test('refreshes v2 card capability status and creates onboarding links', async (
   let link;
   const service = new StripeConnectService({ secretKey: 'sk_test_example' }, { v2: { core: {
     accounts: { retrieve: async () => ({ id: 'acct_seller', configuration: { merchant: { capabilities: { card_payments: { status: 'active' } } } }, requirements: {} }) },
-    accountLinks: { create: async (data) => { link = data; return { url: 'https://connect.stripe.test/onboarding' }; } },
+    accountLinks: { create: async (data) => { link = data; return { url: 'https://connect.stripe.com/onboarding' }; } },
   } } });
   assert.equal((await service.account('acct_seller')).charges_enabled, true);
   await service.createOnboardingLink('acct_seller', { refreshUrl: 'https://example.test/refresh', returnUrl: 'https://example.test/return' });
   assert.deepEqual(link.use_case.account_onboarding.configurations, ['merchant', 'customer']);
+});
+
+test('only allows HTTPS Stripe-hosted onboarding links', () => {
+  const service = new StripeConnectService();
+  assert.equal(service.onboardingUrl({ url: 'https://connect.stripe.com/setup?account=acct_seller' }), 'https://connect.stripe.com/setup?account=acct_seller');
+  assert.throws(() => service.onboardingUrl({ url: 'otpauth://totp/Stripe?secret=redacted' }), { code: 'INVALID_STRIPE_ONBOARDING_URL' });
+  assert.throws(() => service.onboardingUrl({ url: 'https://stripe.example.test/setup' }), { code: 'INVALID_STRIPE_ONBOARDING_URL' });
 });

@@ -30,6 +30,20 @@ export class StripeConnectService {
   configured() { return Boolean(this.secretKey); }
   testMode() { return /^(sk|rk)_test_/.test(this.secretKey || ''); }
 
+  onboardingUrl(accountLink) {
+    const value = accountLink?.url;
+    try {
+      const url = new URL(value);
+      const stripeHost = url.hostname === 'stripe.com' || url.hostname.endsWith('.stripe.com');
+      if (url.protocol !== 'https:' || !stripeHost) throw new Error('invalid Stripe host');
+      return url.toString();
+    } catch {
+      const error = new Error('Stripe returned an invalid onboarding link. Please try again.');
+      error.code = 'INVALID_STRIPE_ONBOARDING_URL';
+      throw error;
+    }
+  }
+
   onboardingStatus(account) {
     const chargesEnabled = account?.configuration?.merchant?.capabilities?.card_payments?.status === 'active';
     const requirementsStatus = account?.requirements?.summary?.minimum_deadline?.status;
