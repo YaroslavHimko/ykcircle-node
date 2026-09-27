@@ -68,6 +68,17 @@ test('concurrent webhook and return-page fulfillment issue one ticket per admiss
   assert.equal(f.state.sent, true);
 });
 
+test('ticket details distinguish checked-in tickets from remaining admissions', async () => {
+  const f = fixture();
+  await f.sales.confirm(1);
+  f.state.tickets[0].checkedInAt = '2026-12-14T16:00:00Z';
+  const details = await f.sales.details(await f.queries.ticketOrder(1));
+  assert.equal(details.tickets[0].valid, false);
+  assert.equal(details.tickets[0].checkedInAt, '2026-12-14T16:00:00Z');
+  assert.equal(details.tickets[1].valid, true);
+  assert.equal(details.tickets[1].checkedInAt, null);
+});
+
 test('unpaid/declined checkout issues no tickets; verified expiry releases its hold', async () => {
   const f = fixture();
   f.session.status = 'open'; f.session.payment_status = 'unpaid';

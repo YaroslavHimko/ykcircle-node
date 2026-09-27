@@ -75,13 +75,13 @@ export class TicketSales {
   }
 
   async details(order) {
-    const [tickets] = await this.database.execute(`SELECT t.id,t.code,item.ticket_type_snapshot_json AS ticketType FROM issued_tickets t
+    const [tickets] = await this.database.execute(`SELECT t.id,t.code,t.checked_in_at AS checkedInAt,item.ticket_type_snapshot_json AS ticketType FROM issued_tickets t
       JOIN ticket_order_items item ON item.id=t.ticket_order_item_id WHERE t.ticket_order_id=? ORDER BY t.id`, [order.id]);
     const [events] = await this.database.execute(`SELECT e.starts_at AS startsAt,e.ends_at AS endsAt,e.timezone,
       COALESCE(v.name,e.custom_formatted_address,e.online_platform) AS location FROM events e LEFT JOIN venues v ON v.id=e.venue_id WHERE e.id=?`, [order.eventId]);
     const [deliveries] = await this.database.execute('SELECT sent_at AS sentAt FROM ticket_email_deliveries WHERE ticket_order_id=?', [order.id]);
     return { ...order, testMode: Boolean(order.testMode), event: events[0] || {}, emailStatus: deliveries[0]?.sentAt ? 'sent' : 'pending',
-      tickets: tickets.map((ticket) => ({ id: ticket.id, code: ticket.code, name: (typeof ticket.ticketType === 'string' ? JSON.parse(ticket.ticketType) : ticket.ticketType)?.name || 'Admission', valid: order.paymentStatus === 'paid' })) };
+      tickets: tickets.map((ticket) => ({ id: ticket.id, code: ticket.code, checkedInAt: ticket.checkedInAt || null, name: (typeof ticket.ticketType === 'string' ? JSON.parse(ticket.ticketType) : ticket.ticketType)?.name || 'Admission', valid: order.paymentStatus === 'paid' && !ticket.checkedInAt })) };
   }
 
   async deliver(orderId) {

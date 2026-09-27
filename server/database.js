@@ -906,6 +906,8 @@ export class Database {
         FOREIGN KEY (ticket_order_id) REFERENCES ticket_orders(id) ON DELETE RESTRICT,
         FOREIGN KEY (ticket_order_item_id) REFERENCES ticket_order_items(id) ON DELETE RESTRICT
       )`);
+      await this.ensureColumn('issued_tickets', 'checked_in_at', 'DATETIME NULL');
+      await this.ensureColumn('issued_tickets', 'checked_in_by_user_id', 'INT UNSIGNED NULL');
       // Durable delivery jobs are committed with tickets. SMTP failure cannot lose a purchase.
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS ticket_email_deliveries (
         ticket_order_id INT UNSIGNED PRIMARY KEY, sent_at DATETIME NULL, attempts INT UNSIGNED NOT NULL DEFAULT 0,

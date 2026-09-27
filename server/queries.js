@@ -20,6 +20,48 @@ const jsonValue = (value) => {
 };
 
 export class Queries {
+  async checkInTicket(eventId, userId, role, code) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const reject = async (error) => { await connection.rollback(); return { error }; };
+      // Serialize check-ins for this event, including different tickets belonging
+      // to the same purchaser. Authorization and all attendance writes are atomic.
+      const [events] = await connection.execute('SELECT id, manager_id AS managerId, status FROM events WHERE id=? AND deleted_at IS NULL FOR UPDATE', [eventId]);
+      const event = events[0];
+      if (!event || (!['manager', 'admin'].includes(role) && Number(event.managerId) !== Number(userId))) return await reject('EVENT_NOT_MANAGED');
+      if (!['Published', 'Completed'].includes(event.status)) return await reject('EVENT_NOT_OPEN');
+      const [tickets] = await connection.execute(`SELECT t.id, t.code, t.checked_in_at AS checkedInAt,
+        o.id AS orderId, o.attendee_user_id AS attendeeUserId, o.attendee_email AS attendeeEmail,
+        o.payment_status AS paymentStatus, o.test_mode AS testMode
+        FROM issued_tickets t JOIN ticket_orders o ON o.id=t.ticket_order_id
+        WHERE t.code=? AND o.event_id=? FOR UPDATE`, [code, eventId]);
+      const ticket = tickets[0];
+      if (!ticket) return await reject('TICKET_NOT_FOUND');
+      if (ticket.paymentStatus !== 'paid') return await reject('TICKET_NOT_PAID');
+      if (!ticket.attendeeUserId) return await reject('ATTENDEE_UNAVAILABLE');
+      const [users] = await connection.execute('SELECT id, name, email, phone, profile_picture AS profilePicture FROM users WHERE id=?', [ticket.attendeeUserId]);
+      if (!users[0]) return await reject('ATTENDEE_UNAVAILABLE');
+      const [registrations] = await connection.execute('SELECT id, status FROM event_registrations WHERE event_id=? AND user_id=? FOR UPDATE', [eventId, ticket.attendeeUserId]);
+      if (registrations.some((registration) => ['Cancelled', 'Declined', 'Withdrawn'].includes(registration.status))) return await reject('REGISTRATION_INACTIVE');
+      const attendee = users[0];
+      if (!ticket.checkedInAt) {
+        await connection.execute(`INSERT INTO event_participants (event_id, user_id, participant_name, participant_email, participant_phone, status, payment_status)
+          VALUES (?, ?, ?, ?, ?, 'Attended', 'Paid') ON DUPLICATE KEY UPDATE status='Attended', payment_status='Paid'`,
+        [eventId, attendee.id, attendee.name || ticket.attendeeEmail || 'Ticket holder', ticket.attendeeEmail || attendee.email, attendee.phone]);
+        await connection.execute("UPDATE event_registrations SET status='Attended', payment_status='Paid' WHERE event_id=? AND user_id=?", [eventId, attendee.id]);
+        await connection.execute('UPDATE issued_tickets SET checked_in_at=UTC_TIMESTAMP(), checked_in_by_user_id=? WHERE id=? AND checked_in_at IS NULL', [userId, ticket.id]);
+      }
+      const [participants] = await connection.execute(`SELECT id, user_id AS userId, participant_name AS name, participant_email AS email,
+        participant_phone AS phone, status, payment_status AS paymentStatus, joined_at AS joinedAt FROM event_participants WHERE event_id=? AND user_id=?`, [eventId, attendee.id]);
+      const [saved] = await connection.execute('SELECT checked_in_at AS checkedInAt FROM issued_tickets WHERE id=?', [ticket.id]);
+      await connection.commit();
+      return { ticketId: ticket.id, code: ticket.code, eventId, alreadyCheckedIn: Boolean(ticket.checkedInAt),
+        checkedInAt: utcTimestamp(saved[0].checkedInAt), testMode: Boolean(ticket.testMode),
+        participant: participants[0] ? { ...participants[0], profilePicture: attendee.profilePicture } : null };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+
   async createContentReport(report) {
     const [result] = await this.database.execute(
       `INSERT INTO content_reports
