@@ -70,6 +70,8 @@ test('serves public API resources and validates unsubscribe requests', async (t)
 });
 
 test('returns a backend-selected next available interval for an unavailable date', async (t) => {
+  const requestedDate = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const nextDate = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
   const queries = {
     initialize: async () => {},
     calculateVenueAvailability: async (_venueId, from, to) => ({
@@ -77,7 +79,7 @@ test('returns a backend-selected next available interval for an unavailable date
       minimumBookingMinutes: 60, maximumBookingMinutes: null, bufferBeforeMinutes: 0, bufferAfterMinutes: 0,
       dates: from === to
         ? [{ date: from, availabilityStatus: 'unavailable', availableIntervals: [], unavailableIntervals: [{ start: '10:00', end: '11:00' }] }]
-        : [{ date: '2026-09-15', availabilityStatus: 'available', availableIntervals: [{ start: '10:00', end: '12:00' }] }],
+        : [{ date: nextDate, availabilityStatus: 'available', availableIntervals: [{ start: '10:00', end: '12:00' }] }],
     }),
   };
   const app = express();
@@ -89,12 +91,12 @@ test('returns a backend-selected next available interval for an unavailable date
   const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
 
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/venues/9/availability?date=2026-09-14`);
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/venues/9/availability?date=${requestedDate}`);
   assert.equal(response.status, 200);
   const availability = await response.json();
   assert.deepEqual(availability.slots, []);
   assert.deepEqual(availability.unavailableSlots, [{ startTime: '10:00', endTime: '11:00' }]);
-  assert.deepEqual(availability.nextAvailable, { date: '2026-09-15', startTime: '10:00', endTime: '12:00' });
+  assert.deepEqual(availability.nextAvailable, { date: nextDate, startTime: '10:00', endTime: '12:00' });
 });
 
 test('returns invoices available to the signed-in user', async (t) => {
@@ -214,14 +216,13 @@ test('returns a signed cover URL for an owner\'s draft in the events list', asyn
 
 test('creates a requested venue booking with a timed venue draft', async (t) => {
   const secret = 'a sufficiently random test secret that exceeds thirty two characters';
-  const bookingCalls = [];
+  let bookingOptions;
   let createdDraft;
   const queries = {
     initialize: async () => {},
     findUserById: async () => ({ id: 7, role: 'organizer', sessionVersion: 1, isEmailConfirmed: true }),
     eventLocationVenue: async () => ({ id: 4, timezone: 'UTC' }),
-    createRichEventSeries: async (draft) => { createdDraft = draft; return { seriesId: null, eventIds: [12] }; },
-    requestVenueBooking: async (...args) => { bookingCalls.push(args); return { id: 22, status: 'requested' }; },
+    createRichEventSeries: async (draft, options) => { createdDraft = draft; bookingOptions = options; return { seriesId: null, eventIds: [12] }; },
     richEvent: async () => ({ id: 12, title: 'Venue draft', coverImage: null }),
     eventVenueBooking: async () => ({ id: 22, venueId: 4, status: 'requested' }),
   };
@@ -242,6 +243,31 @@ test('creates a requested venue booking with a timed venue draft', async (t) => 
   });
   assert.equal(response.status, 201);
   assert.equal(createdDraft.coverImage, 'event-12.png');
-  assert.deepEqual(bookingCalls, [[12, 4, 7, 'organizer', undefined]]);
+  assert.deepEqual(bookingOptions, { bookVenue: true, role: 'organizer', buyerBillingProfileId: undefined });
   assert.equal((await response.json()).venueBooking.status, 'requested');
+
+  const incompleteTime = await fetch(`http://127.0.0.1:${server.address().port}/api/events/drafts`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z' }),
+  });
+  assert.equal(incompleteTime.status, 422);
+  assert.match((await incompleteTime.json()).fields.endsAt, /booking end time/);
+
+  queries.createRichEventSeries = async () => { throw Object.assign(new Error('Conflict'), { code: 'VENUE_UNAVAILABLE' }); };
+  const conflict = await fetch(`http://127.0.0.1:${server.address().port}/api/events/drafts`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z', endsAtUtc: '2026-10-10T12:00:00Z' }),
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).code, 'VENUE_UNAVAILABLE');
+
+  let updatedDraft;
+  queries.updateRichEventAndBooking = async (...args) => { updatedDraft = args; return true; };
+  const update = await fetch(`http://127.0.0.1:${server.address().port}/api/events/12`, {
+    method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z', endsAtUtc: '2026-10-10T12:00:00Z' }),
+  });
+  assert.equal(update.status, 200);
+  assert.equal(updatedDraft[3].venueId, 4);
+  assert.equal((await update.json()).venueBooking.status, 'requested');
 });

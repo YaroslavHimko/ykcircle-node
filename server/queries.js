@@ -520,14 +520,22 @@ export class Queries {
     }
     return next;
   }
-  async createRichEventSeries(data) {
+  async createRichEventSeries(data, { bookVenue = false, role, buyerBillingProfileId } = {}) {
     const recurrence = data.recurrence || { frequency: 'none', interval: 1, count: 1 };
     const count = recurrence.frequency === 'none' ? 1 : recurrence.count;
     const connection = await this.database.getConnection();
+    const requestBookings = async (eventIds) => {
+      if (!bookVenue || !data.venueId || !data.startsAt || !data.endsAt) return;
+      for (const eventId of eventIds) {
+        const result = await this.requestVenueBookingOnConnection(connection, eventId, data.venueId, data.managerId, role, buyerBillingProfileId);
+        if (result.error) throw Object.assign(new Error(result.error), { code: result.error });
+      }
+    };
     try {
       await connection.beginTransaction();
       if (count === 1) {
         const eventId = await this.insertRichEvent(connection, data, 1);
+        await requestBookings([eventId]);
         await connection.commit();
         return { seriesId: null, eventIds: [eventId] };
       }
@@ -547,12 +555,37 @@ export class Queries {
       }
       const seriesId = count > 1 ? eventIds[0] : null;
       if (seriesId) await connection.query(`UPDATE events SET series_id = ? WHERE id IN (${eventIds.map(() => '?').join(', ')})`, [seriesId, ...eventIds]);
+      await requestBookings(eventIds);
       await connection.commit();
       return { seriesId, eventIds };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async createRichEvent(data) { return (await this.createRichEventSeries(data)).eventIds[0]; }
-  async updateRichEvent(id, managerId, role, data) {
+  async updateRichEventAndBooking(id, userId, role, data, buyerBillingProfileId) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const privileged = ['manager', 'admin'].includes(role);
+      const [events] = await connection.execute(`SELECT manager_id AS managerId FROM events WHERE id=? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id=?'} FOR UPDATE`, privileged ? [id] : [id, userId]);
+      if (!events[0]) { await connection.rollback(); return false; }
+      const [bookings] = await connection.execute('SELECT venue_id AS venueId, start_at AS startAt, end_at AS endAt, status FROM venue_bookings WHERE event_id=? FOR UPDATE', [id]);
+      const booking = bookings[0];
+      if (booking && ['requested', 'confirmed'].includes(booking.status)
+        && (Number(booking.venueId) !== Number(data.venueId) || utcTimestamp(booking.startAt) !== utcTimestamp(data.startsAt) || utcTimestamp(booking.endAt) !== utcTimestamp(data.endsAt))) {
+        throw Object.assign(new Error('Cancel the active booking before changing the venue or booking time.'), { code: 'EVENT_ALREADY_BOOKED' });
+      }
+      if (!await this.updateRichEvent(id, userId, role, data, connection)) { await connection.rollback(); return false; }
+      // Saving a previously untimed draft (or an older draft whose request
+      // failed) must create the missing booking. Preserve existing decisions.
+      if (!booking && data.venueId && data.startsAt && data.endsAt) {
+        const result = await this.requestVenueBookingOnConnection(connection, id, data.venueId, events[0].managerId, role, buyerBillingProfileId);
+        if (result.error) throw Object.assign(new Error(result.error), { code: result.error });
+      }
+      await connection.commit();
+      return true;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async updateRichEvent(id, managerId, role, data, executor = this.database) {
     const scope = ['manager', 'admin'].includes(role) ? '' : ' AND manager_id = ?';
     const params = [data.title, data.shortDescription, data.description, data.coverImage, data.categoryId, data.typeId,
       data.locationType, data.locationVisibility, data.startsAt, data.endsAt,
@@ -563,7 +596,7 @@ export class Queries {
       data.customLatitude, data.customLongitude, data.customGooglePlaceId, data.customFormattedAddress, data.onlineUrl, data.onlinePlatform, id]
       .map((value) => value === undefined || (typeof value === 'number' && Number.isNaN(value)) ? null : value);
     if (!['manager', 'admin'].includes(role)) params.push(managerId);
-    const [result] = await this.database.query(`UPDATE events SET title=?, short_description=?, description=?, cover_image=?, category_id=?, type_id=?, location_type=?, location_visibility=?, starts_at=?, ends_at=?, timezone=?, capacity=?, minimum_attendees=?, registration_deadline=?, minimum_age=?, language_code=?, what_to_bring=?, meeting_instructions=?, cancellation_policy=?, pricing_type=?, participation_fee=?, currency=?, registration_type=?, external_registration_url=?, visibility=?, venue_id=?, custom_address_line_1=?, custom_address_line_2=?, custom_postal_code=?, custom_locality=?, custom_municipality=?, custom_region=?, custom_country=?, custom_country_code=?, custom_latitude=?, custom_longitude=?, custom_google_place_id=?, custom_formatted_address=?, online_url=?, online_platform=? WHERE id=? AND deleted_at IS NULL${scope}`, params);
+    const [result] = await executor.query(`UPDATE events SET title=?, short_description=?, description=?, cover_image=?, category_id=?, type_id=?, location_type=?, location_visibility=?, starts_at=?, ends_at=?, timezone=?, capacity=?, minimum_attendees=?, registration_deadline=?, minimum_age=?, language_code=?, what_to_bring=?, meeting_instructions=?, cancellation_policy=?, pricing_type=?, participation_fee=?, currency=?, registration_type=?, external_registration_url=?, visibility=?, venue_id=?, custom_address_line_1=?, custom_address_line_2=?, custom_postal_code=?, custom_locality=?, custom_municipality=?, custom_region=?, custom_country=?, custom_country_code=?, custom_latitude=?, custom_longitude=?, custom_google_place_id=?, custom_formatted_address=?, online_url=?, online_platform=? WHERE id=? AND deleted_at IS NULL${scope}`, params);
     return result.affectedRows > 0;
   }
   async updateEventSchedule(id, managerId, role, { startsAt, endsAt, venueId, timezone }) {
@@ -1999,60 +2032,68 @@ export class Queries {
     const connection = await this.database.getConnection();
     try {
       await connection.beginTransaction();
-      const [events] = await connection.execute('SELECT starts_at AS startsAt, ends_at AS endsAt FROM events WHERE id = ? AND manager_id = ? AND deleted_at IS NULL FOR UPDATE', [eventId, organizerUserId]);
-      const event = events[0];
-      if (!event) { await connection.rollback(); return { error: 'EVENT_NOT_FOUND' }; }
-      const [venues] = await connection.execute('SELECT id, timezone, price_from AS priceFrom, currency FROM venues WHERE id = ? AND is_active = TRUE FOR UPDATE', [venueId]);
-      if (!venues[0]) { await connection.rollback(); return { error: 'VENUE_NOT_FOUND' }; }
-      const [existing] = await connection.execute('SELECT id, status FROM venue_bookings WHERE event_id = ? FOR UPDATE', [eventId]);
-      if (existing[0] && ['requested', 'confirmed'].includes(existing[0].status)) { await connection.rollback(); return { error: 'EVENT_ALREADY_BOOKED' }; }
-      const [settingsRows] = await connection.execute('SELECT booking_mode AS bookingMode, buffer_before_minutes AS beforeMinutes, buffer_after_minutes AS afterMinutes, currency, hourly_rate AS hourlyRate, daily_rate AS dailyRate FROM venue_booking_settings WHERE venue_id=?', [venueId]);
-      const settings = settingsRows[0];
-      if (!settings) { await connection.rollback(); throw new Error(`Missing booking settings for venue ${venueId}`); }
-      const localStart = zonedDateTime(event.startsAt instanceof Date ? event.startsAt : `${String(event.startsAt).replace(' ', 'T').replace(/Z$/i, '')}Z`, venues[0].timezone);
-      if (!localStart) { await connection.rollback(); return { error: 'INVALID_EVENT_TIME' }; }
-      const bookingType = settings.bookingMode === 'daily' ? 'daily' : 'hourly';
-      const occupiedStart = new Date(new Date(event.startsAt).getTime() - settings.beforeMinutes * 60 * 1000);
-      const occupiedEnd = new Date(new Date(event.endsAt).getTime() + settings.afterMinutes * 60 * 1000);
-      const conflict = await this.checkBookingConflict({ venueId, bookingType, bookingDate: localStart.date, occupiedStartAt: occupiedStart, occupiedEndAt: occupiedEnd, excludeBookingId: existing[0]?.id || null }, connection);
-      if (conflict.conflict) { await connection.rollback(); return { error: 'VENUE_UNAVAILABLE' }; }
-      const durationMinutes = (new Date(event.endsAt).getTime() - new Date(event.startsAt).getTime()) / 60000;
-      const configuredRate = bookingType === 'daily' ? settings.dailyRate ?? venues[0].priceFrom : settings.hourlyRate ?? venues[0].priceFrom;
-      const rate = Number.isFinite(Number(configuredRate)) && Number(configuredRate) >= 0 ? Number(configuredRate) : 0;
-      const subtotal = bookingType === 'daily' ? rate : Math.round((rate * durationMinutes / 60) * 100) / 100;
-      const paidBooking = subtotal > 0;
-      let buyerProfileId = null;
-      if (paidBooking) {
-        let profileId = Number(buyerBillingProfileId);
-        // Existing event editors did not send a billing-profile id with the
-        // booking request. Prefer the account's default active profile so a
-        // paid venue continues to receive its requested booking; an explicit
-        // id remains authoritative when the organizer selected one.
-        if (!Number.isInteger(profileId) || profileId < 1) {
-          const privileged = ['manager', 'admin'].includes(role);
-          const [profiles] = await connection.execute(`SELECT p.id FROM billing_profiles p
-            LEFT JOIN organization_members member ON member.organization_id=p.owner_organization_id AND member.user_id=?
-            WHERE p.is_active=TRUE AND (p.owner_user_id=? OR member.role IN ('owner','admin') OR ${privileged ? 'TRUE' : 'FALSE'})
-            ORDER BY p.is_default DESC, p.updated_at DESC LIMIT 1`, [organizerUserId, organizerUserId]);
-          profileId = Number(profiles[0]?.id);
-        }
-        if (!Number.isInteger(profileId) || profileId < 1) { await connection.rollback(); return { error: 'BILLING_PROFILE_REQUIRED' }; }
+      const result = await this.requestVenueBookingOnConnection(connection, eventId, venueId, organizerUserId, role, buyerBillingProfileId);
+      if (result.error) await connection.rollback();
+      else await connection.commit();
+      return result;
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+  async requestVenueBookingOnConnection(connection, eventId, venueId, organizerUserId, role, buyerBillingProfileId = null) {
+    const [events] = await connection.execute('SELECT starts_at AS startsAt, ends_at AS endsAt FROM events WHERE id = ? AND manager_id = ? AND deleted_at IS NULL FOR UPDATE', [eventId, organizerUserId]);
+    const event = events[0];
+    if (!event) { return { error: 'EVENT_NOT_FOUND' }; }
+    const [venues] = await connection.execute('SELECT id, timezone, price_from AS priceFrom, currency FROM venues WHERE id = ? AND is_active = TRUE FOR UPDATE', [venueId]);
+    if (!venues[0]) { return { error: 'VENUE_NOT_FOUND' }; }
+    const [existing] = await connection.execute('SELECT id, status FROM venue_bookings WHERE event_id = ? FOR UPDATE', [eventId]);
+    if (existing[0] && ['requested', 'confirmed'].includes(existing[0].status)) { return { error: 'EVENT_ALREADY_BOOKED' }; }
+    const [settingsRows] = await connection.execute('SELECT booking_mode AS bookingMode, buffer_before_minutes AS beforeMinutes, buffer_after_minutes AS afterMinutes, currency, hourly_rate AS hourlyRate, daily_rate AS dailyRate FROM venue_booking_settings WHERE venue_id=?', [venueId]);
+    const settings = settingsRows[0];
+    if (!settings) { throw new Error(`Missing booking settings for venue ${venueId}`); }
+    const localStart = zonedDateTime(event.startsAt instanceof Date ? event.startsAt : `${String(event.startsAt).replace(' ', 'T').replace(/Z$/i, '')}Z`, venues[0].timezone);
+    if (!localStart) { return { error: 'INVALID_EVENT_TIME' }; }
+    const bookingType = settings.bookingMode === 'daily' ? 'daily' : 'hourly';
+    const occupiedStart = new Date(new Date(event.startsAt).getTime() - settings.beforeMinutes * 60 * 1000);
+    const occupiedEnd = new Date(new Date(event.endsAt).getTime() + settings.afterMinutes * 60 * 1000);
+    const conflict = await this.checkBookingConflict({ venueId, bookingType, bookingDate: localStart.date, occupiedStartAt: occupiedStart, occupiedEndAt: occupiedEnd, excludeBookingId: existing[0]?.id || null }, connection);
+    if (conflict.conflict) { return { error: 'VENUE_UNAVAILABLE' }; }
+    const durationMinutes = (new Date(event.endsAt).getTime() - new Date(event.startsAt).getTime()) / 60000;
+    const configuredRate = bookingType === 'daily' ? settings.dailyRate ?? venues[0].priceFrom : settings.hourlyRate ?? venues[0].priceFrom;
+    const rate = Number.isFinite(Number(configuredRate)) && Number(configuredRate) >= 0 ? Number(configuredRate) : 0;
+    const subtotal = bookingType === 'daily' ? rate : Math.round((rate * durationMinutes / 60) * 100) / 100;
+    const paidBooking = subtotal > 0;
+    let buyerProfileId = null;
+    if (paidBooking) {
+      let profileId = Number(buyerBillingProfileId);
+      // Existing event editors did not send a billing-profile id with the
+      // booking request. Prefer the account's default active profile so a
+      // paid venue continues to receive its requested booking; an explicit
+      // id remains authoritative when the organizer selected one.
+      if (!Number.isInteger(profileId) || profileId < 1) {
+        const privileged = ['manager', 'admin'].includes(role);
+        const [profiles] = await connection.execute(`SELECT p.id FROM billing_profiles p
+          LEFT JOIN organization_members member ON member.organization_id=p.owner_organization_id AND member.user_id=?
+          WHERE p.is_active=TRUE AND (p.owner_user_id=? OR member.role IN ('owner','admin') OR ${privileged ? 'TRUE' : 'FALSE'})
+          ORDER BY p.is_default DESC, p.updated_at DESC LIMIT 1`, [organizerUserId, organizerUserId]);
+        profileId = Number(profiles[0]?.id);
+      }
+      if (Number.isInteger(profileId) && profileId > 0) {
         const profile = await this.billingProfile(profileId, organizerUserId, role, connection);
-        if (!profile) { await connection.rollback(); return { error: 'BILLING_PROFILE_UNAVAILABLE' }; }
+        if (!profile) return { error: 'BILLING_PROFILE_UNAVAILABLE' };
         buyerProfileId = profile.id;
       }
-      const billingStatus = paidBooking ? 'complete' : 'not_required';
-      let bookingId;
-      if (existing[0]) {
-        await connection.execute("UPDATE venue_bookings SET venue_id=?, organizer_user_id=?, buyer_billing_profile_id=?, billing_status=?, booking_type=?, status='requested', owner_note=NULL, start_at=?, end_at=?, occupied_start_at=?, occupied_end_at=?, booking_date=?, venue_timezone=?, currency=?, subtotal=?, tax_amount=0, total_amount=? WHERE id=?", [venueId, organizerUserId, buyerProfileId, billingStatus, bookingType, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, localStart.date, venues[0].timezone, settings.currency, subtotal, subtotal, existing[0].id]);
-        bookingId = existing[0].id;
-      } else {
-        const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, buyer_billing_profile_id, billing_status, booking_type, booking_date, start_at, end_at, occupied_start_at, occupied_end_at, venue_timezone, currency, subtotal, tax_amount, total_amount, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'requested')", [venueId, eventId, organizerUserId, buyerProfileId, billingStatus, bookingType, localStart.date, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, venues[0].timezone, settings.currency, subtotal, subtotal]);
-        bookingId = result.insertId;
-      }
-      await connection.commit();
-      return { id: bookingId, status: 'requested' };
-    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+    }
+    // Missing billing details must not hide a request from the venue owner.
+    // Approval still requires a complete buyer profile for a paid booking.
+    const billingStatus = paidBooking ? (buyerProfileId ? 'complete' : 'incomplete') : 'not_required';
+    let bookingId;
+    if (existing[0]) {
+      await connection.execute("UPDATE venue_bookings SET venue_id=?, organizer_user_id=?, buyer_billing_profile_id=?, billing_status=?, booking_type=?, status='requested', owner_note=NULL, start_at=?, end_at=?, occupied_start_at=?, occupied_end_at=?, booking_date=?, venue_timezone=?, currency=?, subtotal=?, tax_amount=0, total_amount=? WHERE id=?", [venueId, organizerUserId, buyerProfileId, billingStatus, bookingType, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, localStart.date, venues[0].timezone, settings.currency, subtotal, subtotal, existing[0].id]);
+      bookingId = existing[0].id;
+    } else {
+      const [result] = await connection.execute("INSERT INTO venue_bookings (venue_id, event_id, organizer_user_id, buyer_billing_profile_id, billing_status, booking_type, booking_date, start_at, end_at, occupied_start_at, occupied_end_at, venue_timezone, currency, subtotal, tax_amount, total_amount, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'requested')", [venueId, eventId, organizerUserId, buyerProfileId, billingStatus, bookingType, localStart.date, event.startsAt, event.endsAt, occupiedStart, occupiedEnd, venues[0].timezone, settings.currency, subtotal, subtotal]);
+      bookingId = result.insertId;
+    }
+    return { id: bookingId, status: 'requested' };
   }
   async eventVenueBooking(eventId, userId, role) {
     const privileged = ['manager', 'admin'].includes(role);

@@ -927,6 +927,10 @@ export class Api {
       if (!['venue', 'custom', 'online'].includes(locationType)) errors.locationType = 'Location type must be venue, custom, or online.';
       let selectedVenue = null;
       if (locationType === 'venue') {
+        if (startsAt || endsAt) {
+          if (!startInstant) errors.startsAt = 'Choose and apply a venue booking start time.';
+          if (!endInstant) errors.endsAt = 'Choose and apply a venue booking end time.';
+        }
         const venueId = Number(body.venueId ?? body.venue?.id);
         if (!Number.isInteger(venueId) || venueId < 1) errors.venueId = 'A valid venue is required.';
         else { selectedVenue = await this.queries.eventLocationVenue(venueId); if (!selectedVenue) errors.venueId = 'The selected venue is unavailable.'; }
@@ -974,13 +978,35 @@ export class Api {
       return { managerId: userId, title: validation.title, shortDescription: body.shortDescription?.trim() || null, description: body.description?.trim() || null, coverImage: coverImage(body.coverImage), categoryId: body.categoryId ? Number(body.categoryId) : null, typeId: body.typeId ? Number(body.typeId) : null, locationType: validation.locationType, locationVisibility: body.locationVisibility || 'public', startsAt: mysqlUtc(validation.startsAt), endsAt: validation.endsAt ? mysqlUtc(validation.endsAt) : null, timezone: validation.timezone, capacity: body.capacity === '' || body.capacity === undefined ? null : body.capacity, minimumAttendees: body.minimumAttendees || null, registrationDeadline: body.registrationDeadline ? mysqlUtc(body.registrationDeadline) : null, minimumAge: body.minimumAge || null, languageCode: body.languageCode || null, whatToBring: body.whatToBring || null, meetingInstructions: body.meetingInstructions || null, cancellationPolicy: body.cancellationPolicy || null, pricingType: validation.pricingType, fee: validation.pricingType === 'free' ? 0 : Number(body.fee || 0), currency: body.currency || 'SEK', registrationType: body.registrationType || 'yaroko', externalRegistrationUrl: body.externalRegistrationUrl || null, visibility: body.visibility || 'Public', groupId: body.groupId ? Number(body.groupId) : null, recurrence: validation.recurrence, venueId: validation.locationType === 'venue' ? Number(body.venueId ?? body.venue?.id) : null, customAddressLine1: custom.addressLine1 || null, customAddressLine2: custom.addressLine2 || null, customPostalCode: custom.postalCode || null, customLocality: custom.locality || null, customMunicipality: custom.municipality || null, customRegion: custom.region || null, customCountry: custom.country || null, customCountryCode: custom.countryCode || null, customLatitude: custom.latitude ?? null, customLongitude: custom.longitude ?? null, customGooglePlaceId: custom.googlePlaceId || null, customFormattedAddress: custom.formattedAddress || null, onlineUrl: validation.locationType === 'online' ? text(body.onlineUrl, 1024) : null, onlinePlatform: validation.locationType === 'online' ? text(body.onlinePlatform, 120) : null };
     };
     const notifyGroupEventMembers = async (eventId) => { const members = await this.queries.pendingGroupEventNotifications(eventId); await Promise.all(members.map(async (member) => { if (!await this.queries.claimGroupEventNotification(eventId, member.userId)) return; try { await this.emailService.sendGroupEventNotification(member.email, member.name, { id: member.groupId, name: member.groupName }, member); } catch (emailError) { try { await this.queries.releaseGroupEventNotification(eventId, member.userId); } catch (releaseError) { console.error(`Unable to release group event notification for ${member.email}:`, releaseError.message); } console.error(`Group event notification failed for ${member.email}:`, emailError.message); } })); };
-    const createRichDraft = async (req, res, groupId = req.body.groupId) => { try { await ensureTable(); if (groupId && (!Number.isInteger(Number(groupId)) || !await this.queries.canManageGroup(Number(groupId), req.user.id, req.user.role))) return res.status(403).json({ error: 'You can only post events in groups you manage.' }); const validation = await validateRichEvent(req.body); if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors }); const draft = richEventData({ ...req.body, groupId }, req.user.id, validation); const series = await this.queries.createRichEventSeries(draft); const bookingRequests = [];
-      // Selecting a venue for a timed event is a booking request. It remains
-      // a draft until the venue owner confirms it, including every recurrence.
-      if (draft.venueId && draft.startsAt && draft.endsAt) for (const eventId of series.eventIds) bookingRequests.push(await this.queries.requestVenueBooking(eventId, draft.venueId, req.user.id, req.user.role, req.body.buyerBillingProfileId));
-      const event = await this.queries.richEvent(series.eventIds[0], req.user.id, req.user.role); const booking = bookingRequests[0]?.id ? await this.queries.eventVenueBooking(series.eventIds[0], req.user.id, req.user.role) : null;
-      return res.status(201).json({ ...decorateEventImage(event, { userId: req.user.id, role: req.user.role }), venueBooking: booking, seriesId: series.seriesId, occurrenceIds: series.eventIds });
-    } catch (error) { console.error('Rich event creation failed:', error); return res.status(500).json({ error: 'Unable to create event draft.' }); } };
+    const bookingFailure = (res, error) => {
+      const failures = {
+        VENUE_UNAVAILABLE: [409, 'The venue is already booked for this time. Choose another time.'],
+        EVENT_ALREADY_BOOKED: [409, 'Cancel the active booking before changing the venue or booking time.'],
+        BILLING_PROFILE_UNAVAILABLE: [422, 'This billing profile is no longer available to your account.'],
+        INVALID_EVENT_TIME: [422, 'Choose a valid venue booking start and end time.'],
+        VENUE_NOT_FOUND: [404, 'The selected venue is unavailable.'],
+        EVENT_NOT_FOUND: [404, 'Event not found or not managed by you.'],
+      };
+      const failure = failures[error.code];
+      return failure ? res.status(failure[0]).json({ code: error.code, error: failure[1] }) : null;
+    };
+    const createRichDraft = async (req, res, groupId = req.body.groupId) => {
+      try {
+        await ensureTable();
+        if (groupId && (!Number.isInteger(Number(groupId)) || !await this.queries.canManageGroup(Number(groupId), req.user.id, req.user.role))) return res.status(403).json({ error: 'You can only post events in groups you manage.' });
+        const validation = await validateRichEvent(req.body);
+        if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors });
+        const draft = richEventData({ ...req.body, groupId }, req.user.id, validation);
+        const series = await this.queries.createRichEventSeries(draft, { bookVenue: true, role: req.user.role, buyerBillingProfileId: req.body.buyerBillingProfileId });
+        const event = await this.queries.richEvent(series.eventIds[0], req.user.id, req.user.role);
+        const booking = draft.venueId && draft.startsAt && draft.endsAt ? await this.queries.eventVenueBooking(series.eventIds[0], req.user.id, req.user.role) : null;
+        return res.status(201).json({ ...decorateEventImage(event, { userId: req.user.id, role: req.user.role }), venueBooking: booking, seriesId: series.seriesId, occurrenceIds: series.eventIds });
+      } catch (error) {
+        if (bookingFailure(res, error)) return;
+        console.error('Rich event creation failed:', error);
+        return res.status(500).json({ error: 'Unable to create event draft.' });
+      }
+    };
     app.post('/api/events/drafts', authenticate, requireVerifiedUser, ...creationGuards, (req, res) => createRichDraft(req, res));
     app.post('/api/groups/:id/events/drafts', authenticate, ...creationGuards, (req, res) => createRichDraft(req, res, req.params.id));
     app.post('/api/events/:id/cover', authenticate, parseEventCover, async (req, res) => { if (!req.file) return res.status(400).json({ error: 'A JPEG, PNG, or WebP cover image is required.' }); try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event) return res.status(404).json({ error: 'Event not found or not managed by you.' }); const coverImage = await this.eventFtpService.uploadEventCover(req.params.id, req.file); if (!await this.queries.setEventCover(req.params.id, req.user.id, req.user.role, coverImage)) return res.status(404).json({ error: 'Event not found or not managed by you.' }); return res.json({ coverImage }); } catch (error) { if (error.code === 'INVALID_IMAGE') return res.status(400).json({ error: error.message }); if (error.code === 'FTP_NOT_CONFIGURED') return res.status(503).json({ error: 'Event image storage is not configured.' }); console.error('Event cover upload failed:', error); return res.status(502).json({ error: 'Unable to upload event cover.' }); } });
@@ -996,7 +1022,22 @@ export class Api {
         return res.json(decorateEventImage(await this.queries.richEvent(eventId, req.user.id, req.user.role), { userId: req.user.id, role: req.user.role }));
       } catch (error) { console.error('Event schedule update failed:', error.message); return res.status(500).json({ error: 'Unable to update the event schedule.' }); }
     });
-    app.patch('/api/events/:id', authenticate, ...updateGuards, async (req, res) => { try { await ensureTable(); const validation = await validateRichEvent(req.body); if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors }); if (!await this.queries.updateRichEvent(req.params.id, req.user.id, req.user.role, richEventData(req.body, req.user.id, validation))) return res.status(404).json({ error: 'Event not found or not managed by you.' }); return res.json(decorateEventImage(await this.queries.richEvent(req.params.id, req.user.id, req.user.role), { userId: req.user.id, role: req.user.role })); } catch (error) { console.error('Rich event update failed:', error.message); return res.status(500).json({ error: 'Unable to update event.' }); } });
+    app.patch('/api/events/:id', authenticate, ...updateGuards, async (req, res) => {
+      try {
+        await ensureTable();
+        const validation = await validateRichEvent(req.body);
+        if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors });
+        const draft = richEventData(req.body, req.user.id, validation);
+        if (!await this.queries.updateRichEventAndBooking(req.params.id, req.user.id, req.user.role, draft, req.body.buyerBillingProfileId)) return res.status(404).json({ error: 'Event not found or not managed by you.' });
+        const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role);
+        const booking = draft.venueId ? await this.queries.eventVenueBooking(req.params.id, req.user.id, req.user.role) : null;
+        return res.json({ ...decorateEventImage(event, { userId: req.user.id, role: req.user.role }), venueBooking: booking });
+      } catch (error) {
+        if (bookingFailure(res, error)) return;
+        console.error('Rich event update failed:', error.message);
+        return res.status(500).json({ error: 'Unable to update event.' });
+      }
+    });
     app.post('/api/events/:id/publish', authenticate, async (req, res) => { try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event) return res.status(404).json({ error: 'Event not found or not managed by you.' }); if ((event.venue?.id || event.venueId) && event.venueBookingStatus !== 'confirmed') return res.status(409).json({ code: 'VENUE_BOOKING_NOT_CONFIRMED', error: 'The venue owner must confirm the booking before this event can be published.' }); const validation = await validateRichEvent(event, { publishing: true }); if (!event.coverImage) validation.errors.coverImage = 'A cover image is required before publication.'; if (!event.categoryId || !event.typeId) validation.errors.taxonomy = 'Category and event type are required before publication.'; if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event cannot be published.', fields: validation.errors }); await this.queries.publishRichEvent(req.params.id, req.user.id, req.user.role); if (event.groupId && event.status !== 'Published') await notifyGroupEventMembers(req.params.id); return res.json(decorateEventImage(await this.queries.richEvent(req.params.id, req.user.id, req.user.role), { userId: req.user.id, role: req.user.role })); } catch (error) { console.error('Rich event publication failed:', error.message); return res.status(500).json({ error: 'Unable to publish event.' }); } });
     app.get('/api/events', optionalAuthenticate, async (req, res) => { const categorySlug = req.query.category == null ? null : String(req.query.category).trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (req.query.category != null && !categorySlug) return res.status(422).json({ error: 'category must be a valid category slug.' }); try { await ensureTable(); const viewer = { userId: req.user?.id ?? null, role: req.user?.role ?? null }; return res.json(decorateEventImages(await this.queries.eventsForViewer(viewer.userId, viewer.role, { categorySlug }), viewer)); } catch (error) { console.error('Event lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load events.' }); } });
     app.get('/api/venue-types', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.venueTypes()); } catch (error) { console.error('Venue type lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue types.' }); } });
