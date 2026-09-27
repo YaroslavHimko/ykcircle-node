@@ -106,6 +106,16 @@ test('lists invoices only for the buyer or a managing seller member', async () =
   assert.deepEqual(calls[0].parameters, [7, 7, 7, 7, 7]);
 });
 
+test('filters accessible invoices to the selected venue', async () => {
+  const calls = [];
+  const queries = new Queries({ execute: async (sql, parameters) => { calls.push({ sql, parameters }); return [[]]; } });
+
+  await queries.invoicesForViewer(7, 'venue_owner', { venueId: 12 });
+
+  assert.match(calls[0].sql, /booking\.venue_id=\?/);
+  assert.deepEqual(calls[0].parameters, [7, 7, 7, 7, 7, 12]);
+});
+
 test('lists venue bookings for organization managers as well as the venue owner', async () => {
   const calls = [];
   const queries = new Queries({

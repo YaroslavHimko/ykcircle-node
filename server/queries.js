@@ -1365,14 +1365,14 @@ export class Queries {
       WHERE invoice.id=? AND (seller.owner_user_id=? OR member.role IN ('owner','admin'))`, [userId, invoiceId, userId]);
     return Boolean(rows[0]);
   }
-  async invoicesForViewer(userId, role) {
+  async invoicesForViewer(userId, role, { venueId = null } = {}) {
     const privileged = ['manager', 'admin'].includes(role);
     const access = privileged ? 'TRUE' : `(i.buyer_user_id=? OR buyer_profile.owner_user_id=? OR seller_profile.owner_user_id=? OR EXISTS (SELECT 1 FROM organization_members seller_member
       WHERE seller_member.organization_id=COALESCE(i.seller_organization_id, seller_profile.owner_organization_id) AND seller_member.user_id=? AND seller_member.role IN ('owner','admin','manager')) OR EXISTS (SELECT 1 FROM organization_members buyer_member
       WHERE buyer_member.organization_id=COALESCE(i.buyer_organization_id, buyer_profile.owner_organization_id) AND buyer_member.user_id=? AND buyer_member.role IN ('owner','admin')))`;
     const [rows] = await this.database.execute(`SELECT i.id, i.seller_organization_id AS sellerOrganizationId, i.seller_billing_profile_id AS sellerBillingProfileId,
       COALESCE(seller.name, seller_profile.legal_name) AS sellerOrganizationName, i.buyer_user_id AS buyerUserId, buyer.name AS buyerName,
-      i.buyer_organization_id AS buyerOrganizationId, i.booking_id AS bookingId, i.invoice_number AS invoiceNumber,
+      i.buyer_organization_id AS buyerOrganizationId, i.booking_id AS bookingId, booking.venue_id AS venueId, i.invoice_number AS invoiceNumber,
       i.context_type AS contextType, i.context_id AS contextId, i.status, i.delivery_status AS deliveryStatus, i.issue_date AS issueDate, i.due_date AS dueDate, i.currency,
       i.subtotal, i.tax_amount AS taxAmount, i.total_amount AS totalAmount, i.paid_at AS paidAt,
       e.id AS eventId, e.title AS eventTitle, i.created_at AS createdAt
@@ -1382,7 +1382,7 @@ export class Queries {
       LEFT JOIN users buyer ON buyer.id=i.buyer_user_id
       LEFT JOIN venue_bookings booking ON booking.id=i.booking_id
       LEFT JOIN events e ON e.id=booking.event_id
-      WHERE ${access} ORDER BY i.created_at DESC, i.id DESC`, privileged ? [] : [userId, userId, userId, userId, userId]);
+      WHERE ${access}${venueId === null ? '' : ' AND booking.venue_id=?'} ORDER BY i.created_at DESC, i.id DESC`, privileged ? (venueId === null ? [] : [venueId]) : [...[userId, userId, userId, userId, userId], ...(venueId === null ? [] : [venueId])]);
     return rows;
   }
   async invoice(invoiceId, userId, role) {

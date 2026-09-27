@@ -102,7 +102,7 @@ test('returns invoices available to the signed-in user', async (t) => {
   const queries = {
     initialize: async () => {},
     findUserById: async () => ({ id: 7, role: 'venue_owner', sessionVersion: 1, isEmailConfirmed: true }),
-    invoicesForViewer: async (userId, role) => [{ id: 19, sellerOrganizationName: 'Harbor Hall', status: 'issued', requestedBy: { userId, role } }],
+    invoicesForViewer: async (userId, role, options) => [{ id: 19, sellerOrganizationName: 'Harbor Hall', status: 'issued', requestedBy: { userId, role, options } }],
   };
   const app = express();
   app.use(express.json());
@@ -117,7 +117,14 @@ test('returns invoices available to the signed-in user', async (t) => {
 
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/invoices`, { headers: { Authorization: `Bearer ${token}` } });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), [{ id: 19, sellerOrganizationName: 'Harbor Hall', status: 'issued', requestedBy: { userId: 7, role: 'venue_owner' } }]);
+  assert.deepEqual(await response.json(), [{ id: 19, sellerOrganizationName: 'Harbor Hall', status: 'issued', requestedBy: { userId: 7, role: 'venue_owner', options: { venueId: null } } }]);
+
+  const venueResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/invoices?venueId=4`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(venueResponse.status, 200);
+  assert.equal((await venueResponse.json())[0].requestedBy.options.venueId, 4);
+
+  const invalidVenueResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/invoices?venueId=invalid`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(invalidVenueResponse.status, 422);
 });
 
 test('does not publish an event until its selected venue confirms the booking', async (t) => {
