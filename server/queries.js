@@ -1118,6 +1118,12 @@ export class Queries {
     // Paid attendance is created only by verified Checkout fulfillment.
     return false;
   }
+  async managedTicketTypes(eventId, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [events] = await this.database.execute(`SELECT id FROM events WHERE id=? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id=?'}`, privileged ? [eventId] : [eventId, userId]);
+    if (!events[0]) return null;
+    return this.ticketTypes(eventId);
+  }
   async ticketTypes(eventId, { publicOnly = false } = {}) {
     const [rows] = await this.database.execute(`SELECT id, event_id AS eventId, name, description, price, currency,
       quantity_available AS quantityAvailable, quantity_sold AS quantitySold, sales_start_at AS salesStartAt, sales_end_at AS salesEndAt,
