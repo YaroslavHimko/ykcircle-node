@@ -11,13 +11,14 @@ const secondCode = 'YK-' + 'B2'.repeat(16);
 function fixture() {
   const state = { event: { id: 2, managerId: 7, status: 'Published' },
     tickets: [code, secondCode].map((value, index) => ({ id: index + 1, code: value, eventId: 2, orderId: 1, attendeeUserId: 3, attendeeEmail: 'guest@example.test', paymentStatus: 'paid', testMode: false, checkedInAt: null })),
-    participant: null, registration: { id: 10, status: 'Confirmed' }, writes: 0 };
+    participant: null, registration: { id: 10, status: 'Confirmed' }, writes: 0, representatives: [] };
   const calls = [];
   let queue = Promise.resolve();
   let failWrite = false;
   const execute = async (sql, params) => {
     calls.push({ sql, params });
     if (sql.startsWith('SELECT id, manager_id')) return [[state.event].filter((event) => event && event.id === params[0])];
+    if (sql.includes('SELECT r.user_id FROM event_representatives')) return [state.representatives.filter((user) => user.eventId === params[0] && user.id === params[1] && user.verified)];
     if (sql.includes('FROM issued_tickets t JOIN ticket_orders')) return [state.tickets.filter((ticket) => ticket.code === params[0] && ticket.eventId === params[1]).map((ticket) => ({ ...ticket }))];
     if (sql.includes('FROM users WHERE')) return [[{ id: 3, name: 'Test Guest', email: 'guest@example.test', phone: null, profilePicture: null }]];
     if (sql.startsWith('SELECT id, status FROM event_registrations')) return [state.registration ? [state.registration] : []];
@@ -69,7 +70,7 @@ test('separate admissions on a group order reuse the participant without consumi
 test('another organizer cannot check in tickets or learn who holds them', async () => {
   const f = fixture();
   assert.deepEqual(await f.queries.checkInTicket(2, 8, 'organizer', code), { error: 'EVENT_NOT_MANAGED' });
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls.some((call) => call.sql.includes('FROM issued_tickets')), false);
   assert.equal(f.state.writes, 0);
 });
 
@@ -77,6 +78,25 @@ test('manager and administrator access follows the existing event-management per
   for (const role of ['manager', 'admin']) {
     const f = fixture();
     assert.equal((await f.queries.checkInTicket(2, 8, role, code)).participant.status, 'Attended');
+  }
+});
+
+test('verified event representatives can scan without receiving participant contact or billing details', async () => {
+  const f = fixture();
+  f.state.representatives.push({ id: 8, eventId: 2, verified: true });
+  const result = await f.queries.checkInTicket(2, 8, 'customer', code);
+  assert.deepEqual(result.participant, { id: 30, name: 'Test Guest', status: 'Attended' });
+  assert.equal(f.state.tickets[0].checkedInBy, 8);
+  f.state.representatives = [];
+  assert.deepEqual(await f.queries.checkInTicket(2, 8, 'customer', secondCode), { error: 'EVENT_NOT_MANAGED' });
+  assert.equal(f.state.tickets[1].checkedInAt, null);
+});
+
+test('unverified and other-event representative assignments grant no ticket access', async () => {
+  for (const assignment of [{ id: 8, eventId: 9, verified: true }, { id: 8, eventId: 2, verified: false }]) {
+    const f = fixture(); f.state.representatives.push(assignment);
+    assert.deepEqual(await f.queries.checkInTicket(2, 8, 'customer', code), { error: 'EVENT_NOT_MANAGED' });
+    assert.equal(f.state.writes, 0);
   }
 });
 

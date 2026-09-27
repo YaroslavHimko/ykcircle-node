@@ -214,6 +214,14 @@ export class Database {
         CONSTRAINT events_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL,
         CONSTRAINT events_series_fk FOREIGN KEY (series_id) REFERENCES events(id) ON DELETE SET NULL
       )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_representatives (
+        event_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL,
+        assigned_by_user_id INT UNSIGNED NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (event_id, user_id), INDEX (user_id),
+        FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (assigned_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS application_activities (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(80) NOT NULL UNIQUE,

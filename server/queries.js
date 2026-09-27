@@ -20,6 +20,60 @@ const jsonValue = (value) => {
 };
 
 export class Queries {
+  // Representative is an event-scoped role, never an upgrade to users.role.
+  async isEventRepresentative(eventId, userId, database = this.database) {
+    const [rows] = await database.execute(`SELECT r.user_id FROM event_representatives r
+      JOIN users u ON u.id=r.user_id AND u.isEmailConfirmed=TRUE
+      WHERE r.event_id=? AND r.user_id=?`, [eventId, userId]);
+    return rows.length > 0;
+  }
+
+  async representativeEvents(userId) {
+    const [rows] = await this.database.execute(`SELECT e.id, e.title, e.starts_at AS startsAt, e.timezone, e.status
+      FROM event_representatives r JOIN events e ON e.id=r.event_id
+      JOIN users u ON u.id=r.user_id AND u.isEmailConfirmed=TRUE
+      WHERE r.user_id=? AND e.deleted_at IS NULL AND e.status IN ('Published','Completed') ORDER BY e.starts_at DESC`, [userId]);
+    return rows.map((event) => ({ ...event, accessRole: 'representative' }));
+  }
+
+  async eventCheckInContext(eventId, userId, role) {
+    const [events] = await this.database.execute(`SELECT id, manager_id AS managerId, title, starts_at AS startsAt, timezone, status
+      FROM events WHERE id=? AND deleted_at IS NULL`, [eventId]);
+    const event = events[0];
+    if (!event) return null;
+    const fullAccess = ['manager', 'admin'].includes(role) || Number(event.managerId) === Number(userId);
+    if (!fullAccess && (!['Published', 'Completed'].includes(event.status) || !await this.isEventRepresentative(eventId, userId))) return null;
+    return { id: event.id, title: event.title, startsAt: utcTimestamp(event.startsAt), timezone: event.timezone, status: event.status,
+      accessRole: fullAccess ? 'organizer' : 'representative' };
+  }
+
+  async manageEventRepresentatives(eventId, actorId, role, { action = 'list', email, userId } = {}) {
+    const connection = await this.database.getConnection();
+    try {
+      await connection.beginTransaction();
+      const reject = async (error) => { await connection.rollback(); return { error }; };
+      // Use the same event lock as check-in so revocation and admission are ordered.
+      const [events] = await connection.execute('SELECT id, manager_id AS managerId FROM events WHERE id=? AND deleted_at IS NULL FOR UPDATE', [eventId]);
+      if (!events[0] || (!['manager', 'admin'].includes(role) && Number(events[0].managerId) !== Number(actorId))) return await reject('EVENT_NOT_MANAGED');
+      let alreadyAssigned = false;
+      if (action === 'add') {
+        const [users] = await connection.execute('SELECT id, role, isEmailConfirmed FROM users WHERE LOWER(email)=? FOR UPDATE', [email]);
+        const user = users[0];
+        if (!user || !user.isEmailConfirmed) return await reject('VERIFIED_ACCOUNT_REQUIRED');
+        if (Number(user.id) === Number(events[0].managerId) || ['manager', 'admin'].includes(user.role)) return await reject('ALREADY_MANAGER');
+        const [existing] = await connection.execute('SELECT user_id FROM event_representatives WHERE event_id=? AND user_id=?', [eventId, user.id]);
+        alreadyAssigned = existing.length > 0;
+        if (!alreadyAssigned) await connection.execute('INSERT INTO event_representatives (event_id, user_id, assigned_by_user_id) VALUES (?, ?, ?)', [eventId, user.id, actorId]);
+      } else if (action === 'remove') {
+        await connection.execute('DELETE FROM event_representatives WHERE event_id=? AND user_id=?', [eventId, userId]);
+      }
+      const [representatives] = await connection.execute(`SELECT r.user_id AS userId, u.name, u.email, r.created_at AS assignedAt
+        FROM event_representatives r JOIN users u ON u.id=r.user_id WHERE r.event_id=? ORDER BY r.created_at, r.user_id`, [eventId]);
+      await connection.commit();
+      return { representatives: representatives.map((user) => ({ ...user, role: 'representative' })), alreadyAssigned };
+    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
+  }
+
   async checkInTicket(eventId, userId, role, code) {
     const connection = await this.database.getConnection();
     try {
@@ -29,7 +83,9 @@ export class Queries {
       // to the same purchaser. Authorization and all attendance writes are atomic.
       const [events] = await connection.execute('SELECT id, manager_id AS managerId, status FROM events WHERE id=? AND deleted_at IS NULL FOR UPDATE', [eventId]);
       const event = events[0];
-      if (!event || (!['manager', 'admin'].includes(role) && Number(event.managerId) !== Number(userId))) return await reject('EVENT_NOT_MANAGED');
+      if (!event) return await reject('EVENT_NOT_MANAGED');
+      const fullAccess = ['manager', 'admin'].includes(role) || Number(event.managerId) === Number(userId);
+      if (!fullAccess && !await this.isEventRepresentative(eventId, userId, connection)) return await reject('EVENT_NOT_MANAGED');
       if (!['Published', 'Completed'].includes(event.status)) return await reject('EVENT_NOT_OPEN');
       const [tickets] = await connection.execute(`SELECT t.id, t.code, t.checked_in_at AS checkedInAt,
         o.id AS orderId, o.attendee_user_id AS attendeeUserId, o.attendee_email AS attendeeEmail,
@@ -58,7 +114,8 @@ export class Queries {
       await connection.commit();
       return { ticketId: ticket.id, code: ticket.code, eventId, alreadyCheckedIn: Boolean(ticket.checkedInAt),
         checkedInAt: utcTimestamp(saved[0].checkedInAt), testMode: Boolean(ticket.testMode),
-        participant: participants[0] ? { ...participants[0], profilePicture: attendee.profilePicture } : null };
+        participant: participants[0] ? (fullAccess ? { ...participants[0], profilePicture: attendee.profilePicture }
+          : { id: participants[0].id, name: participants[0].name, status: participants[0].status }) : null };
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
 

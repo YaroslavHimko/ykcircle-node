@@ -1132,7 +1132,41 @@ export class Api {
         return res.status(201).json({ orderId: order.id, orderNumber: order.orderNumber, checkoutUrl: checkout.url, testMode: this.stripe.testMode() });
       } catch (error) { console.error('Stripe ticket checkout failed:', error.message); return res.status(502).json({ error: this.stripe.testMode() ? 'Unable to start test checkout. Check the sandbox API key, connected account onboarding, and ticket currency on the server.' : 'Unable to start ticket checkout. Please try again.' }); }
     });
-    app.post('/api/events/:id/tickets/check-in', authenticate, requireManager, async (req, res) => {
+    app.get('/api/me/representative-events', authenticate, async (req, res) => {
+      try { await ensureTable(); return res.json(await this.queries.representativeEvents(req.user.id)); }
+      catch { return res.status(500).json({ error: 'Unable to load assigned events.' }); }
+    });
+    app.get('/api/events/:id/check-in', authenticate, async (req, res) => {
+      const eventId = Number(req.params.id);
+      if (!Number.isSafeInteger(eventId) || eventId < 1) return res.status(422).json({ error: 'A valid event id is required.' });
+      try {
+        await ensureTable();
+        const event = await this.queries.eventCheckInContext(eventId, req.user.id, req.user.role);
+        return event ? res.json(event) : res.status(403).json({ error: 'Ticket check-in is unavailable. Ask the event organizer to assign you as a representative.' });
+      } catch { return res.status(500).json({ error: 'Unable to load ticket check-in.' }); }
+    });
+    const representatives = (action) => async (req, res) => {
+      const eventId = Number(req.params.id);
+      const userId = Number(req.params.userId);
+      const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+      if (!Number.isSafeInteger(eventId) || eventId < 1 || (action === 'remove' && (!Number.isSafeInteger(userId) || userId < 1)) ||
+          (action === 'add' && (email.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))) return res.status(422).json({ error: 'Provide a valid event and representative email or user id.' });
+      try {
+        await ensureTable();
+        const result = await this.queries.manageEventRepresentatives(eventId, req.user.id, req.user.role, { action, email, userId });
+        const failures = {
+          EVENT_NOT_MANAGED: [403, 'Only the event organizer or a manager can manage representatives.'],
+          VERIFIED_ACCOUNT_REQUIRED: [422, 'This email must belong to an existing, verified YKCircle account. Ask the person to register and verify their email first.'],
+          ALREADY_MANAGER: [409, 'This person already has full management access to this event.'],
+        };
+        if (result.error) { const [status, error] = failures[result.error] || [409, 'Unable to update representatives.']; return res.status(status).json({ code: result.error, error }); }
+        return res.status(action === 'add' && !result.alreadyAssigned ? 201 : 200).json(result);
+      } catch { return res.status(500).json({ error: 'Unable to manage event representatives.' }); }
+    };
+    app.get('/api/events/:id/representatives', authenticate, representatives('list'));
+    app.post('/api/events/:id/representatives', authenticate, representatives('add'));
+    app.delete('/api/events/:id/representatives/:userId', authenticate, representatives('remove'));
+    app.post('/api/events/:id/tickets/check-in', authenticate, async (req, res) => {
       const eventId = Number(req.params.id);
       const code = typeof req.body?.code === 'string' ? req.body.code.trim().toUpperCase() : '';
       if (!Number.isSafeInteger(eventId) || eventId < 1 || !/^YK-[A-F0-9]{32}$/.test(code)) return res.status(422).json({ error: 'Scan a ticket QR code or enter a valid ticket code.' });
@@ -1140,7 +1174,7 @@ export class Api {
         await ensureTable();
         const result = await this.queries.checkInTicket(eventId, req.user.id, req.user.role, code);
         const failures = {
-          EVENT_NOT_MANAGED: [403, 'Only the event organizer or a manager can check in tickets.'],
+          EVENT_NOT_MANAGED: [403, 'Only the event organizer, an assigned representative, or a manager can check in tickets.'],
           EVENT_NOT_OPEN: [409, 'Tickets cannot be checked in for an unpublished, cancelled, or archived event.'],
           TICKET_NOT_FOUND: [404, 'This ticket was not found for this event. Check that you are scanning the correct event’s ticket.'],
           TICKET_NOT_PAID: [409, 'This ticket is not valid for admission. Its payment is unpaid, refunded, cancelled, or disputed.'],
