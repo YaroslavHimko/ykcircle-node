@@ -839,6 +839,13 @@ export class Queries {
     catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
   async organizationMember(organizationId, userId) { const [rows] = await this.database.execute('SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?', [organizationId, userId]); return rows[0] || null; }
+  async updateOrganization(organizationId, userId, role, data) {
+    if (!await this.canManageOrganization(organizationId, userId, role)) return false;
+    await this.database.execute('UPDATE organizations SET name = ?, slug = ?, description = ?, website_url = ?, phone = ?, contact_email = ? WHERE id = ?',
+      [data.name, data.slug, data.description, data.websiteUrl, data.phone, data.contactEmail, organizationId]);
+    // An unchanged update is still successful; return the saved representation.
+    return await this.organization(organizationId, userId, role) || false;
+  }
   async setOrganizationMember(organizationId, actorUserId, actorRole, userId, membershipRole) {
     if (!['manager', 'admin'].includes(actorRole)) {
       const actor = await this.organizationMember(organizationId, actorUserId);
