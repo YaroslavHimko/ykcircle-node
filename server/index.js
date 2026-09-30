@@ -82,7 +82,7 @@ const start = async () => {
   app.post('/api/payment-webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }));
   app.post('/api/payment-webhooks/stripe/thin', express.raw({ type: 'application/json', limit: '1mb' }));
   api.registerPaymentWebhooks(app);
-  app.use(express.json());
+  app.use(express.json({ limit: '256kb' }));
   const byIpAndEmail = (req) => `${req.ip}:${String(req.body?.email || req.body?.reporterEmail || '').trim().toLowerCase()}`;
   const authIpLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30, message: 'Too many authentication attempts. Please try again later.' });
   const authIdentityLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10, key: byIpAndEmail, message: 'Too many authentication attempts. Please try again later.' });

@@ -1,3 +1,4 @@
+import { logoImage } from './branding.js';
 import nodemailer from 'nodemailer';
 import crypto from 'node:crypto';
 
@@ -69,6 +70,25 @@ export class EmailService {
     return `<div style="margin:0;background:#f8f5f1;padding:40px 16px;font-family:Arial,sans-serif;color:#251e18"><div style="max-width:600px;margin:auto;background:#fffdfa;border:1px solid #dfd2c7;border-radius:4px;overflow:hidden"><div style="height:6px;background:#c94b1b"></div><div style="background:#f8f5f1;border-bottom:1px solid #dfd2c7;padding:28px 32px"><a href="${escapeHtml(brandUrl)}" style="font-family:Georgia,serif;font-size:24px;font-weight:700;letter-spacing:-0.3px;color:#c94b1b;text-decoration:none">${brandName}</a>${subtitle ? `<div style="color:#76675e;font-size:13px;margin-top:8px">${subtitle}</div>` : ''}</div><div style="padding:36px 32px"><style>h1{font-family:Georgia,serif;color:#251e18;font-size:28px;line-height:1.2;margin:0 0 16px}a{color:#316f68}</style>${content}</div><div style="border-top:1px solid #dfd2c7;padding:20px 32px;font-size:12px;color:#76675e">&copy; ${brandName}</div></div></div>`;
   }
 
+  customerLayout(branding, content, subtitle = '') {
+    const name = escapeHtml(branding.brandName || branding.managerName || branding.legalName || branding.title || 'Event organizer');
+    const logo = logoImage(branding.logoImage);
+    return `<div style="margin:0;background:#f5f5f5;padding:32px 16px;font-family:Arial,sans-serif;color:#202020"><div style="max-width:600px;margin:auto;background:#fff;border:1px solid #ddd"><header style="padding:28px 32px;border-bottom:1px solid #ddd">${logo ? `<img src="cid:customer-logo" alt="${name} logo" width="${Math.round(logo.width * Math.min(240 / logo.width, 88 / logo.height, 1))}" height="${Math.round(logo.height * Math.min(240 / logo.width, 88 / logo.height, 1))}" style="display:block;max-width:100%;object-fit:contain;margin-bottom:16px">` : ''}<div style="font-size:24px;font-weight:700;color:#202020">${name}</div>${subtitle ? `<p style="font-size:13px;color:#666">${escapeHtml(subtitle)}</p>` : ''}</header><div style="padding:28px 32px">${content}</div><footer style="padding:16px 32px;border-top:1px solid #eee;font-size:11px;color:#777">Delivered via <a href="https://${escapeHtml(this.domain)}" style="color:#777">${escapeHtml(this.brandName)}</a></footer></div></div>`;
+  }
+
+  sendCustomerMail(mailer, branding, message) {
+    const name = branding.brandName || branding.managerName || branding.legalName || branding.title || 'Event organizer';
+    const logo = logoImage(branding.logoImage);
+    const { offlineTickets, ...mail } = message;
+    const attachments = [...(mail.attachments || [])];
+    if (offlineTickets) attachments.push({ filename: 'tickets.html', content: `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Event tickets</title></head><body>${mail.html.replace('cid:customer-logo', branding.logoImage || '')}</body></html>`, contentType: 'text/html; charset=utf-8' });
+    if (logo) attachments.push({ filename: 'logo.jpg', content: logo.bytes, contentType: 'image/jpeg', cid: 'customer-logo', contentDisposition: 'inline' });
+    // Keep the configured, authenticated sender address; change only its label.
+    const configured = mail.from;
+    const address = typeof configured === 'string' ? (configured.match(/<([^>]+)>/)?.[1] || configured) : configured.address;
+    return mailer.sendMail({ ...mail, from: { name, address }, text: `${name}\n\n${mail.text}\n\nDelivered via ${this.brandName}.`, attachments });
+  }
+
   sendVerification(email, name, token) {
     const url = `${this.verificationUrl}?token=${encodeURIComponent(token)}`;
     return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Verify your ${this.brandName} email address`,
@@ -78,18 +98,20 @@ export class EmailService {
 
   async sendTickets(order, orderUrl) {
     if (!this.smtp?.host) throw new Error('Set SMTP_HOST and the transactional SMTP credentials to deliver ticket emails.');
+    const branding = { ...order.seller, title: order.eventTitle };
     const when = formatEventDate(order.event?.startsAt, order.event?.timezone);
     const location = order.event?.location || 'Location to be announced';
     const testLabel = order.testMode ? 'TEST TICKETS — no real payment was taken.\n\n' : '';
     const ticketText = order.tickets.map((ticket) => `${ticket.name}: ${ticket.code}`).join('\n');
     const text = `${testLabel}Your tickets for ${order.eventTitle}\n\nOrder: ${order.orderNumber}\nWhen: ${when}\nLocation: ${location}\n\n${ticketText}\n\nTotal: ${Number(order.totalAmount).toFixed(2)} ${order.currency}\nSeller: ${order.seller?.legalName || ''}\n\nShow these ticket codes at the event.\nView your tickets: ${orderUrl}`;
-    const result = await this.mailer.sendMail({
+    const result = await this.sendCustomerMail(this.mailer, branding, {
       from: this.noReplyFrom, to: order.attendeeEmail,
       messageId: `<ticket-order-${order.id}@${this.domain}>`,
       subject: `${order.testMode ? '[TEST] ' : ''}Your tickets: ${order.eventTitle}`,
       text,
-      html: this.layout(`${order.testMode ? '<p><strong>TEST TICKETS — no real payment was taken.</strong></p>' : ''}<h1>Your event tickets</h1><h2>${escapeHtml(order.eventTitle)}</h2><p>${escapeHtml(when)}<br>${escapeHtml(location)}</p><p>Order: ${escapeHtml(order.orderNumber)}</p>${order.tickets.map((ticket) => `<div style="border:1px solid #dfd2c7;padding:16px;margin:12px 0"><strong>${escapeHtml(ticket.name)}</strong><p style="font-family:monospace;overflow-wrap:anywhere">${escapeHtml(ticket.code)}</p></div>`).join('')}<p>Show these codes at the event. Each code admits one person.</p><p><a href="${escapeHtml(orderUrl)}">View your tickets</a></p><p>Sold by ${escapeHtml(order.seller?.legalName)} · ${escapeHtml(Number(order.totalAmount).toFixed(2))} ${escapeHtml(order.currency)}</p>`),
+      html: this.customerLayout(branding, `${order.testMode ? '<p><strong>TEST TICKETS — no real payment was taken.</strong></p>' : ''}<h1>Your event tickets</h1><h2>${escapeHtml(order.eventTitle)}</h2><p>${escapeHtml(when)}<br>${escapeHtml(location)}</p><p>Order: ${escapeHtml(order.orderNumber)}</p>${order.tickets.map((ticket) => `<div style="border:1px solid #dfd2c7;padding:16px;margin:12px 0"><strong>${escapeHtml(ticket.name)}</strong><p style="font-family:monospace;overflow-wrap:anywhere">${escapeHtml(ticket.code)}</p></div>`).join('')}<p>Show these codes at the event. Each code admits one person.</p><p><a href="${escapeHtml(orderUrl)}">View your tickets</a></p><p>Sold by ${escapeHtml(order.seller?.legalName)} · ${escapeHtml(Number(order.totalAmount).toFixed(2))} ${escapeHtml(order.currency)}</p>`),
       // A plain-text attachment works offline and does not load remote assets.
+      offlineTickets: true,
       attachments: [{ filename: `tickets-${order.orderNumber}.txt`, content: text, contentType: 'text/plain; charset=utf-8' }],
     });
     if (!result.accepted?.length || result.rejected?.length) throw new Error('The email server did not accept the ticket email.');
@@ -118,27 +140,27 @@ export class EmailService {
   sendRegistrationConfirmation(email, name, event) {
     const start = formatEventDate(event.startsAt, event.timezone);
     const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
-    const details = `Event: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\nCapacity: ${event.capacity ?? 'Unlimited'}${eventFee(event)}\nRegistration status: Pending`;
-    return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Registration received: ${event.title}`,
+    const details = `Event: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}${eventFee(event)}\nRegistration status: Pending`;
+    return this.sendCustomerMail(this.mailer, event, { from: this.noReplyFrom, to: email, subject: `Registration received: ${event.title}`,
       text: `Hi ${name},\n\nYour registration has been received and is pending manager confirmation.\n\n${details}`,
-      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Registration received</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your registration is pending manager confirmation.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><span style="color:#526078">${escapeHtml(event.description || 'Event registration')}</span><br><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}<br><strong>Capacity:</strong> ${escapeHtml(String(event.capacity ?? 'Unlimited'))}${eventFeeHtml(event)}<br><strong>Status:</strong> Pending</div>`) });
+      html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Registration received</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your registration is pending manager confirmation.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><span style="color:#526078">${escapeHtml(event.description || 'Event registration')}</span><br><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}${eventFeeHtml(event)}<br><strong>Status:</strong> Pending</div>`) });
   }
 
   sendRegistrationApproved(email, name, event) {
     const start = formatEventDate(event.startsAt, event.timezone);
     const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
-    const details = `Event: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\nCapacity: ${event.capacity ?? 'Unlimited'}${eventFee(event)}\nRegistration status: Confirmed`;
-    return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Registration confirmed: ${event.title}`,
+    const details = `Event: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}${eventFee(event)}\nRegistration status: Confirmed`;
+    return this.sendCustomerMail(this.mailer, event, { from: this.noReplyFrom, to: email, subject: `Registration confirmed: ${event.title}`,
       text: `Hi ${name},\n\nYour registration has been confirmed by the event manager.\n\n${details}`,
-      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Registration confirmed</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your registration has been confirmed by the event manager. We look forward to seeing you there.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><span style="color:#526078">${escapeHtml(event.description || 'Event registration')}</span><br><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}<br><strong>Capacity:</strong> ${escapeHtml(String(event.capacity ?? 'Unlimited'))}${eventFeeHtml(event)}<br><strong>Status:</strong> Confirmed</div>`) });
+      html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Registration confirmed</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your registration has been confirmed by the event manager. We look forward to seeing you there.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><span style="color:#526078">${escapeHtml(event.description || 'Event registration')}</span><br><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}${eventFeeHtml(event)}<br><strong>Status:</strong> Confirmed</div>`) });
   }
 
   sendRegistrationWithdrawal(email, name, event) {
     const start = formatEventDate(event.startsAt, event.timezone);
     const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
-    return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Withdrawal received: ${event.title}`,
+    return this.sendCustomerMail(this.mailer, event, { from: this.noReplyFrom, to: email, subject: `Withdrawal received: ${event.title}`,
       text: `Hi ${name},\n\nYour withdrawal from ${event.title} has been received.\n\nEvent: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\nStatus: Withdrawn`,
-      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Withdrawal received</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your withdrawal from this event has been received successfully.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}<br><strong>Status:</strong> Withdrawn</div>`) });
+      html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Withdrawal received</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your withdrawal from this event has been received successfully.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}<br><strong>Status:</strong> Withdrawn</div>`) });
   }
 
   sendEventInvitation(email, name, event) {
@@ -146,9 +168,9 @@ export class EmailService {
     const acceptUrl = `${this.invitationResponseUrl}?token=${encodeURIComponent(event.invitationToken)}&action=accept`;
     const declineUrl = `${this.invitationResponseUrl}?token=${encodeURIComponent(event.invitationToken)}&action=decline`;
     const start = formatEventDate(event.startsAt, event.timezone);
-    return this.invitationMailer.sendMail({ from: this.invitationFrom, to: email, subject: `You are invited to ${event.title}`,
+    return this.sendCustomerMail(this.invitationMailer, event, { from: this.invitationFrom, to: email, subject: `You are invited to ${event.title}`,
       text: `Hi ${name},\n\nYou have been invited to ${event.title}.\n\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}\n\nConfirm invitation: ${acceptUrl}\nDecline invitation: ${declineUrl}\nView event and register: ${eventUrl}`,
-      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>You are invited</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to <strong>${escapeHtml(event.title)}</strong>.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}</div><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Confirm invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p><p style="margin:20px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event and register</a></p>`) });
+      html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>You are invited</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to <strong>${escapeHtml(event.title)}</strong>.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}</div><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Confirm invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p><p style="margin:20px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event and register</a></p>`) });
   }
 
   sendGroupInvitation(email, name, group, token) {
@@ -164,20 +186,21 @@ export class EmailService {
     const eventUrl = `${this.eventDetailsUrl.replace(/\/$/, '')}/${event.eventId || event.id}`;
     const start = formatEventDate(event.startsAt, event.timezone);
     const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
-    return this.notificationMailer.sendMail({ from: this.notificationFrom, to: email, subject: `New event in ${group.name}: ${event.title}`,
+    return this.sendCustomerMail(this.notificationMailer, event, { from: this.notificationFrom, to: email, subject: `New event in ${group.name}: ${event.title}`,
       text: `Hi ${name},\n\n${group.name} has posted a new event: ${event.title}.\n\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\n\nView event: ${eventUrl}`,
-      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>New group event</h1><p style="font-size:16px;line-height:1.6;color:#526078"><strong>${escapeHtml(group.name)}</strong> has posted a new event for its members.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><span style="color:#526078">${escapeHtml(event.description || 'Event details are available on the event page.')}</span><br><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}</div><p style="margin:28px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event</a></p>`, 'Group update') });
+      html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>New group event</h1><p style="font-size:16px;line-height:1.6;color:#526078"><strong>${escapeHtml(group.name)}</strong> has posted a new event for its members.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><span style="color:#526078">${escapeHtml(event.description || 'Event details are available on the event page.')}</span><br><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}</div><p style="margin:28px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event</a></p>`, 'Group update') });
   }
 
   async sendManagerRegistrationNotification(email, managerName, customerName, customerEmail, eventTitle, eventId, registrationId) {
     const [owners] = await this.database.execute('SELECT role FROM users WHERE LOWER(email) = LOWER(?)', [email]);
     if (!['organizer', 'venue_owner'].includes(owners[0]?.role)) return;
-    const [events] = await this.database.execute('SELECT participation_fee AS fee FROM events WHERE id = ?', [eventId]);
+    const [events] = await this.database.execute('SELECT participation_fee AS fee, brand_name AS brandName, logo_image AS logoImage FROM events WHERE id = ?', [eventId]);
+    const branding = { ...events[0], managerName, title: eventTitle };
     const fee = Number(events[0]?.fee) > 0 ? ` Fee: ${Number(events[0].fee).toFixed(2)} SEK.` : '';
     const registrationUrl = `${this.managerEventUrl.replace(/\/$/, '')}/${eventId}/registrations/${registrationId}`;
-    return this.notificationMailer.sendMail({ from: this.notificationFrom, to: email, subject: `New registration for ${eventTitle}`,
+    return this.sendCustomerMail(this.notificationMailer, branding, { from: this.notificationFrom, to: email, subject: `New registration for ${eventTitle}`,
       text: `Hi ${managerName},\n\n${customerName} (${customerEmail}) has registered for your event: ${eventTitle}.${fee}`,
-      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(managerName)},</p><h1>New event registration</h1><p style="font-size:16px;line-height:1.6;color:#526078">A new customer has registered for your event.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px"><strong>Event</strong><br>${escapeHtml(eventTitle)}${Number(events[0]?.fee) > 0 ? `<br><strong>Fee:</strong> ${escapeHtml(Number(events[0].fee).toFixed(2))} SEK` : ''}<br><br><strong>Customer</strong><br>${escapeHtml(customerName)}<br>${escapeHtml(customerEmail)}</div><p style="margin:28px 0"><a href="${escapeHtml(registrationUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View registration</a></p>`, 'Event management') });
+      html: this.customerLayout(branding, `<p style="font-size:17px">Hi ${escapeHtml(managerName)},</p><h1>New event registration</h1><p style="font-size:16px;line-height:1.6;color:#526078">A new customer has registered for your event.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px"><strong>Event</strong><br>${escapeHtml(eventTitle)}${Number(events[0]?.fee) > 0 ? `<br><strong>Fee:</strong> ${escapeHtml(Number(events[0].fee).toFixed(2))} SEK` : ''}<br><br><strong>Customer</strong><br>${escapeHtml(customerName)}<br>${escapeHtml(customerEmail)}</div><p style="margin:28px 0"><a href="${escapeHtml(registrationUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View registration</a></p>`, 'Event management') });
   }
 
   async notifyAdmins({ applicationId, email, phone, activity, additionalInformation }) {

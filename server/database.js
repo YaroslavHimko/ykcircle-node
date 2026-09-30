@@ -14,6 +14,15 @@ export class Database {
       WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, [table, column]);
     if (!rows[0]) await this.pool.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
   }
+  async removeRetiredEventFields() {
+    const columns = ['capacity', 'minimum_attendees', 'language_code', 'registration_deadline', 'minimum_age', 'what_to_bring', 'meeting_instructions'];
+    const [rows] = await this.pool.execute(
+      "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'events'",
+    );
+    const existing = new Set(rows.map((row) => row.name));
+    const retired = columns.filter((column) => existing.has(column));
+    if (retired.length) await this.pool.execute('ALTER TABLE events ' + retired.map((column) => 'DROP COLUMN ' + column).join(', '));
+  }
   async hasIndex(table, index) {
     const [rows] = await this.pool.execute(`SELECT 1 FROM information_schema.statistics
       WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`, [table, index]);
@@ -198,12 +207,12 @@ export class Database {
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS events (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, manager_id INT UNSIGNED NOT NULL,
         group_id INT UNSIGNED NULL, series_id INT UNSIGNED NULL, recurrence_frequency ENUM('none','daily','weekly','monthly') NOT NULL DEFAULT 'none', recurrence_interval SMALLINT UNSIGNED NOT NULL DEFAULT 1, recurrence_count SMALLINT UNSIGNED NOT NULL DEFAULT 1, occurrence_number SMALLINT UNSIGNED NOT NULL DEFAULT 1,
-        title VARCHAR(200) NOT NULL, short_description VARCHAR(240) NULL, description TEXT NULL, cover_image VARCHAR(1024) NULL, category_id INT UNSIGNED NULL, type_id INT UNSIGNED NULL,
+        title VARCHAR(200) NOT NULL, brand_name VARCHAR(160) NULL, logo_image MEDIUMTEXT NULL, short_description VARCHAR(240) NULL, description TEXT NULL, cover_image VARCHAR(1024) NULL, category_id INT UNSIGNED NULL, type_id INT UNSIGNED NULL,
         location_type ENUM('venue','custom','online') NOT NULL DEFAULT 'custom', location_visibility ENUM('public','registered','attendees_only','approximate') NOT NULL DEFAULT 'public',
         venue_id INT UNSIGNED NULL,
         custom_address_line_1 VARCHAR(255) NULL, custom_address_line_2 VARCHAR(255) NULL, custom_postal_code VARCHAR(32) NULL, custom_locality VARCHAR(120) NULL, custom_municipality VARCHAR(120) NULL, custom_region VARCHAR(120) NULL, custom_country VARCHAR(120) NULL, custom_country_code CHAR(2) NULL, custom_latitude DECIMAL(9,6) NULL, custom_longitude DECIMAL(9,6) NULL, custom_google_place_id VARCHAR(255) NULL, custom_formatted_address VARCHAR(500) NULL,
         online_url VARCHAR(1024) NULL, online_platform VARCHAR(120) NULL,
-        starts_at DATETIME NOT NULL, ends_at DATETIME NULL, timezone VARCHAR(64) NOT NULL DEFAULT 'UTC', capacity INT UNSIGNED NULL, minimum_attendees INT UNSIGNED NULL, registration_deadline DATETIME NULL, minimum_age TINYINT UNSIGNED NULL, language_code VARCHAR(12) NULL, what_to_bring TEXT NULL, meeting_instructions TEXT NULL, cancellation_policy TEXT NULL,
+        starts_at DATETIME NOT NULL, ends_at DATETIME NULL, timezone VARCHAR(64) NOT NULL DEFAULT 'UTC', cancellation_policy TEXT NULL,
         pricing_type ENUM('free','paid') NOT NULL DEFAULT 'free', participation_fee DECIMAL(10,2) NOT NULL DEFAULT 0, currency CHAR(3) NOT NULL DEFAULT 'SEK', registration_type ENUM('yaroko','external','none') NOT NULL DEFAULT 'yaroko', external_registration_url VARCHAR(1024) NULL,
         status ENUM('Draft', 'Published', 'Cancelled', 'Completed', 'Archived') NOT NULL DEFAULT 'Draft',
         visibility ENUM('Public', 'Private', 'Members', 'Unlisted') NOT NULL DEFAULT 'Public', published_at DATETIME NULL,
@@ -214,6 +223,7 @@ export class Database {
         CONSTRAINT events_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL,
         CONSTRAINT events_series_fk FOREIGN KEY (series_id) REFERENCES events(id) ON DELETE SET NULL
       )`);
+      await this.removeRetiredEventFields();
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_representatives (
         event_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL,
         assigned_by_user_id INT UNSIGNED NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -503,7 +513,7 @@ export class Database {
         owner_user_id INT UNSIGNED NOT NULL,
         name VARCHAR(160) NOT NULL,
         slug VARCHAR(180) NOT NULL UNIQUE,
-        business_name VARCHAR(160) NULL,
+        business_name VARCHAR(160) NULL, logo_image MEDIUMTEXT NULL,
         short_description VARCHAR(400) NULL,
         description TEXT NULL,
         address_line_1 VARCHAR(255) NULL,
@@ -971,6 +981,9 @@ export class Database {
       // untouched; the new nullable fields are populated only by new flows.
       await this.ensureColumn('organizations', 'default_billing_profile_id', 'INT UNSIGNED NULL');
       await this.ensureColumn('payment_accounts', 'details_submitted', 'BOOLEAN NULL');
+      await this.ensureColumn('events', 'brand_name', 'VARCHAR(160) NULL');
+      await this.ensureColumn('events', 'logo_image', 'MEDIUMTEXT NULL');
+      await this.ensureColumn('venues', 'logo_image', 'MEDIUMTEXT NULL');
       await this.ensureColumn('event_payment_settings', 'seller_capacity', "ENUM('trader','private') NULL");
       await this.ensureColumn('event_payment_settings', 'refund_policy_snapshot', 'JSON NULL');
       await this.ensureColumn('invoices', 'context_type', 'VARCHAR(64) NULL');

@@ -117,10 +117,9 @@ test('SMTP failure leaves paid tickets intact and retries the same codes', async
 test('pending reservations prevent another buyer from overselling the last tickets', async () => {
   let rolledBack = false;
   const database = { execute: async (sql) => {
-    if (sql.startsWith('SELECT id, capacity')) return [[{ id: 2, capacity: 100, startsAt: '2099-01-01 12:00:00' }]];
+    if (sql.startsWith('SELECT id, starts_at')) return [[{ id: 2, startsAt: '2099-01-01 12:00:00' }]];
     if (sql.includes('FROM event_ticket_types')) return [[{ id: 4, name: 'Last tickets', currency: 'SEK', price: 125, quantityAvailable: 3, quantitySold: 1 }]];
     if (sql.includes('GROUP BY item.ticket_type_id')) return [[{ ticketTypeId: 4, quantity: 2 }]];
-    if (sql.includes('COALESCE(SUM')) return [[{ quantity: 3 }]];
     throw new Error('Unexpected query ' + sql);
   }, getConnection: async () => ({ execute: database.execute, beginTransaction: async () => {}, rollback: async () => { rolledBack = true; }, release() {} }) };
   const queries = new Queries(database);

@@ -1,3 +1,5 @@
+import { logoImage } from './branding.js';
+
 const winAnsiOverrides = new Map([
   ['€', 0x80], ['‚', 0x82], ['ƒ', 0x83], ['„', 0x84], ['…', 0x85], ['†', 0x86], ['‡', 0x87], ['ˆ', 0x88], ['‰', 0x89], ['Š', 0x8a], ['‹', 0x8b], ['Œ', 0x8c], ['Ž', 0x8e],
   ['‘', 0x91], ['’', 0x92], ['“', 0x93], ['”', 0x94], ['•', 0x95], ['–', 0x96], ['—', 0x97], ['˜', 0x98], ['™', 0x99], ['š', 0x9a], ['›', 0x9b], ['œ', 0x9c], ['ž', 0x9e], ['Ÿ', 0x9f],
@@ -46,8 +48,8 @@ const wrap = (value, maxChars) => {
 };
 
 const color = {
-  ink: [0.12, 0.15, 0.19], muted: [0.36, 0.41, 0.47], orange: [0.93, 0.28, 0.06],
-  paleOrange: [1, 0.95, 0.91], paleBlue: [0.96, 0.97, 0.98], line: [0.84, 0.87, 0.9], white: [1, 1, 1],
+  ink: [0.12, 0.15, 0.19], muted: [0.36, 0.41, 0.47],
+  paleBlue: [0.96, 0.97, 0.98], line: [0.84, 0.87, 0.9], white: [1, 1, 1],
 };
 const rgb = ([red, green, blue]) => `${red} ${green} ${blue}`;
 
@@ -56,6 +58,8 @@ const rgb = ([red, green, blue]) => `${red} ${green} ${blue}`;
 // mutable seller, buyer, venue, or user data into a historical document.
 export const renderInvoicePdf = (invoice) => {
   const seller = invoice.seller || {};
+  const brandName = seller.brandName || seller.legalName || invoice.booking?.venueName || 'Seller';
+  const logo = logoImage(seller.logoImage);
   const buyer = invoice.buyer || {};
   const booking = invoice.booking || {};
   const currency = invoice.currency || 'SEK';
@@ -99,25 +103,28 @@ export const renderInvoicePdf = (invoice) => {
     commands = [];
     pageNumber += 1;
     if (pageNumber === 1) {
-      // Text wordmark serves as a crisp, print-safe version of the YKCircle logo.
-      drawText('Y', 48, 776, 30, 'F2', color.orange);
-      drawText('K', 68, 776, 30, 'F2', color.ink);
-      drawText('CIRCLE', 91, 780, 9, 'F2', color.muted);
+      if (logo) {
+        const scale = Math.min(240 / logo.width, 52 / logo.height, 1);
+        command(`q ${logo.width * scale} 0 0 ${logo.height * scale} 48 766 cm /Logo Do Q`);
+        drawText(wrap(brandName, 45)[0], 48, 749, 11, 'F2', color.ink);
+      } else {
+        wrap(brandName, 30).slice(0, 2).forEach((line, index) => drawText(line, 48, 788 - index * 23, 18, 'F2', color.ink));
+      }
       drawText('FAKTURA', 424, 780, 20, 'F2', color.ink);
       drawText(`Nr ${invoice.invoiceNumber || invoice.id}`, 459, 762, 9, 'F1', color.muted);
-      rule(48, 742, 564, color.orange, 1.4);
+      rule(48, 742, 564, color.line, 1.4);
       y = 718;
     } else {
-      drawText('YK CIRCLE', 48, 782, 10, 'F2', color.ink);
+      drawText(wrap(brandName, 45)[0], 48, 782, 10, 'F2', color.ink);
       drawText(`FAKTURA ${invoice.invoiceNumber || invoice.id}`, 414, 782, 10, 'F2', color.ink);
-      rule(48, 768, 564, color.orange, 1.2);
+      rule(48, 768, 564, color.line, 1.2);
       y = 744;
     }
   };
   const ensureSpace = (height) => { if (y - height < 70) startPage(); };
   const section = (title) => {
     ensureSpace(26);
-    drawText(title, 48, y, 9, 'F2', color.orange);
+    drawText(title, 48, y, 9, 'F2', color.ink);
     rule(48, y - 6, 564);
     y -= 22;
   };
@@ -192,12 +199,12 @@ export const renderInvoicePdf = (invoice) => {
 
   const totalHeight = 72;
   ensureSpace(totalHeight + 18);
-  rect(330, y - totalHeight, 234, totalHeight, color.paleOrange, color.orange);
+  rect(330, y - totalHeight, 234, totalHeight, color.paleBlue, color.line);
   drawText('DELSUMMA', 342, y - 18, 8, 'F2', color.muted);
   drawText(money(invoice.subtotal, currency), 468, y - 18, 8.5, 'F1', color.ink);
   drawText('MOMS', 342, y - 35, 8, 'F2', color.muted);
   drawText(money(invoice.taxAmount, currency), 468, y - 35, 8.5, 'F1', color.ink);
-  rule(342, y - 43, 552, color.orange, 0.7);
+  rule(342, y - 43, 552, color.line, 0.7);
   drawText('ATT BETALA', 342, y - 60, 9, 'F2', color.ink);
   drawText(money(invoice.totalAmount, currency), 458, y - 60, 11, 'F2', color.ink);
   y -= totalHeight + 20;
@@ -213,14 +220,19 @@ export const renderInvoicePdf = (invoice) => {
 
   footer();
   pages.push(commands.join('\n'));
+  const logoObjectId = 5 + pages.length * 2;
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     `<< /Type /Pages /Kids [${pages.map((_, index) => `${index + 5} 0 R`).join(' ')}] /Count ${pages.length} >>`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>',
-    ...pages.map((_, index) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${index + 5 + pages.length} 0 R >>`),
+    ...pages.map((_, index) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> ${logo ? `/XObject << /Logo ${logoObjectId} 0 R >>` : ''} >> /Contents ${index + 5 + pages.length} 0 R >>`),
     ...pages.map((content) => `<< /Length ${Buffer.byteLength(content, 'utf8')} >>\nstream\n${content}\nendstream`),
   ];
+  if (logo) {
+    const content = logo.bytes.toString('hex') + '>';
+    objects.push(`<< /Type /XObject /Subtype /Image /Width ${logo.width} /Height ${logo.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [/ASCIIHexDecode /DCTDecode] /Length ${content.length} >>\nstream\n${content}\nendstream`);
+  }
   let pdf = '%PDF-1.4\n%âãÏÓ\n';
   const offsets = [0];
   objects.forEach((object, index) => { offsets.push(Buffer.byteLength(pdf, 'utf8')); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
