@@ -107,13 +107,25 @@ test('every registered role gets an owner-scoped article workspace', async () =>
   }
 });
 
+test('My Articles includes only the signed-in author even for administrators', async () => {
+  for (const role of ['customer', 'organizer', 'venue_owner', 'manager', 'admin']) {
+    const queries = new Queries({ execute: async (sql, p) => {
+      assert.match(sql, /BINARY a.status <> BINARY 'removed' AND a.author_user_id = \?/);
+      assert.deepEqual(p, [7, 50, 0]);
+      return [[]];
+    } });
+    await queries.articles({ editorId: 7, editorRole: role, ownedOnly: true, limit: 50 });
+  }
+});
+
 test('article HTTP routes allow customer drafts and guard both publication entry points', async (t) => {
   const f = fixture();
   const secret = 'article test secret with at least thirty two characters';
   const user = { id: 1, role: 'customer', isEmailConfirmed: true, sessionVersion: 1 };
+  const articleLists = [];
   Object.assign(f.queries, { initialize: async () => {}, findUserById: async () => user,
     syncArticleTags: async () => {}, articleBySlug: async slug => f.state.articles.find(row => row.slug === slug),
-    updateArticle: async () => true, articles: async () => f.state.articles });
+    updateArticle: async () => true, articles: async options => { articleLists.push(options); return f.state.articles; } });
   const ftp = { publicPath: () => '/uploads/articles' };
   const api = new Api({ config: { site: { siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } }, database: f.database, queries: f.queries, emailService: {}, ftpService: ftp, eventFtpService: ftp, venueFtpService: ftp, groupFtpService: ftp, articleFtpService: ftp });
   const app = express(); app.use(express.json()); api.register(app);
@@ -123,6 +135,10 @@ test('article HTTP routes allow customer drafts and guard both publication entry
   const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
   const request = (path, method = 'GET', body) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
   assert.equal((await request('/api/my/articles')).status, 200);
+  user.role = 'admin';
+  assert.equal((await request('/api/my/articles?ownedOnly=true&editorId=999')).status, 200);
+  assert.deepEqual(articleLists.at(-1), { editorId: 1, editorRole: 'admin', ownedOnly: true, limit: 50 });
+  user.role = 'customer';
   assert.equal((await request('/api/articles', 'POST', article())).status, 201);
   let response = await request('/api/articles', 'POST', article({ status: 'published' }));
   assert.equal(response.status, 403); assert.equal((await response.json()).code, 'ARTICLE_SUBSCRIPTION_REQUIRED');
