@@ -1,4 +1,5 @@
 import { OrganizerSubscriptions, registerSubscriptionRoutes } from './organizer-subscriptions.js';
+import { paymentsOverview } from './payments-overview.js';
 import { accessError } from './product-access.js';
 import { ArticlePublishing } from './article-publishing.js';
 import { validateBranding } from './branding.js';
@@ -1116,6 +1117,16 @@ export class Api {
       catch (error) { console.error('Managed organization lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load organizations.' }); }
     });
     app.put('/api/organizations/:id/members/:userId', authenticate, requireVerifiedUser, async (req, res) => { const organizationId = Number(req.params.id); const userId = Number(req.params.userId); const role = String(req.body.role || ''); if (!Number.isInteger(organizationId) || !Number.isInteger(userId) || !['owner', 'admin', 'manager', 'staff'].includes(role)) return res.status(422).json({ error: 'A valid organization member and role are required.' }); try { await ensureTable(); if (!await this.queries.setOrganizationMember(organizationId, req.user.id, req.user.role, userId, role)) return res.status(403).json({ error: 'Organization owner or admin access is required.' }); return res.json({ organizationId, userId, role }); } catch (error) { console.error('Organization member update failed:', error.message); return res.status(500).json({ error: 'Unable to update organization member.' }); } });
+    app.get('/api/account/payments-overview', authenticate, async (req, res) => {
+      try {
+        await ensureTable();
+        res.set('Cache-Control', 'private, no-store');
+        return res.json(await paymentsOverview({ queries: this.queries, subscriptions: this.subscriptions, user: req.user }));
+      } catch (error) {
+        console.error('Payments overview failed:', error.message);
+        return res.status(500).json({ error: 'Unable to load payments and business details. Please try again.' });
+      }
+    });
     app.get('/api/me/billing-profiles', authenticate, async (req, res) => {
       try { await ensureTable(); return res.json(await this.queries.billingProfiles(req.user.id, req.user.role)); }
       catch (error) { console.error('Billing profile lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load billing profiles.' }); }

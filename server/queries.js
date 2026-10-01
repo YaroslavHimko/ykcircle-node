@@ -1503,8 +1503,9 @@ export class Queries {
       WHERE seller_member.organization_id=COALESCE(i.seller_organization_id, seller_profile.owner_organization_id) AND seller_member.user_id=? AND seller_member.role IN ('owner','admin','manager')) OR EXISTS (SELECT 1 FROM organization_members buyer_member
       WHERE buyer_member.organization_id=COALESCE(i.buyer_organization_id, buyer_profile.owner_organization_id) AND buyer_member.user_id=? AND buyer_member.role IN ('owner','admin')))`;
     const [rows] = await this.database.execute(`SELECT i.id, i.seller_organization_id AS sellerOrganizationId, i.seller_billing_profile_id AS sellerBillingProfileId,
-      COALESCE(seller.name, seller_profile.legal_name) AS sellerOrganizationName, i.buyer_user_id AS buyerUserId, buyer.name AS buyerName,
-      i.buyer_organization_id AS buyerOrganizationId, i.booking_id AS bookingId, booking.venue_id AS venueId, i.invoice_number AS invoiceNumber,
+      COALESCE(seller.name, seller_profile.legal_name) AS sellerOrganizationName, i.buyer_user_id AS buyerUserId,
+      COALESCE(JSON_UNQUOTE(JSON_EXTRACT(i.buyer_snapshot_json, '$.legalName')), buyer_profile.legal_name, buyer.name) AS buyerName,
+      i.buyer_organization_id AS buyerOrganizationId, i.buyer_billing_profile_id AS buyerBillingProfileId, i.booking_id AS bookingId, booking.venue_id AS venueId, i.invoice_number AS invoiceNumber,
       i.context_type AS contextType, i.context_id AS contextId, i.status, i.delivery_status AS deliveryStatus, i.issue_date AS issueDate, i.due_date AS dueDate, i.currency,
       i.subtotal, i.tax_amount AS taxAmount, i.total_amount AS totalAmount, i.paid_at AS paidAt,
       e.id AS eventId, e.title AS eventTitle, i.created_at AS createdAt

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { ProductAccess, PUBLISH_EVENT, PUBLISH_ARTICLE, accessError, ownerKey, parseOwner } from './product-access.js';
 
 const providerId = (value) => typeof value === 'string' ? value : value?.id;
-export const safeReturnPath = (value) => /^\/profile\/(?:events|articles)(?:\/[1-9]\d*\/edit)?$/.test(value || '') ? value : '/profile/events';
+export const safeReturnPath = (value) => /^(?:\/profile\/(?:events|articles)(?:\/[1-9]\d*\/edit)?|\/account\/payments(?:\/plan)?)$/.test(value || '') ? value : '/profile/events';
 export const subscriptionFeature = (value = PUBLISH_EVENT) => {
   if (![PUBLISH_EVENT, PUBLISH_ARTICLE].includes(value)) throw accessError('INVALID_SUBSCRIPTION_FEATURE', 'Choose event publishing or article space.', 422);
   return value;
@@ -56,7 +56,11 @@ export class OrganizerSubscriptions {
   async subscriptions(owner, database = this.database, feature = null) {
     const [rows] = await database.execute(`SELECT s.id, s.status, s.current_period_start AS currentPeriodStart, s.current_period_end AS currentPeriodEnd,
       s.trial_end AS trialEnd, s.cancel_at_period_end AS cancelAtPeriodEnd, s.provider_subscription_id AS providerSubscriptionId,
-      p.code AS planCode, p.name AS planName FROM platform_subscriptions s JOIN platform_products p ON p.id=s.product_id
+      p.code AS planCode, p.name AS planName,
+      price.amount, price.currency, price.billing_interval AS billingInterval
+      FROM platform_subscriptions s JOIN platform_products p ON p.id=s.product_id
+      LEFT JOIN platform_prices price ON price.id=(SELECT checkout.price_id FROM subscription_checkouts checkout
+        WHERE checkout.subscription_id=s.provider_subscription_id ORDER BY checkout.created_at DESC LIMIT 1)
       WHERE ${owner.type === 'organization' ? 's.subscriber_organization_id=? AND s.subscriber_user_id IS NULL' : 's.subscriber_user_id=? AND s.subscriber_organization_id IS NULL'}${feature ? ' AND p.entitlement_feature=?' : ''} ORDER BY s.created_at DESC`, feature ? [owner.id, feature] : [owner.id]);
     return rows.map((row) => ({ ...row, cancelAtPeriodEnd: Boolean(row.cancelAtPeriodEnd) }));
   }
