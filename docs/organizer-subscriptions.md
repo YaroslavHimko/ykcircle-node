@@ -9,14 +9,32 @@ Database initialization applies additive schema changes: product configuration, 
 All three switches default to **off** in `product_configuration`. Administrators and managers can change them under **Profile menu → Configuration** (`/admin/configuration`). They are persisted in the database and checked per request, without a restart. The old `ENABLE_PAID_EVENTS` environment value is not an override for these product switches; its existing legal-readiness use remains separate.
 
 1. Deploy the API and frontend together, allowing database initialization to finish.
-2. Configure the platform Stripe secret key and signed snapshot webhook secret using the existing Stripe server configuration. Subscription Checkout uses the platform account; it never uses a seller's Connect account.
+2. Configure the platform Stripe secret key and the separate `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET` (or `runtime.stripe.subscriptionWebhookSecret` in `server/config.local.js`). Keep the existing ticket `webhookSecret` and onboarding `thinWebhookSecret`. Subscription Checkout uses the platform account; it never uses a seller's Connect account.
 3. Create a recurring Stripe Price and add its exact amount, currency, interval, and Price ID in Configuration. Monthly and annual prices may share a plan code. No amount or annual discount is selected automatically. Checkout validates the actual Stripe Price against the local configuration before charging.
 4. Enable Stripe Billing's customer portal for this platform account, including invoice access and payment-method management. Configure cancellation at period end. Configure permitted plan changes if desired.
-5. Deliver these **platform account** events to `/api/payment-webhooks/stripe`: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, and `invoice.payment_failed`. Keep the existing connected-account ticket webhook setup as well.
+5. Create a separate **Your account**, **Snapshot** destination for `/api/payment-webhooks/stripe/subscriptions` in the same Stripe sandbox/live environment as Checkout. Deliver `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, and `invoice.payment_failed`. Set `subscriptionWebhookSecret` to this destination's signing secret and restart the API. Keep the existing connected-account ticket webhook setup as well.
 6. Test a subscription, renewal, failed renewal, cancellation, and webhook replay using Stripe test mode. Then enable organizer subscriptions in Configuration when the commercial policy is ready.
 7. Enable paid events and/or paid venues separately. Paid tickets still require the existing seller profile and ready connected account. Free events never require Connect onboarding.
 
 Configuration changes do not cancel an existing Stripe subscription. Disabling subscription enforcement gives everyone publishing access; existing subscriptions must be managed separately. Disabling paid features rejects new paid events, ticket checkout (including resuming checkout through the app), positive venue rates, new paid booking requests, and approval of paid requests. Already-issued tickets, refunds, check-in, and previously confirmed venue billing obligations remain operable. A Checkout URL already opened at Stripe before disabling a feature cannot be recalled by an application switch; verified payments continue to be fulfilled.
+
+## Webhook destinations and activation troubleshooting
+
+Each destination verifies its own signing secret; there is no fallback to another destination's secret.
+
+| Purpose | API path | Server configuration | Environment variable |
+| --- | --- | --- | --- |
+| Connected-account ticket snapshots | `/api/payment-webhooks/stripe` | `runtime.stripe.webhookSecret` | `STRIPE_WEBHOOK_SECRET` |
+| Platform subscription snapshots (events and articles) | `/api/payment-webhooks/stripe/subscriptions` | `runtime.stripe.subscriptionWebhookSecret` | `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET` |
+| Accounts v2 thin events | `/api/payment-webhooks/stripe/thin` | `runtime.stripe.thinWebhookSecret` | `STRIPE_THIN_WEBHOOK_SECRET` |
+
+For the default deployment, the subscription URL is `https://api.ykcircle.com/api/payment-webhooks/stripe/subscriptions`. Add `subscriptionWebhookSecret` inside the existing `runtime.stripe` object in `server/config.local.js`, or set its environment variable on the API server. Environment variables take precedence over local configuration. Do not replace the ticket secret. Existing one-off platform-order handling also remains on its original endpoint.
+
+Deploy the API change before switching subscription deliveries to the new URL. Subscriptions are no longer reconciled on the ticket endpoint. A subscription event sent there is rejected before recording its event ID; retry it on the subscription endpoint. If an older deployment already recorded an event as ignored, resend a different subscription event from the same completed Checkout, such as `customer.subscription.created`, so reconciliation uses an unconsumed event ID.
+
+When Stripe shows an active subscription but the app says activation is pending, inspect the subscription destination's event deliveries. No delivery suggests the wrong account scope, event selection, or sandbox/live environment. `400 Invalid Stripe subscription webhook signature` means the signature could not be verified: check this destination's signing secret and that the server receives the original raw body. A `404` means the URL or deployed API needs checking. A `500` is retryable; inspect the API log beginning `Stripe subscription webhook processing failed:`.
+
+After correcting configuration and restarting the API, resend the existing subscription's `checkout.session.completed` event from Stripe and refresh the app. Do not purchase another subscription. No frontend change or database migration is required for this webhook separation. See [Stripe webhook setup and retries](https://docs.stripe.com/webhooks).
 
 ## Identity and capabilities
 

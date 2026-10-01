@@ -89,6 +89,26 @@ test('uses Maps values supplied by the deployment environment over local configu
   }
 });
 
+test('keeps webhook secrets separate and lets deployment values override local configuration', () => {
+  const names = ['STRIPE_WEBHOOK_SECRET', 'STRIPE_SUBSCRIPTION_WEBHOOK_SECRET', 'STRIPE_THIN_WEBHOOK_SECRET'];
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  for (const name of names) delete process.env[name];
+  try {
+    const local = { webhookSecret: 'whsec_local_tickets', subscriptionWebhookSecret: 'whsec_local_subscriptions', thinWebhookSecret: 'whsec_local_thin' };
+    const config = new Configuration(values({ stripe: local }));
+    for (const [field, value] of Object.entries(local)) assert.equal(config.runtime.stripe[field], value);
+    assert.equal(new Configuration(values({ stripe: { webhookSecret: local.webhookSecret } })).runtime.stripe.subscriptionWebhookSecret, null);
+    assert.equal(new Configuration({ ...values(), stripe: { subscriptionWebhookSecret: local.subscriptionWebhookSecret } }).runtime.stripe.subscriptionWebhookSecret, local.subscriptionWebhookSecret);
+    process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET = 'whsec_deployed_subscriptions';
+    const deployed = new Configuration(values({ stripe: local })).runtime.stripe;
+    assert.equal(deployed.subscriptionWebhookSecret, 'whsec_deployed_subscriptions');
+    assert.equal(deployed.webhookSecret, local.webhookSecret);
+    assert.equal(deployed.thinWebhookSecret, local.thinWebhookSecret);
+  } finally {
+    for (const [name, value] of Object.entries(previous)) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  }
+});
+
 test('publishes all public legal document metadata and handles unknown slugs', async () => {
   const index = legalDocumentIndex();
 

@@ -20,6 +20,7 @@ export class StripeConnectService {
     this.secretKey = stripe.secretKey || null;
     this.publishableKey = stripe.publishableKey || null;
     this.webhookSecret = stripe.webhookSecret || null;
+    this.subscriptionWebhookSecret = stripe.subscriptionWebhookSecret || null;
     this.thinWebhookSecret = stripe.thinWebhookSecret || null;
     this.applicationFeePercent = Number(stripe.applicationFeePercent || 0);
     // Placeholder: STRIPE_SECRET_KEY must be a sandbox sk_test_… key for testing.
@@ -150,5 +151,10 @@ export class StripeConnectService {
   verifyThinWebhook(rawBody, signature) {
     if (!this.thinWebhookSecret || !signature || !this.stripeClient) return null;
     try { return this.stripeClient.parseEventNotification(rawBody, signature, this.thinWebhookSecret); } catch { return null; }
+  }
+
+  verifySubscriptionWebhook(rawBody, signature) {
+    if (!this.subscriptionWebhookSecret || !signature) return null;
+    try { return Stripe.webhooks.constructEvent(rawBody, signature, this.subscriptionWebhookSecret); } catch { return null; }
   }
 }

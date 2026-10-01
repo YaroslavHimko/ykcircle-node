@@ -239,13 +239,18 @@ async function apiFixture(t) {
   Object.assign(f.queries,{initialize:async()=>{},findUserById:async id=>({id,role:id===99?'manager':'customer',isEmailConfirmed:true,sessionVersion:1}),richEvent:async()=>event,
     createRichEventSeries:async()=>({eventIds:[4],seriesId:null}),updateRichEventAndBooking:async()=>true,publishRichEvent:async()=>{event.status='Published';},updateEventStatus:async()=>{event.status='Published';return true;},recordLocationActivity:async()=>{},audit:async()=>{} });
   const ftp={publicPath:()=>'/uploads/test'};
-  const api=new Api({config:{site:{siteUrl:'https://ykcircle.test'},runtime:{authSecret:secret,stripe:{secretKey:'sk_test_fake',webhookSecret:'whsec_subs'}}},queries:f.queries,database:f.database,emailService:{},ftpService:ftp,eventFtpService:ftp,venueFtpService:ftp,groupFtpService:ftp,articleFtpService:ftp});
+  const api=new Api({config:{site:{siteUrl:'https://ykcircle.test'},runtime:{authSecret:secret,stripe:{secretKey:'sk_test_fake',webhookSecret:'whsec_tickets',subscriptionWebhookSecret:'whsec_subs',thinWebhookSecret:'whsec_thin'}}},queries:f.queries,database:f.database,emailService:{},ftpService:ftp,eventFtpService:ftp,venueFtpService:ftp,groupFtpService:ftp,articleFtpService:ftp});
   api.subscriptions.stripe.stripeClient=f.stripe.stripeClient;
   const app=express(); app.use('/api/payment-webhooks/stripe',express.raw({type:'application/json'})); api.registerPaymentWebhooks(app); app.use(express.json()); api.register(app);
   const server=app.listen(0); await new Promise(resolve=>server.once('listening',resolve)); t.after(()=>new Promise(resolve=>server.close(resolve)));
   const base=`http://127.0.0.1:${server.address().port}`;
   const request=async(path,body,method='POST',id=1)=>{const payload=Buffer.from(JSON.stringify({id,sessionVersion:1,exp:Date.now()+60000})).toString('base64url');const token=payload+'.'+crypto.createHmac('sha256',secret).update(payload).digest('base64url');return fetch(base+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});};
-  return {...f,event,request,base,api};
+  const postWebhook = (event, signingSecret = 'whsec_subs', path = '/api/payment-webhooks/stripe/subscriptions') => {
+    const body = JSON.stringify(event), time = Math.floor(Date.now()/1000);
+    const signature = `t=${time},v1=${crypto.createHmac('sha256',signingSecret).update(`${time}.${body}`).digest('hex')}`;
+    return fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json','stripe-signature':signature},body});
+  };
+  return {...f,event,request,base,api,postWebhook};
 }
 test('HTTP draft creation remains allowed; both publishing APIs enforce the subscription and redirect contract', async t=>{
   const f=await apiFixture(t);
@@ -273,6 +278,54 @@ test('HTTP subscription webhook signatures reject tampering and redirects never 
   const f=await apiFixture(t); await f.checkout(); f.state.session.status='complete';
   const body=JSON.stringify({id:'evt_signed',type:'checkout.session.completed',data:{object:{id:'cs_platform',subscription:'sub_organizer'}}});
   const time=Math.floor(Date.now()/1000), signature=`t=${time},v1=${crypto.createHmac('sha256','whsec_subs').update(`${time}.${body}`).digest('hex')}`;
-  let response=await fetch(f.base+'/api/payment-webhooks/stripe',{method:'POST',headers:{'Content-Type':'application/json','stripe-signature':signature},body:body+' '});assert.equal(response.status,400); assert.equal(f.state.entitlements.length,0);
-  response=await fetch(f.base+'/api/payment-webhooks/stripe',{method:'POST',headers:{'Content-Type':'application/json','stripe-signature':signature},body});assert.equal(response.status,200,await response.text()); assert.equal(f.state.entitlements.length,1);
+  let response=await fetch(f.base+'/api/payment-webhooks/stripe/subscriptions',{method:'POST',headers:{'Content-Type':'application/json','stripe-signature':signature},body:body+' '});assert.equal(response.status,400); assert.equal(f.state.entitlements.length,0);
+  response=await fetch(f.base+'/api/payment-webhooks/stripe/subscriptions',{method:'POST',headers:{'Content-Type':'application/json','stripe-signature':signature},body});assert.equal(response.status,200,await response.text()); assert.equal(f.state.entitlements.length,1);
+});
+
+test('HTTP subscription webhook rejects other secrets and account scopes without consuming the event', async t => {
+  const f = await apiFixture(t); await f.checkout(); f.state.session.status = 'complete';
+  const event = { id: 'evt_separate', type: 'checkout.session.completed', data: { object: { id: 'cs_platform', mode: 'subscription', subscription: 'sub_organizer' } } };
+  for (const secret of ['whsec_tickets', 'whsec_thin']) assert.equal((await f.postWebhook(event, secret)).status, 400);
+  assert.equal((await f.postWebhook(event, 'whsec_subs', '/api/payment-webhooks/stripe')).status, 400);
+  assert.equal((await f.postWebhook(event, 'whsec_tickets', '/api/payment-webhooks/stripe')).status, 400);
+  assert.equal((await f.postWebhook({ ...event, account: 'acct_seller' })).status, 400);
+  assert.equal(f.state.received.size, 0);
+  assert.equal(f.state.entitlements.length, 0);
+  for (let retry = 0; retry < 2; retry++) {
+    const response = await f.postWebhook(event);
+    assert.equal(response.status, 200, await response.text());
+  }
+  assert.equal(f.state.received.size, 1);
+  assert.equal(f.state.entitlements.length, 1);
+});
+
+test('HTTP subscription processing errors remain retryable through the new endpoint', async t => {
+  const f = await apiFixture(t); await f.checkout(); f.state.session.status = 'complete';
+  const event = { id: 'evt_retry_separate', type: 'customer.subscription.updated', data: { object: { id: 'sub_organizer' } } };
+  f.subscription.items.data[0].price.id = 'price_wrong';
+  assert.equal((await f.postWebhook(event)).status, 500);
+  assert.equal(f.state.received.size, 0);
+  assert.equal(f.state.entitlements.length, 0);
+  f.subscription.items.data[0].price.id = 'price_monthly';
+  assert.equal((await f.postWebhook(event)).status, 200);
+  assert.equal(f.state.entitlements.length, 1);
+});
+
+test('HTTP unrelated platform events do not fall through to ticket processing on the subscription endpoint', async t => {
+  const f = await apiFixture(t);
+  f.queries.processTicketProviderEvent = () => assert.fail('Subscription destination must not process ticket or one-off orders');
+  const response = await f.postWebhook({ id: 'evt_unrelated', type: 'payment_intent.succeeded', data: { object: { metadata: { platformOrderId: '9' } } } });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(f.state.received.size, 0);
+});
+
+test('HTTP existing one-off platform orders still use their original webhook', async t => {
+  const f = await apiFixture(t);
+  let processed;
+  f.queries.processTicketProviderEvent = async event => { processed = event; };
+  const event = { id: 'evt_platform_order', type: 'checkout.session.completed', data: { object: { metadata: { platformOrderId: '9' } } } };
+  const response = await f.postWebhook(event, 'whsec_tickets', '/api/payment-webhooks/stripe');
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(processed.providerEventId, event.id);
+  assert.equal(f.state.entitlements.length, 0);
 });

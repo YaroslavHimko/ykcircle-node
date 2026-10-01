@@ -17,6 +17,26 @@ test('verifies raw webhook bytes, timestamp tolerance and rotated signatures', (
   assert.equal(service.verifyWebhook(raw, 'invalid'), null);
 });
 
+test('ticket and subscription signatures use separate secrets without fallback', () => {
+  const secrets = { webhookSecret: 'whsec_tickets', subscriptionWebhookSecret: 'whsec_subscriptions', thinWebhookSecret: 'whsec_thin' };
+  const service = new StripeConnectService(secrets);
+  const event = { id: 'evt_subscription', type: 'customer.subscription.updated' };
+  const raw = JSON.stringify(event);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const sign = (secret, time = timestamp) => `t=${time},v1=${crypto.createHmac('sha256', secret).update(`${time}.${raw}`).digest('hex')}`;
+  for (const [name, secret] of Object.entries(secrets)) {
+    assert.deepEqual(service.verifyWebhook(raw, sign(secret)), name === 'webhookSecret' ? event : null);
+    assert.deepEqual(service.verifySubscriptionWebhook(raw, sign(secret)), name === 'subscriptionWebhookSecret' ? event : null);
+  }
+  assert.equal(service.verifySubscriptionWebhook(raw + ' ', sign(secrets.subscriptionWebhookSecret)), null);
+  assert.equal(service.verifySubscriptionWebhook(raw, sign(secrets.subscriptionWebhookSecret, timestamp - 600)), null);
+  assert.equal(service.verifySubscriptionWebhook(raw, undefined), null);
+  assert.equal(service.verifySubscriptionWebhook(raw, 'invalid'), null);
+  const ticketOnly = new StripeConnectService({ webhookSecret: secrets.webhookSecret });
+  assert.equal(ticketOnly.verifySubscriptionWebhook(raw, sign(secrets.webhookSecret)), null);
+  assert.equal(ticketOnly.verifySubscriptionWebhook(raw, sign(secrets.subscriptionWebhookSecret)), null);
+});
+
 test('official SDK sends itemized direct Checkout and v2 account creation to Stripe', async (t) => {
   const requests = [];
   const server = http.createServer(async (req, res) => {

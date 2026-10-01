@@ -78,6 +78,7 @@ const start = async () => {
   app.use(securityHeaders);
   app.use(cors({ origin: config.runtime.allowedOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], maxAge: 86400 }));
   app.post('/api/payment-webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }));
+  app.post('/api/payment-webhooks/stripe/subscriptions', express.raw({ type: 'application/json', limit: '1mb' }));
   app.post('/api/payment-webhooks/stripe/thin', express.raw({ type: 'application/json', limit: '1mb' }));
   api.registerPaymentWebhooks(app);
   app.use(express.json({ limit: '256kb' }));

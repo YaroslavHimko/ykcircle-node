@@ -6,7 +6,7 @@ Configuration includes `articlesPerMonth`, an integer from 0 to 1,000, defaultin
 
 ## Setup
 
-In Configuration, select **Article space** under Subscription plans and enter a recurring platform Stripe Price with its exact amount, currency and interval. Article subscriptions are available independently of the organizer-subscription switch. Existing Stripe customer, checkout, webhook, cancellation and invoice handling is reused. No price is supplied automatically; configure and test a Stripe plan before offering it to customers.
+In Configuration, select **Article space** under Subscription plans and enter a recurring platform Stripe Price with its exact amount, currency and interval. Article subscriptions are available independently of the organizer-subscription switch. Existing Stripe customer, checkout, webhook, cancellation and invoice handling is reused. Both article and event subscriptions use `/api/payment-webhooks/stripe/subscriptions` with `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET`, separate from ticket webhooks; see [webhook setup](organizer-subscriptions.md#webhook-destinations-and-activation-troubleshooting). No price is supplied automatically; configure and test a Stripe plan before offering it to customers.
 
 Deploy frontend and API together. Database initialization adds a feature field to subscription checkout attempts (existing attempts default to event publishing) and an `article_publications` ledger. Existing articles with publication timestamps seed that ledger without changing their visibility. Publication and ledger insertion share a transaction; a lock on the author serializes concurrent publishing attempts. These migrations still need staging verification with MySQL and Stripe test-mode lifecycle testing before live charging.
 

@@ -138,6 +138,7 @@ export default {
       secretKey: process.env.STRIPE_SECRET_KEY,
       publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
       webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+      subscriptionWebhookSecret: process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET,
     },
     minimumUserAge: Number(process.env.MINIMUM_USER_AGE || 18),
     paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true',

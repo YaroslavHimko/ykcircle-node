@@ -132,7 +132,7 @@ test('pending reservations prevent another buyer from overselling the last ticke
 test('HTTP checkout, signed webhook, and buyer order return complete the purchase flow', async (t) => {
   const f = fixture();
   const authSecret = 'test-session-secret-that-is-more-than-thirty-two-characters';
-  const config = { site: { siteUrl: 'https://ykcircle.test' }, runtime: { authSecret, stripe: { secretKey: 'sk_test_example', webhookSecret: 'whsec_test' } } };
+  const config = { site: { siteUrl: 'https://ykcircle.test' }, runtime: { authSecret, stripe: { secretKey: 'sk_test_example', webhookSecret: 'whsec_test', subscriptionWebhookSecret: 'whsec_subscriptions' } } };
   f.queries.findUserById = async (id) => ({ id, sessionVersion: 1, email: 'buyer@example.test', role: 'customer', isEmailConfirmed: true });
   f.queries.ticketCheckoutContext = async () => ({ title: 'Winter gathering', currency: 'SEK', provider: 'stripe', providerAccountId: 'acct_seller', seller: { legalName: 'Organizer' } });
   f.queries.createTicketOrder = async () => f.queries.ticketOrder(1);
@@ -161,6 +161,9 @@ test('HTTP checkout, signed webhook, and buyer order return complete the purchas
   const signature = crypto.createHmac('sha256', 'whsec_test').update(`${timestamp}.${webhook}`).digest('hex');
   const invalid = await fetch(base + '/api/payment-webhooks/stripe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Stripe-Signature': 'invalid' }, body: webhook });
   assert.equal(invalid.status, 400); assert.equal(f.emails.length, 0);
+  const subscriptionSignature = crypto.createHmac('sha256', 'whsec_subscriptions').update(`${timestamp}.${webhook}`).digest('hex');
+  const wrongSecret = await fetch(base + '/api/payment-webhooks/stripe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Stripe-Signature': `t=${timestamp},v1=${subscriptionSignature}` }, body: webhook });
+  assert.equal(wrongSecret.status, 400); assert.equal(f.emails.length, 0);
   for (let i = 0; i < 2; i++) {
     const result = await fetch(base + '/api/payment-webhooks/stripe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Stripe-Signature': `t=${timestamp},v1=${signature}` }, body: webhook });
     assert.equal(result.status, 200);

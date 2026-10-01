@@ -143,11 +143,14 @@ export default {
     },
     // Server-only keys. Ticket Checkout is created on the organizer's
     // connected account (a Stripe direct charge); never expose secretKey or
-    // webhookSecret to a browser.
+    // any webhook signing secret to a browser.
     stripe: {
       secretKey: process.env.STRIPE_SECRET_KEY,
       publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+      // Connected-account ticket snapshots: /api/payment-webhooks/stripe.
       webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+      // Platform subscription snapshots: /api/payment-webhooks/stripe/subscriptions.
+      subscriptionWebhookSecret: process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET,
       // Placeholder: the separate signing secret for Accounts v2 thin events.
       thinWebhookSecret: process.env.STRIPE_THIN_WEBHOOK_SECRET,
       applicationFeePercent: Number(process.env.STRIPE_APPLICATION_FEE_PERCENT || 0),
