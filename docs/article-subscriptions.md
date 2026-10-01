@@ -21,4 +21,6 @@ Deploy frontend and API together. Database initialization adds a feature field t
 - Checkout and portal requests accept the same `feature`. Checkout rejects organization owners for article space. Subscription lists, invoice lists, plan selection and duplicate-purchase checks are scoped by feature.
 - `PUT /api/admin/configuration` accepts `articlesPerMonth` alongside the existing switches, with staff authorization and audit logging.
 
-Subscriptions appear under Profile → My subscriptions → Article space. The article workspace shows remaining spaces and a subscription link. The staff customer list includes article subscriptions by plan name. Event publishing grants do not grant article access.
+Subscriptions appear under Profile → Your publishing plans → Article space. The article workspace shows remaining spaces and a subscription link. The staff customer list includes article subscriptions by plan name. Event publishing grants do not grant article access.
+
+Checkout presents three explicit steps: choose a plan, select or add billing details, and review the recurring price before continuing to Stripe. New billing details are selected immediately after saving. The same flow supports personal and organization event publishing when organizer subscriptions are enabled. After checkout, the confirmation screen links back to the saved draft; cancellation and provider failures leave a retry path.

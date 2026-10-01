@@ -20,6 +20,30 @@ test('creates stable, case-insensitive unsubscribe tokens', () => {
   assert.match(service.unsubscribeToken('person@example.test'), /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
 });
 
+test('optional invitation and group announcement emails respect each recipient preference', async () => {
+  for (const [method, column, args] of [
+    ['sendEventInvitation', 'event_invitations', ['person@example.test', 'Person', { id: 1, title: 'Meetup' }]],
+    ['sendGroupInvitation', 'group_invitations', ['person@example.test', 'Person', { name: 'Neighbours' }, 'token']],
+    ['sendGroupEventNotification', 'group_event_announcements', ['person@example.test', 'Person', { name: 'Neighbours' }, { id: 1, title: 'Meetup' }]],
+  ]) {
+    const service = makeService({ execute: async (sql, values) => {
+      assert.match(sql, new RegExp(`p\\.${column} AS enabled`));
+      assert.deepEqual(values, ['person@example.test']);
+      return [[{ enabled: 0 }]];
+    } });
+    service.invitationMailer = service.notificationMailer = { sendMail: async () => { assert.fail('Opted-out recipient must not receive mail'); } };
+    assert.equal((await service[method](...args)).suppressed, true);
+  }
+});
+
+test('optional email choices do not suppress account verification messages', async () => {
+  const service = makeService({ execute: async () => { assert.fail('Security mail must not check optional preferences'); } });
+  let sent = false;
+  service.mailer = { sendMail: async () => { sent = true; } };
+  await service.sendVerification('person@example.test', 'Person', 'token');
+  assert.equal(sent, true);
+});
+
 test('suppresses marketing mail for recipients without consent', async () => {
   const service = makeService({ execute: async () => [[]] });
 

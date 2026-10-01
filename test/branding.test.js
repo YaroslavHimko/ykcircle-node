@@ -31,6 +31,7 @@ test('logos accept bounded JPEGs and reject URLs, active content, oversized and 
 test('event emails feature the customer and attach the logo inline without changing the sender address', async () => {
   const messages = [];
   const service = new EmailService({ smtp: { host: 'smtp.test', verification: {}, invitation: {}, notification: {} }, domain: 'ykcircle.test', brandName: 'YKCircle', noReplyFrom: 'YKCircle <no-reply@ykcircle.test>', invitationFrom: 'invites@ykcircle.test', notificationFrom: 'updates@ykcircle.test', eventDetailsUrl: 'https://ykcircle.test/events', invitationResponseUrl: 'https://ykcircle.test/invitations' });
+  service.database = { execute: async () => [[]] };
   service.mailer = service.invitationMailer = service.notificationMailer = { sendMail: async message => { messages.push(message); return { accepted: [message.to], rejected: [] }; } };
   const event = { ...branding, id: 5, title: 'Studio gathering', startsAt: '2099-01-01T12:00:00Z', timezone: 'UTC', invitationToken: 'token' };
   await service.sendRegistrationConfirmation('guest@example.test', 'Guest', event);

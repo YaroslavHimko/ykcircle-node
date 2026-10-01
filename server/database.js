@@ -78,6 +78,14 @@ export class Database {
         INDEX user_legal_context_lookup (user_id, document_type, context_type, context_id, organization_id, accepted_at),
         CONSTRAINT user_legal_acceptance_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS user_email_preferences (
+        user_id INT UNSIGNED NOT NULL PRIMARY KEY,
+        event_invitations BOOLEAN NOT NULL DEFAULT TRUE,
+        group_invitations BOOLEAN NOT NULL DEFAULT TRUE,
+        group_event_announcements BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT email_preferences_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS marketing_email_preferences (
         email VARCHAR(255) NOT NULL PRIMARY KEY,
         marketing_opt_in BOOLEAN NOT NULL DEFAULT FALSE,

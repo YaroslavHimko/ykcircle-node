@@ -1,4 +1,5 @@
 import { ProductAccess } from './product-access.js';
+import { emailPreferences } from './email-preferences.js';
 ﻿import crypto from 'node:crypto';
 
 import { addDays, calculateAvailability, isDateOnly, localDateTimeToUtc } from './venue-availability.js';
@@ -2515,7 +2516,7 @@ export class Queries {
     const [reports] = await this.database.execute('SELECT reference, entity_type AS entityType, entity_id AS entityId, reason_code AS reasonCode, description, status, created_at AS createdAt FROM content_reports WHERE reporter_user_id = ?', [userId]);
     const [groupForumMessages] = await this.database.execute('SELECT id, thread_id AS threadId, body, created_at AS createdAt FROM group_forum_messages WHERE author_user_id = ?', [userId]);
     const [eventForumMessages] = await this.database.execute('SELECT id, thread_id AS threadId, body, created_at AS createdAt FROM event_forum_messages WHERE author_user_id = ?', [userId]);
-    return { generatedAt: new Date().toISOString(), user: user[0], legalAcceptances, marketingPreferences, eventRegistrations: registrations, groupMemberships: memberships, reports, forumMessages: { group: groupForumMessages, event: eventForumMessages } };
+    return { generatedAt: new Date().toISOString(), user: user[0], legalAcceptances, marketingPreferences, emailPreferences: await emailPreferences(this.database, userId), eventRegistrations: registrations, groupMemberships: memberships, reports, forumMessages: { group: groupForumMessages, event: eventForumMessages } };
   }
   async users() { const [rows] = await this.database.execute('SELECT id, name, email, phone, role, isEmailConfirmed, created_at AS createdAt FROM users ORDER BY created_at DESC'); return rows; }
   async updateUserRole(id, role, actorRole = 'admin') { const allowed = actorRole === 'admin' ? "role IN ('customer', 'organizer', 'venue_owner', 'manager', 'admin')" : "role = 'customer'"; const targetRole = actorRole === 'admin' ? role : 'organizer'; const [result] = await this.database.execute(`UPDATE users SET role = ? WHERE id = ? AND ${allowed}`, [targetRole, id]); return result.affectedRows > 0; }

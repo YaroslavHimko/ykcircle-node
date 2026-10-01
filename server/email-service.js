@@ -20,6 +20,8 @@ const brandEmailHtml = (html = '') => {
   return Object.entries(colors).reduce((result, [from, to]) => result.replaceAll(from, to), String(html)).replace(/#fff(?![0-9a-f])/gi, '#fffdfa');
 };
 
+import { optionalEmailAllowed } from './email-preferences.js';
+
 export class EmailService {
   constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, passwordResetUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
     this.domain = domain;
@@ -170,7 +172,8 @@ export class EmailService {
     return result;
   }
 
-  sendEventInvitation(email, name, event) {
+  async sendEventInvitation(email, name, event) {
+    if (!await optionalEmailAllowed(this.database, email, 'eventInvitations')) return { accepted: [], rejected: [], suppressed: true };
     const eventUrl = `${this.eventDetailsUrl.replace(/\/$/, '')}/${event.id}`;
     const acceptUrl = `${this.invitationResponseUrl}?token=${encodeURIComponent(event.invitationToken)}&action=accept`;
     const declineUrl = `${this.invitationResponseUrl}?token=${encodeURIComponent(event.invitationToken)}&action=decline`;
@@ -180,7 +183,8 @@ export class EmailService {
       html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>You are invited</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to <strong>${escapeHtml(event.title)}</strong>.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}</div><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Confirm invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p><p style="margin:20px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;vertical-align:middle;line-height:20px;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event and register</a></p>`) });
   }
 
-  sendGroupInvitation(email, name, group, token) {
+  async sendGroupInvitation(email, name, group, token) {
+    if (!await optionalEmailAllowed(this.database, email, 'groupInvitations')) return { accepted: [], rejected: [], suppressed: true };
     const responseUrl = `${this.groupInvitationUrl}?token=${encodeURIComponent(token)}`;
     const acceptUrl = `${responseUrl}&action=accept`;
     const declineUrl = `${responseUrl}&action=decline`;
@@ -189,7 +193,8 @@ export class EmailService {
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name || 'there')},</p><h1>You are invited to a private group</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to join <strong>${escapeHtml(group.name)}</strong>.</p><p style="font-size:14px;line-height:1.6;color:#526078">If you do not yet have an account, register with this email address before accepting the invitation.</p><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Accept invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p>`, 'Private group invitation') });
   }
 
-  sendGroupEventNotification(email, name, group, event) {
+  async sendGroupEventNotification(email, name, group, event) {
+    if (!await optionalEmailAllowed(this.database, email, 'groupEventAnnouncements')) return { accepted: [], rejected: [], suppressed: true };
     const eventUrl = `${this.eventDetailsUrl.replace(/\/$/, '')}/${event.eventId || event.id}`;
     const start = formatEventDate(event.startsAt, event.timezone);
     const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;

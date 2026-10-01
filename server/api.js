@@ -1,5 +1,6 @@
 import { OrganizerSubscriptions, registerSubscriptionRoutes } from './organizer-subscriptions.js';
 import { paymentsOverview } from './payments-overview.js';
+import { registerEmailPreferenceRoutes } from './email-preferences.js';
 import { accessError } from './product-access.js';
 import { ArticlePublishing } from './article-publishing.js';
 import { validateBranding } from './branding.js';
@@ -1818,6 +1819,7 @@ export class Api {
       } catch (error) { console.error('Login failed:', error.message); return res.status(500).json({ error: 'Unable to log in right now.' }); }
     });
     
+    registerEmailPreferenceRoutes(app, { authenticate, ensureTable, database: this.database });
     app.get('/api/auth/profile', authenticate, async (req, res) => {
       try {
         await ensureTable();
