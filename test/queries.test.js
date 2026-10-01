@@ -138,6 +138,7 @@ test('uses the default billing profile and prorates an hourly venue booking', as
     beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {},
     execute: async (sql, parameters = []) => {
       calls.push({ sql, parameters });
+      if (sql.includes('FROM product_configuration')) return [[{ settings: { paidVenuesEnabled: true } }]];
       if (sql.startsWith('SELECT starts_at AS startsAt')) return [[{ startsAt: '2026-10-10T10:00:00Z', endsAt: '2026-10-10T10:30:00Z' }]];
       if (sql.startsWith('SELECT id, timezone, price_from')) return [[{ id: 4, timezone: 'UTC', priceFrom: '1800.00', currency: 'SEK' }]];
       if (sql.startsWith('SELECT id, status FROM venue_bookings')) return [[]];
@@ -166,6 +167,7 @@ test('charges a daily venue once and records a daily booking', async () => {
     beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {},
     execute: async (sql, parameters = []) => {
       calls.push({ sql, parameters });
+      if (sql.includes('FROM product_configuration')) return [[{ settings: { paidVenuesEnabled: true } }]];
       if (sql.startsWith('SELECT starts_at AS startsAt')) return [[{ startsAt: '2026-10-10T00:00:00Z', endsAt: '2026-10-11T00:00:00Z' }]];
       if (sql.startsWith('SELECT id, timezone, price_from')) return [[{ id: 4, timezone: 'UTC', priceFrom: '1800.00', currency: 'SEK' }]];
       if (sql.startsWith('SELECT id, status FROM venue_bookings')) return [[]];

@@ -18,10 +18,12 @@ function fixture({ existingBooking = null, conflictAt = 0, profile = null, owner
     release: () => calls.push({ action: 'release' }),
     query: async (sql, parameters) => {
       calls.push({ sql, parameters });
+      if (sql.includes('FROM product_configuration')) return [[{ settings: { paidVenuesEnabled: true } }]];
       return [{ insertId: ++nextId, affectedRows: 1 }];
     },
     execute: async (sql, parameters) => {
       calls.push({ sql, parameters });
+      if (sql.includes('FROM product_configuration')) return [[{ settings: { paidVenuesEnabled: true } }]];
       if (sql.startsWith('SELECT manager_id AS managerId')) return [[{ managerId: owner }]];
       if (sql.startsWith('SELECT venue_id AS venueId') || sql.startsWith('SELECT id, status FROM venue_bookings')) return [existingBooking ? [existingBooking] : []];
       if (sql.startsWith('SELECT starts_at AS startsAt')) return [[{ startsAt: new Date('2026-10-10T10:00:00Z'), endsAt: new Date('2026-10-10T12:00:00Z') }]];
@@ -110,5 +112,5 @@ test('a paid request without buyer billing details cannot be confirmed', async (
   queries.venueBookingFinancialContext = async () => ({ venueId: 4 });
   queries.canManageVenueBilling = async () => true;
   assert.deepEqual(await queries.reviewVenueBooking(22, 15, 'venue_owner', 'confirmed'), { error: 'BUYER_PROFILE_INCOMPLETE' });
-  assert.deepEqual(calls, []);
+  assert.equal(calls.some(({ sql, action }) => action || /^(INSERT|UPDATE)/.test(sql || '')), false);
 });

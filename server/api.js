@@ -1,3 +1,5 @@
+import { OrganizerSubscriptions, registerSubscriptionRoutes } from './organizer-subscriptions.js';
+import { accessError } from './product-access.js';
 import { validateBranding } from './branding.js';
 ﻿ 
 import crypto from 'node:crypto';
@@ -54,6 +56,7 @@ export class Api {
     this.articleFtpService = articleFtpService;
     this.authSecret = config.runtime.authSecret;
     this.stripe = new StripeConnectService(config.runtime.stripe);
+    this.subscriptions = new OrganizerSubscriptions({ queries, stripe: this.stripe, siteUrl: config.site.siteUrl });
     this.ticketSales = new TicketSales({ queries, stripe: this.stripe, emailService, siteUrl: config.site.siteUrl });
   }
 
@@ -66,6 +69,7 @@ export class Api {
       if (!event) return res.status(400).json({ error: 'Invalid Stripe webhook signature.' });
       try {
         await this.queries.initialize();
+        if (await this.subscriptions.webhook(event)) return res.json({ received: true });
         const object = event.data?.object;
         if (object?.metadata?.ticketOrderId && event.type.startsWith('checkout.session.')) {
           if (!event.account) return res.status(400).json({ error: 'A connected-account event is required.' });
@@ -622,11 +626,32 @@ export class Api {
     const requireAdmin = (req, res, next) => req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required.' });
     // Any registered role can manage the events it owns.  Managers and admins
     // retain their broader access through the ownership checks in Queries.
+    const requirePlatformStaff = (req, res, next) => ['admin', 'manager'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Administrator or manager access required.' });
     const requireManager = (req, res, next) => ['customer', 'organizer', 'venue_owner', 'manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Event-management access required.' });
     // Events, like groups, can be created by any verified account.  The
     // database ownership checks on the individual operations ensure a user
     // can only administer events they created (unless they are a manager/admin).
     const requireVerifiedUser = (req, res, next) => req.user.isEmailConfirmed ? next() : res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Please verify your email address before creating an event.' });
+    registerSubscriptionRoutes(app, { service: this.subscriptions, authenticate, requireVerifiedUser, initialize: ensureTable });
+    // Reject paid-product writes server-side, including direct API clients.
+    app.use('/api', async (req, res, next) => {
+      if (!['POST','PUT','PATCH'].includes(req.method)) return next();
+      const path = req.path.replace(/\/+$/, '').toLowerCase(), body = req.body || {};
+      const eventWrite = /^\/(?:groups\/[^/]+\/)?events(?:\/[^/]+)?(?:\/drafts)?$/.test(path);
+      const ticketWrite = /^\/events\/[^/]+\/(?:payment-settings|ticket-types|ticket-checkout)$/.test(path);
+      const resumeCheckout = /^\/ticket-orders\/[^/]+\/checkout$/.test(path);
+      const venueWrite = /^\/venues(?:\/[^/]+)?(?:\/booking-settings)?$/.test(path);
+      try {
+        if (resumeCheckout || (eventWrite && (body.pricingType === 'paid' || Number(body.fee) > 0)) || (ticketWrite && (Number(body.price) > 0 || body.paymentsEnabled || body.ticketSalesEnabled || path.endsWith('/ticket-checkout')))) {
+          await ensureTable(); await this.subscriptions.access.requirePaidFeature('paidEventsEnabled');
+        }
+        if (venueWrite && ['priceFrom','hourlyRate','dailyRate'].some(key => Number(body[key]) > 0)) {
+          await ensureTable(); await this.subscriptions.access.requirePaidFeature('paidVenuesEnabled');
+        }
+        return next();
+      } catch (error) { return res.status(error.status || 503).json({ code: error.code, error: error.status ? error.message : 'Product configuration is unavailable.' }); }
+    });
+
     const requireRoleManager = (req, res, next) => ['manager', 'admin'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Manager access required.' });
     // Venue access is governed by organization membership and the ownership
     // checks in Queries.
@@ -1000,11 +1025,17 @@ export class Api {
         const validation = await validateRichEvent(req.body);
         if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors });
         const draft = richEventData({ ...req.body, groupId }, req.user.id, validation);
+        const organizationId = req.body.organizerOrganizationId;
+        if (organizationId != null && organizationId !== '') {
+          if (!Number.isSafeInteger(Number(organizationId)) || Number(organizationId) < 1) throw accessError('INVALID_OWNER', 'Choose a valid organizer.', 422);
+          await this.subscriptions.access.authorizeOwner({ type: 'organization', id: Number(organizationId) }, req.user.id);
+          draft.organizerOrganizationId = Number(organizationId);
+        }
         const series = await this.queries.createRichEventSeries(draft, { bookVenue: true, role: req.user.role, buyerBillingProfileId: req.body.buyerBillingProfileId });
         const event = await this.queries.richEvent(series.eventIds[0], req.user.id, req.user.role);
         const booking = draft.venueId && draft.startsAt && draft.endsAt ? await this.queries.eventVenueBooking(series.eventIds[0], req.user.id, req.user.role) : null;
         return res.status(201).json({ ...decorateEventImage(event, { userId: req.user.id, role: req.user.role }), venueBooking: booking, seriesId: series.seriesId, occurrenceIds: series.eventIds });
-      } catch (error) {
+      } catch (error) { if (error.status && error.code) return res.status(error.status).json({ code: error.code, error: error.message, owner: error.owner, subscribeUrl: error.subscribeUrl });
         if (bookingFailure(res, error)) return;
         console.error('Rich event creation failed:', error);
         return res.status(500).json({ error: 'Unable to create event draft.' });
@@ -1031,17 +1062,21 @@ export class Api {
         const validation = await validateRichEvent(req.body);
         if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event draft is invalid.', fields: validation.errors });
         const draft = richEventData(req.body, req.user.id, validation);
+        if ('organizerOrganizationId' in req.body) {
+          const existing = await this.queries.richEvent(req.params.id, req.user.id, req.user.role);
+          if (Number(existing?.organizerOrganizationId || 0) !== Number(req.body.organizerOrganizationId || 0)) throw accessError('ORGANIZER_IMMUTABLE', 'The organizing account cannot be changed after a draft is created.', 422);
+        }
         if (!await this.queries.updateRichEventAndBooking(req.params.id, req.user.id, req.user.role, draft, req.body.buyerBillingProfileId)) return res.status(404).json({ error: 'Event not found or not managed by you.' });
         const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role);
         const booking = draft.venueId ? await this.queries.eventVenueBooking(req.params.id, req.user.id, req.user.role) : null;
         return res.json({ ...decorateEventImage(event, { userId: req.user.id, role: req.user.role }), venueBooking: booking });
-      } catch (error) {
+      } catch (error) { if (error.status && error.code) return res.status(error.status).json({ code: error.code, error: error.message, owner: error.owner, subscribeUrl: error.subscribeUrl });
         if (bookingFailure(res, error)) return;
         console.error('Rich event update failed:', error.message);
         return res.status(500).json({ error: 'Unable to update event.' });
       }
     });
-    app.post('/api/events/:id/publish', authenticate, async (req, res) => { try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event) return res.status(404).json({ error: 'Event not found or not managed by you.' }); if ((event.venue?.id || event.venueId) && event.venueBookingStatus !== 'confirmed') return res.status(409).json({ code: 'VENUE_BOOKING_NOT_CONFIRMED', error: 'The venue owner must confirm the booking before this event can be published.' }); const validation = await validateRichEvent(event, { publishing: true }); if (!event.coverImage) validation.errors.coverImage = 'A cover image is required before publication.'; if (!event.categoryId || !event.typeId) validation.errors.taxonomy = 'Category and event type are required before publication.'; if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event cannot be published.', fields: validation.errors }); await this.queries.publishRichEvent(req.params.id, req.user.id, req.user.role); if (event.groupId && event.status !== 'Published') await notifyGroupEventMembers(req.params.id); return res.json(decorateEventImage(await this.queries.richEvent(req.params.id, req.user.id, req.user.role), { userId: req.user.id, role: req.user.role })); } catch (error) { console.error('Rich event publication failed:', error.message); return res.status(500).json({ error: 'Unable to publish event.' }); } });
+    app.post('/api/events/:id/publish', authenticate, async (req, res) => { try { await ensureTable(); const event = await this.queries.richEvent(req.params.id, req.user.id, req.user.role); if (!event) return res.status(404).json({ error: 'Event not found or not managed by you.' }); if ((event.venue?.id || event.venueId) && event.venueBookingStatus !== 'confirmed') return res.status(409).json({ code: 'VENUE_BOOKING_NOT_CONFIRMED', error: 'The venue owner must confirm the booking before this event can be published.' }); await this.subscriptions.access.requirePublication(req.params.id, req.user.id, req.user.role); const validation = await validateRichEvent(event, { publishing: true }); if (!event.coverImage) validation.errors.coverImage = 'A cover image is required before publication.'; if (!event.categoryId || !event.typeId) validation.errors.taxonomy = 'Category and event type are required before publication.'; if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event cannot be published.', fields: validation.errors }); await this.queries.publishRichEvent(req.params.id, req.user.id, req.user.role); if (event.groupId && event.status !== 'Published') await notifyGroupEventMembers(req.params.id); return res.json(decorateEventImage(await this.queries.richEvent(req.params.id, req.user.id, req.user.role), { userId: req.user.id, role: req.user.role })); } catch (error) { if (error.status && error.code) return res.status(error.status).json({ code: error.code, error: error.message, owner: error.owner, subscribeUrl: error.subscribeUrl }); console.error('Rich event publication failed:', error.message); return res.status(500).json({ error: 'Unable to publish event.' }); } });
     app.get('/api/events', optionalAuthenticate, async (req, res) => { const categorySlug = req.query.category == null ? null : String(req.query.category).trim().toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (req.query.category != null && !categorySlug) return res.status(422).json({ error: 'category must be a valid category slug.' }); try { await ensureTable(); const viewer = { userId: req.user?.id ?? null, role: req.user?.role ?? null }; return res.json(decorateEventImages(await this.queries.eventsForViewer(viewer.userId, viewer.role, { categorySlug }), viewer)); } catch (error) { console.error('Event lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load events.' }); } });
     app.get('/api/venue-types', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.venueTypes()); } catch (error) { console.error('Venue type lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue types.' }); } });
     app.get('/api/venue-event-types', async (_req, res) => { try { await ensureTable(); return res.json(await this.queries.venueEventTypes()); } catch (error) { console.error('Venue event-type lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venue event types.' }); } });
@@ -1337,19 +1372,19 @@ export class Api {
       try { await ensureTable(); return await this.queries.setPlatformBillingProfile(billingProfileId, req.user.id) ? res.status(204).end() : res.status(422).json({ error: 'The platform billing profile must be active.' }); }
       catch (error) { return res.status(500).json({ error: 'Unable to configure the platform billing profile.' }); }
     });
-    app.post('/api/admin/platform/products', authenticate, requireAdmin, async (req, res) => {
+    app.post('/api/admin/platform/products', authenticate, requirePlatformStaff, async (req, res) => {
       const product = { productType: String(req.body.productType || ''), code: String(req.body.code || '').trim().toLowerCase(), name: String(req.body.name || '').trim(), description: req.body.description == null ? null : String(req.body.description).trim() || null, entitlementFeature: req.body.entitlementFeature == null ? null : String(req.body.entitlementFeature).trim() || null, isActive: req.body.isActive !== false };
       if (!['subscription', 'event_fee', 'featured_listing', 'other'].includes(product.productType) || !/^[a-z0-9][a-z0-9_-]{1,99}$/.test(product.code) || !product.name || product.name.length > 255) return res.status(422).json({ error: 'Platform product is invalid.' });
       try { await ensureTable(); const result = await this.queries.savePlatformProduct(null, product, req.user.id); return res.status(201).json(result); }
       catch (error) { return res.status(500).json({ error: 'Unable to create platform product.' }); }
     });
-    app.put('/api/admin/platform/products/:id', authenticate, requireAdmin, async (req, res) => {
+    app.put('/api/admin/platform/products/:id', authenticate, requirePlatformStaff, async (req, res) => {
       const id = Number(req.params.id); const product = { productType: String(req.body.productType || ''), code: String(req.body.code || '').trim().toLowerCase(), name: String(req.body.name || '').trim(), description: req.body.description == null ? null : String(req.body.description).trim() || null, entitlementFeature: req.body.entitlementFeature == null ? null : String(req.body.entitlementFeature).trim() || null, isActive: req.body.isActive !== false };
       if (!Number.isInteger(id) || id < 1 || !['subscription', 'event_fee', 'featured_listing', 'other'].includes(product.productType) || !/^[a-z0-9][a-z0-9_-]{1,99}$/.test(product.code) || !product.name || product.name.length > 255) return res.status(422).json({ error: 'Platform product is invalid.' });
       try { await ensureTable(); const result = await this.queries.savePlatformProduct(id, product, req.user.id); return result ? res.json(result) : res.status(404).json({ error: 'Platform product not found.' }); }
       catch (error) { return res.status(500).json({ error: 'Unable to update platform product.' }); }
     });
-    app.post('/api/admin/platform/products/:id/prices', authenticate, requireAdmin, async (req, res) => {
+    app.post('/api/admin/platform/products/:id/prices', authenticate, requirePlatformStaff, async (req, res) => {
       const productId = Number(req.params.id); const price = { currency: String(req.body.currency || '').toUpperCase(), amount: Number(req.body.amount), billingInterval: req.body.billingInterval == null || req.body.billingInterval === '' ? null : String(req.body.billingInterval), providerPriceId: req.body.providerPriceId == null ? null : String(req.body.providerPriceId).trim() || null, isActive: req.body.isActive !== false };
       if (!Number.isInteger(productId) || productId < 1 || !/^[A-Z]{3}$/.test(price.currency) || !Number.isFinite(price.amount) || price.amount < 0 || ![null, 'month', 'year'].includes(price.billingInterval)) return res.status(422).json({ error: 'Platform price is invalid.' });
       try { await ensureTable(); const result = await this.queries.savePlatformPrice(productId, price, req.user.id); return result ? res.status(201).json(result) : res.status(404).json({ error: 'Platform product not found.' }); }
@@ -1365,7 +1400,7 @@ export class Api {
       const orderId = Number(req.params.id); const successUrl = typeof req.body.successUrl === 'string' ? req.body.successUrl : `${this.config.site.siteUrl}/billing/success`; const cancelUrl = typeof req.body.cancelUrl === 'string' ? req.body.cancelUrl : `${this.config.site.siteUrl}/billing`;
       if (!Number.isInteger(orderId) || orderId < 1 || !sameSiteUrl(successUrl) || !sameSiteUrl(cancelUrl)) return res.status(422).json({ error: 'Platform checkout is invalid.' });
       if (!this.stripe.configured()) return res.status(503).json({ code: 'PAYMENT_PROVIDER_UNAVAILABLE', error: 'Platform payments are not configured.' });
-      try { await ensureTable(); if (!await this.queries.platformBillingProfileReady()) return res.status(422).json({ code: 'PLATFORM_BILLING_INCOMPLETE', error: 'Platform billing is not configured yet.' }); const order = await this.queries.platformOrderForBuyer(orderId, req.user.id, req.user.role); if (!order) return res.status(404).json({ error: 'Platform order not found.' }); if (order.paymentStatus !== 'pending') return res.status(409).json({ error: 'This platform order is no longer payable.' }); const checkout = await this.stripe.createPlatformCheckout({ order, successUrl, cancelUrl }); await this.queries.attachPlatformProviderPayment(order.id, 'stripe', checkout.id); return res.status(201).json({ orderId: order.id, checkoutUrl: checkout.url, publishableKey: this.stripe.publishableKey }); }
+      try { await ensureTable(); if (!await this.queries.platformBillingProfileReady()) return res.status(422).json({ code: 'PLATFORM_BILLING_INCOMPLETE', error: 'Platform billing is not configured yet.' }); const order = await this.queries.platformOrderForBuyer(orderId, req.user.id, req.user.role); if (!order) return res.status(404).json({ error: 'Platform order not found.' }); if (order.product?.productType === 'subscription') return res.status(409).json({ code: 'USE_SUBSCRIPTION_CHECKOUT', error: 'Use the Subscribe page for subscriptions.' }); if (order.paymentStatus !== 'pending') return res.status(409).json({ error: 'This platform order is no longer payable.' }); const checkout = await this.stripe.createPlatformCheckout({ order, successUrl, cancelUrl }); await this.queries.attachPlatformProviderPayment(order.id, 'stripe', checkout.id); return res.status(201).json({ orderId: order.id, checkoutUrl: checkout.url, publishableKey: this.stripe.publishableKey }); }
       catch (error) { console.error('Stripe platform checkout creation failed:', error.message); return res.status(502).json({ error: 'Unable to start platform checkout.' }); }
     });
     app.get('/api/platform/subscriptions', authenticate, async (req, res) => { try { await ensureTable(); return res.json(await this.queries.platformSubscriptions(req.user.id, req.user.role)); } catch (error) { return res.status(500).json({ error: 'Unable to load subscriptions.' }); } });
@@ -1610,7 +1645,7 @@ export class Api {
         if (result.error === 'BILLING_PROFILE_UNAVAILABLE') return res.status(422).json({ code: result.error, error: 'This billing profile is no longer available to your account.' });
         if (result.error) return res.status(404).json({ error: 'Event or venue not found.' });
         return res.status(201).json(await this.queries.eventVenueBooking(eventId, req.user.id, req.user.role));
-      } catch (error) { console.error('Venue booking request failed:', error.message); return res.status(500).json({ error: 'Unable to request venue booking.' }); }
+      } catch (error) { if (error.status && error.code) return res.status(error.status).json({ code: error.code, error: error.message, owner: error.owner, subscribeUrl: error.subscribeUrl }); console.error('Venue booking request failed:', error.message); return res.status(500).json({ error: 'Unable to request venue booking.' }); }
     });
     app.get('/api/events/:id/venue-booking', authenticate, async (req, res) => {
       try { await ensureTable(); const booking = await this.queries.eventVenueBooking(req.params.id, req.user.id, req.user.role); return booking ? res.json(booking) : res.status(404).json({ error: 'Venue booking not found or not available to you.' }); }
@@ -1643,7 +1678,7 @@ export class Api {
       const validUrl = !externalInvoiceUrl || (() => { try { return new URL(externalInvoiceUrl).protocol === 'https:'; } catch { return false; } })();
       if (!Number.isInteger(bookingId) || bookingId < 1 || externalInvoiceNumber?.length > 120 || (externalInvoiceDate && !/^\d{4}-\d{2}-\d{2}$/.test(externalInvoiceDate)) || (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) || (amount !== null && (!Number.isFinite(amount) || amount < 0)) || (currency && !/^[A-Z]{3}$/.test(currency)) || !validUrl || externalInvoiceUrl?.length > 2048) return res.status(422).json({ error: 'External invoice details are invalid.' });
       try { await ensureTable(); const result = await this.queries.saveExternalInvoice(bookingId, req.user.id, req.user.role, { externalInvoiceNumber, externalInvoiceDate, amount, currency, dueDate, externalInvoiceUrl }); if (result?.error === 'INVALID_MODE') return res.status(409).json({ error: 'This Venue uses YKCircle-generated invoices.' }); if (result?.error) return res.status(403).json({ error: 'This booking is not managed by you.' }); return res.json(result); }
-      catch (error) { console.error('External invoice update failed:', error.message); return res.status(500).json({ error: 'Unable to save the external invoice.' }); }
+      catch (error) { if (error.status && error.code) return res.status(error.status).json({ code: error.code, error: error.message, owner: error.owner, subscribeUrl: error.subscribeUrl }); console.error('External invoice update failed:', error.message); return res.status(500).json({ error: 'Unable to save the external invoice.' }); }
     });
     app.post('/api/venue-bookings/:id/external-invoice/mark-paid', authenticate, requireVenueOwner, async (req, res) => {
       const bookingId = Number(req.params.id); if (!Number.isInteger(bookingId) || bookingId < 1 || req.body.confirmReceived !== true) return res.status(422).json({ error: 'Confirm that the Venue received this payment.' });
@@ -1681,7 +1716,7 @@ export class Api {
         }
         return res.json({ id: bookingId, status, ownerNote, invoiceId: result.invoiceId || null, externalInvoiceId: result.externalInvoiceId || null, invoiceMode: result.invoiceMode || null, invoiceGenerationStatus: warning ? 'failed' : 'succeeded', warning });
       }
-      catch (error) { console.error('Venue booking review failed:', error.message); return res.status(500).json({ error: 'Unable to review venue booking.' }); }
+      catch (error) { if (error.status && error.code) return res.status(error.status).json({ code: error.code, error: error.message, owner: error.owner, subscribeUrl: error.subscribeUrl }); console.error('Venue booking review failed:', error.message); return res.status(500).json({ error: 'Unable to review venue booking.' }); }
     });
     app.get('/api/venue-bookings/:id/messages', authenticate, async (req, res) => {
       const bookingId = Number(req.params.id); if (!Number.isInteger(bookingId) || bookingId < 1) return res.status(422).json({ error: 'A valid booking id is required.' });
@@ -1956,7 +1991,7 @@ export class Api {
     app.post('/api/events/:eventId/invitations/:invitationId/resend', authenticate, requireManager, async (req, res) => { try { await ensureTable(); const invitation = await this.queries.resendInvitation(req.params.eventId, req.params.invitationId, req.user.id); if (!invitation) return res.status(404).json({ error: 'Pending invitation not found or not managed by you.' }); await this.emailService.sendEventInvitation(invitation.email, invitation.name, invitation); return res.json({ message: 'Invitation resent.' }); } catch (error) { console.error('Invitation resend failed:', error.message); return res.status(500).json({ error: 'Unable to resend invitation.' }); } });
     app.get('/api/events/:id/invitations', authenticate, requireManager, async (req, res) => { try { await ensureTable(); return res.json(await this.queries.invitations(req.params.id, req.user.id)); } catch (error) { return res.status(500).json({ error: 'Unable to load event invitations.' }); } });
     app.patch('/api/events/:eventId/invitations/:invitationId/status', authenticate, requireManager, async (req, res) => { if (!isInvitationStatus(req.body.status)) return res.status(400).json({ error: 'Invalid invitation status.' }); try { await ensureTable(); if (!await this.queries.updateInvitationStatus(req.params.invitationId, req.params.eventId, req.user.id, req.body.status)) return res.status(404).json({ error: 'Invitation not found.' }); return res.json({ message: 'Invitation status updated.', status: req.body.status }); } catch (error) { return res.status(500).json({ error: 'Unable to update invitation status.' }); } });
-    app.patch('/api/events/:id/status', authenticate, requireManager, async (req, res) => { if (!isEventStatus(req.body.status)) return res.status(400).json({ error: 'Invalid event status.' }); try { await ensureTable(); const event = req.body.status === 'Published' ? await this.queries.richEvent(req.params.id, req.user.id, req.user.role) : null; if ((event?.venue?.id || event?.venueId) && event.venueBookingStatus !== 'confirmed') return res.status(409).json({ code: 'VENUE_BOOKING_NOT_CONFIRMED', error: 'The venue owner must confirm the booking before this event can be published.' }); if (!await this.queries.updateEventStatus(req.params.id, req.user.id, req.body.status, req.user.role)) return res.status(404).json({ error: 'Event not found or not managed by you.' }); if (event?.groupId && event.status !== 'Published') await notifyGroupEventMembers(req.params.id); return res.json({ message: 'Event status updated.', status: req.body.status }); } catch (error) { return res.status(500).json({ error: 'Unable to update event status.' }); } });
+    app.patch('/api/events/:id/status', authenticate, requireManager, async (req, res) => { if (!isEventStatus(req.body.status)) return res.status(400).json({ error: 'Invalid event status.' }); try { await ensureTable(); const event = req.body.status === 'Published' ? await this.queries.richEvent(req.params.id, req.user.id, req.user.role) : null; if ((event?.venue?.id || event?.venueId) && event.venueBookingStatus !== 'confirmed') return res.status(409).json({ code: 'VENUE_BOOKING_NOT_CONFIRMED', error: 'The venue owner must confirm the booking before this event can be published.' }); if (req.body.status === 'Published') { if (!event) return res.status(404).json({ error: 'Event not found.' }); await this.subscriptions.access.requirePublication(req.params.id, req.user.id, req.user.role); const validation = await validateRichEvent(event, { publishing: true }); if (!event.coverImage) validation.errors.coverImage = 'A cover image is required before publication.'; if (Object.keys(validation.errors).length) return res.status(422).json({ error: 'Event cannot be published.', fields: validation.errors }); } if (!await this.queries.updateEventStatus(req.params.id, req.user.id, req.body.status, req.user.role)) return res.status(404).json({ error: 'Event not found or not managed by you.' }); if (event?.groupId && event.status !== 'Published') await notifyGroupEventMembers(req.params.id); return res.json({ message: 'Event status updated.', status: req.body.status }); } catch (error) { if (error.status && error.code) return res.status(error.status).json({ code: error.code, error: error.message, owner: error.owner, subscribeUrl: error.subscribeUrl }); return res.status(500).json({ error: 'Unable to update event status.' }); } });
     app.post('/api/events/:id/registrations', authenticate, async (req, res) => { if (!['customer', 'organizer', 'venue_owner', 'manager', 'admin'].includes(req.user.role)) return res.status(403).json({ error: 'Your account is not permitted to register for events.' }); if (!req.user.isEmailConfirmed) return res.status(403).json({ code: 'EMAIL_NOT_VERIFIED', error: 'Please verify your email address before registering for an event.' }); try { await ensureTable(); if (!await this.queries.canAcceptPaidRegistrations(req.params.id)) return res.status(422).json({ code: 'PAYMENT_SETUP_REQUIRED', error: 'Complete payment setup before starting ticket sales.' }); const result = await this.queries.registerForEvent(req.params.id, req.user.id, req.user.email); if (result.error === 'EVENT_UNAVAILABLE') return res.status(409).json({ error: 'Event is not available for registration.' }); if (result.error === 'ALREADY_REGISTERED') return res.status(409).json({ error: 'You are already registered for this event.' }); const user = await this.queries.profile(req.user.id); try { await this.emailService.sendRegistrationConfirmation(user.email, user.name, result); } catch (emailError) { console.error('Registration confirmation email failed:', emailError.message); } try { await this.emailService.sendManagerRegistrationNotification(result.managerEmail, result.managerName, user.name, user.email, result.title, result.eventId, result.id); } catch (emailError) { console.error('Manager registration notification failed:', emailError.message); } return res.status(201).json({ id: result.id, status: 'Pending' }); } catch (error) { console.error('Event registration failed:', error.message); return res.status(500).json({ error: 'Unable to register for event.' }); } });
     app.get('/api/my/registrations', authenticate, async (req, res) => { try { await ensureTable(); return res.json(await this.queries.userRegistrations(req.user.id)); } catch (error) { return res.status(500).json({ error: 'Unable to load registrations.' }); } });
     app.patch('/api/events/:eventId/withdraw', authenticate, async (req, res) => { const eventId = Number(req.params.eventId); if (!Number.isInteger(eventId) || eventId < 1) return res.status(404).json({ error: 'Active registration not found.' }); try { await ensureTable(); const registration = await this.queries.findActiveRegistrationForUser(eventId, req.user.id); if (!registration || !await this.queries.markRegistrationWithdrawn(registration)) return res.status(404).json({ error: 'Active registration not found.' }); return res.json({ status: 'Withdrawn', registrationId: registration.id }); } catch (error) { console.error('Event withdrawal failed:', error.message); return res.status(500).json({ error: 'Unable to withdraw from this event.' }); } });

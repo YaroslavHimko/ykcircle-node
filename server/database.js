@@ -1,3 +1,4 @@
+import { initializeSubscriptionSchema } from './subscription-schema.js';
 import mysql from 'mysql2/promise';
 
 export class Database {
@@ -883,6 +884,7 @@ export class Database {
         CONSTRAINT platform_entitlements_org_fk FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE SET NULL,
         CONSTRAINT platform_entitlements_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE SET NULL
       )`);
+      await initializeSubscriptionSchema(this);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_ticket_types (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL, name VARCHAR(160) NOT NULL,
         description TEXT NULL, price DECIMAL(12,2) NOT NULL, currency CHAR(3) NOT NULL, quantity_available INT UNSIGNED NULL,

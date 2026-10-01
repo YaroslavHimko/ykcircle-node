@@ -1,3 +1,4 @@
+import { ProductAccess } from './product-access.js';
 ﻿import crypto from 'node:crypto';
 
 import { addDays, calculateAvailability, isDateOnly, localDateTimeToUtc } from './venue-availability.js';
@@ -173,6 +174,7 @@ export class Queries {
   async eventFee(eventId) { const [rows] = await this.database.execute('SELECT participation_fee AS fee FROM events WHERE id = ?', [eventId]); return Number(rows[0]?.fee || 0); }
   constructor(database) {
     this.database = database;
+    this.productAccess = new ProductAccess(database);
     const execute = database.execute.bind(database);
     const normalizeParams = (params) => Array.isArray(params) ? params.map((value) => {
       if (value === undefined || (typeof value === 'number' && Number.isNaN(value))) return null;
@@ -288,7 +290,7 @@ export class Queries {
   }
 
   async events(userId = null, includeUnpublished = false) { const statusFilter = includeUnpublished ? '' : " AND e.status = 'Published'"; const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.title, e.description, e.custom_formatted_address AS location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.participation_fee AS fee, e.status, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE 1 = 1${statusFilter} ORDER BY e.created_at DESC`, [userId]); return rows; }
-  async event(id) { const [rows] = await this.database.execute('SELECT e.id, e.manager_id AS managerId, e.title, e.brand_name AS brandName, e.logo_image AS logoImage, e.description, e.custom_formatted_address AS location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.participation_fee AS fee, e.status, e.created_at AS createdAt, u.name AS managerName FROM events e JOIN users u ON u.id = e.manager_id WHERE e.id = ?', [id]); return rows[0]; }
+  async event(id) { const [rows] = await this.database.execute('SELECT e.id, e.manager_id AS managerId, e.organizer_organization_id AS organizerOrganizationId, e.title, e.brand_name AS brandName, e.logo_image AS logoImage, e.description, e.custom_formatted_address AS location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.participation_fee AS fee, e.status, e.created_at AS createdAt, u.name AS managerName FROM events e JOIN users u ON u.id = e.manager_id WHERE e.id = ?', [id]); return rows[0]; }
   async eventParticipants(eventId, canSeeContact = false) { await this.database.execute("UPDATE event_participants p JOIN events e ON e.id = p.event_id SET p.payment_status = CASE WHEN e.participation_fee > 0 THEN 'Payment Required' ELSE 'Not Required' END WHERE p.event_id = ? AND (p.payment_status <> 'Paid' OR p.payment_status IS NULL)", [eventId]); const [rows] = await this.database.execute(`SELECT p.id, p.user_id AS userId, COALESCE(u.name, p.participant_name) AS name, u.profile_picture AS profilePicture, CASE WHEN ${canSeeContact ? 'TRUE' : 'FALSE'} THEN COALESCE(p.participant_email, u.email) ELSE NULL END AS email, CASE WHEN ${canSeeContact ? 'TRUE' : 'FALSE'} THEN COALESCE(p.participant_phone, u.phone) ELSE NULL END AS phone, p.status, CASE WHEN ${canSeeContact ? 'TRUE' : 'FALSE'} THEN p.payment_status ELSE NULL END AS paymentStatus, p.joined_at AS joinedAt FROM event_participants p LEFT JOIN users u ON u.id = p.user_id WHERE p.event_id = ? ORDER BY p.joined_at DESC`, [eventId]); return rows; }
   async eventRatingSummary(eventId, userId = null) { const [rows] = await this.database.execute(`SELECT e.id AS eventId, ROUND(AVG(r.rating), 2) AS ratingAverage, COUNT(r.rating) AS ratingCount,
     MAX(CASE WHEN r.user_id = ? THEN r.rating END) AS myRating
@@ -502,6 +504,7 @@ export class Queries {
        venue_id, custom_address_line_1, custom_address_line_2, custom_postal_code, custom_locality, custom_municipality, custom_region,
        custom_country, custom_country_code, custom_latitude, custom_longitude, custom_google_place_id, custom_formatted_address, online_url, online_platform, status)
       VALUES (${placeholders}, 'Draft')`, values);
+    if (data.organizerOrganizationId) await connection.execute('UPDATE events SET organizer_organization_id=? WHERE id=?', [data.organizerOrganizationId, result.insertId]);
     return result.insertId;
   }
   recurringDate(date, frequency, interval) {
@@ -662,7 +665,7 @@ export class Queries {
   }
   async richEvent(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.query(`SELECT e.id, e.manager_id AS managerId, e.title, e.brand_name AS brandName, e.logo_image AS logoImage, e.short_description AS shortDescription, e.description, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl,
+    const [rows] = await this.database.query(`SELECT e.id, e.manager_id AS managerId, e.organizer_organization_id AS organizerOrganizationId, e.title, e.brand_name AS brandName, e.logo_image AS logoImage, e.short_description AS shortDescription, e.description, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl,
       e.category_id AS categoryId, c.name AS categoryName, e.type_id AS typeId, t.name AS typeName,
       e.location_type AS locationType, e.location_visibility AS locationVisibility, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone,
       e.cancellation_policy AS cancellationPolicy,
@@ -1245,15 +1248,6 @@ export class Queries {
         await connection.execute(`UPDATE payment_provider_events SET processed_at=NOW() WHERE provider=? AND provider_event_id=?`, [provider, providerEventId]);
         await connection.commit(); return { paymentAccount: object.id, processed: true };
       }
-      if (eventType.startsWith('customer.subscription.') && object.id) {
-        const status = object.status === 'canceled' ? 'cancelled' : object.status === 'incomplete_expired' ? 'expired' : ['active', 'past_due', 'cancelled', 'expired'].includes(object.status) ? object.status : object.cancel_at_period_end ? 'active' : 'pending';
-        await connection.execute(`UPDATE platform_subscriptions SET status=?, current_period_start=FROM_UNIXTIME(?), current_period_end=FROM_UNIXTIME(?),
-          cancel_at_period_end=? WHERE provider=? AND provider_subscription_id=?`, [status, object.current_period_start || null, object.current_period_end || null, Boolean(object.cancel_at_period_end), provider, object.id]);
-        if (status === 'past_due' || status === 'cancelled' || status === 'expired') await connection.execute(`UPDATE platform_entitlements entitlement JOIN platform_subscriptions subscription ON subscription.id=entitlement.source_id
-          SET entitlement.revoked_at=COALESCE(entitlement.revoked_at, NOW()) WHERE entitlement.source_type='platform_subscription' AND subscription.provider=? AND subscription.provider_subscription_id=?`, [provider, object.id]);
-        await connection.execute(`UPDATE payment_provider_events SET processed_at=NOW() WHERE provider=? AND provider_event_id=?`, [provider, providerEventId]);
-        await connection.commit(); return { subscription: object.id, processed: true };
-      }
       const orderId = Number(metadata.ticketOrderId || metadata.ticket_order_id || 0);
       const platformOrderId = Number(metadata.platformOrderId || metadata.platform_order_id || 0);
       if (platformOrderId) {
@@ -1285,7 +1279,9 @@ export class Queries {
       currency, subtotal, tax_amount AS taxAmount, total_amount AS totalAmount, payment_status AS paymentStatus, invoice_id AS invoiceId,
       product_snapshot_json AS productSnapshot FROM platform_orders WHERE id=? FOR UPDATE`, [platformOrderId]);
     const order = orders[0]; if (!order) return { ignored: true, error: 'Platform order not found' };
-    const product = jsonValue(order.productSnapshot) || {}; const paymentId = object.payment_intent || object.id || null;
+    const product = jsonValue(order.productSnapshot) || {};
+    if (product.productType === 'subscription') return { ignored: true, error: 'Subscription reconciliation requires the organizer subscription service' };
+    const paymentId = object.payment_intent || object.id || null;
     const paid = ['checkout.session.completed', 'invoice.paid', 'payment_intent.succeeded'].includes(eventType) && (eventType !== 'checkout.session.completed' || object.payment_status === 'paid' || product.productType === 'subscription');
     if (paid && order.paymentStatus === 'pending') {
       await connection.execute(`UPDATE platform_orders SET payment_status='paid', provider=?, provider_payment_id=? WHERE id=?`, [provider, paymentId, order.id]);
@@ -1294,13 +1290,7 @@ export class Queries {
       if (!updatedPayment.affectedRows) await connection.execute(`INSERT INTO platform_payments (order_id, provider, provider_payment_id, provider_invoice_id, amount, currency, status, paid_at)
         VALUES (?, ?, ?, ?, ?, ?, 'succeeded', NOW())`, [order.id, provider, paymentId, object.invoice || null, order.totalAmount, order.currency]);
       const invoiceId = await this.issuePlatformOrderInvoice(connection, order);
-      let sourceType = 'platform_order'; let sourceId = order.id;
-      if (product.productType === 'subscription') {
-        const providerSubscriptionId = object.subscription || null;
-        const [subscription] = await connection.execute(`INSERT INTO platform_subscriptions (subscriber_user_id, subscriber_organization_id, buyer_billing_profile_id, product_id, buyer_capacity, status, provider, provider_customer_id, provider_subscription_id)
-          VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), status='active', buyer_billing_profile_id=VALUES(buyer_billing_profile_id)`, [order.buyerUserId, order.buyerOrganizationId, order.buyerBillingProfileId, order.productId, order.buyerCapacity, provider, object.customer || null, providerSubscriptionId]);
-        sourceType = 'platform_subscription'; sourceId = subscription.insertId;
-      }
+      const sourceType = 'platform_order'; const sourceId = order.id;
       if (product.entitlementFeature) await connection.execute(`INSERT INTO platform_entitlements (user_id, organization_id, event_id, feature, source_type, source_id)
         SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM platform_entitlements WHERE source_type=? AND source_id=? AND feature=? AND revoked_at IS NULL)`, [order.buyerUserId, order.buyerOrganizationId, order.eventId, product.entitlementFeature, sourceType, sourceId, sourceType, sourceId, product.entitlementFeature]);
       return { platformOrderId: order.id, invoiceId, processed: true };
@@ -1357,7 +1347,7 @@ export class Queries {
     const [rows] = await this.database.execute(`SELECT product.id, product.product_type AS productType, product.code, product.name,
       product.entitlement_feature AS entitlementFeature, price.id AS priceId, price.currency, price.amount, price.billing_interval AS billingInterval
       FROM platform_products product JOIN platform_prices price ON price.product_id=product.id WHERE product.id=? AND price.id=? AND product.is_active=TRUE AND price.is_active=TRUE`, [request.productId, request.priceId]);
-    const product = rows[0]; if (!product) return { error: 'PRODUCT_UNAVAILABLE' };
+    const product = rows[0]; if (!product || product.productType === 'subscription') return { error: 'PRODUCT_UNAVAILABLE' };
     if (request.eventId && product.productType !== 'event_fee') return { error: 'INVALID_PRODUCT_CONTEXT' };
     if (request.eventId) {
       const [events] = await this.database.execute(`SELECT id FROM events WHERE id=?${['manager', 'admin'].includes(role) ? '' : ' AND manager_id=?'}`, ['manager', 'admin'].includes(role) ? [request.eventId] : [request.eventId, userId]);
@@ -1425,7 +1415,7 @@ export class Queries {
   }
   async hasPlatformEntitlement({ userId, organizationId = null, feature, eventId = null }) {
     const [rows] = await this.database.execute(`SELECT id FROM platform_entitlements WHERE feature=? AND revoked_at IS NULL AND starts_at<=NOW()
-      AND (ends_at IS NULL OR ends_at>NOW()) AND (user_id=? OR (? IS NOT NULL AND organization_id=?) OR (? IS NOT NULL AND event_id=?)) LIMIT 1`, [feature, userId, organizationId, organizationId, eventId, eventId]);
+      AND (ends_at IS NULL OR ends_at>NOW()) AND (event_id IS NULL OR event_id=?) AND ((? IS NULL AND user_id=? AND organization_id IS NULL) OR (? IS NOT NULL AND organization_id=? AND user_id IS NULL)) LIMIT 1`, [feature, eventId, organizationId, userId, organizationId, organizationId]);
     return Boolean(rows[0]);
   }
   billingProfileCompleteness(profile, context) {
@@ -2057,6 +2047,7 @@ export class Queries {
     const rate = Number.isFinite(Number(configuredRate)) && Number(configuredRate) >= 0 ? Number(configuredRate) : 0;
     const subtotal = bookingType === 'daily' ? rate : Math.round((rate * durationMinutes / 60) * 100) / 100;
     const paidBooking = subtotal > 0;
+    if (paidBooking) await this.productAccess.requirePaidFeature('paidVenuesEnabled', connection);
     let buyerProfileId = null;
     if (paidBooking) {
       let profileId = Number(buyerBillingProfileId);
@@ -2194,6 +2185,7 @@ export class Queries {
       const taxAmount = Math.round(subtotal * taxRate) / 100;
       const totalAmount = Math.round((subtotal + taxAmount) * 100) / 100;
       if (status === 'confirmed' && totalAmount > 0) {
+        await this.productAccess.requirePaidFeature('paidVenuesEnabled', connection);
         const sellerComplete = booking.sellerBillingProfileId && booking.sellerLegalName && booking.sellerAddressLine1 && booking.sellerPostalCode && booking.sellerCity && booking.sellerCountry && booking.sellerBillingEmail;
         if (!sellerComplete) { await connection.rollback(); return { error: 'SELLER_PROFILE_INCOMPLETE' }; }
         const [buyers] = await connection.execute(`SELECT id, profile_type AS profileType, legal_name AS legalName, organization_number AS organizationNumber,
@@ -2378,6 +2370,7 @@ export class Queries {
       const booking = bookings[0];
       if (!booking) { await connection.rollback(); return { error: 'FORBIDDEN' }; }
       if (booking.invoiceMode !== 'external') { await connection.rollback(); return { error: 'INVALID_MODE' }; }
+      if (Number(data.amount ?? booking.totalAmount) > Number(booking.totalAmount)) await this.productAccess.requirePaidFeature('paidVenuesEnabled', connection);
       await connection.execute(`INSERT INTO booking_external_invoices
         (booking_id, external_invoice_number, external_invoice_date, amount, currency, due_date, external_invoice_url, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'issued') ON DUPLICATE KEY UPDATE external_invoice_number=VALUES(external_invoice_number),
@@ -2414,6 +2407,7 @@ export class Queries {
       billingReadiness = await this.getVenueBookingBillingReadiness(bookingId);
       if (!billingReadiness) return false;
       if (billingReadiness.isInvoiceRequired) {
+        await this.productAccess.requirePaidFeature('paidVenuesEnabled');
         const context = await this.venueBookingFinancialContext(bookingId);
         if (!context || !await this.canManageVenueBilling(context.venueId, userId, role)) return { error: 'BILLING_PERMISSION_REQUIRED' };
       }

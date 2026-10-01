@@ -122,15 +122,15 @@ export class StripeConnectService {
 
   async createPlatformCheckout({ order, successUrl, cancelUrl }) {
     const product = order.product || {};
-    const recurring = product.productType === 'subscription' && order.providerPriceId ? { price: order.providerPriceId, quantity: 1 } : {
+    if (product.productType === 'subscription') throw new Error('Use organizer subscription checkout for recurring plans.');
+    const item = {
       price_data: { currency: order.currency.toLowerCase(), product_data: { name: product.name || 'YKCircle service' }, unit_amount: Math.round(Number(order.totalAmount) * 100) }, quantity: 1,
     };
     return this.request('/checkout/sessions', {
-      mode: product.productType === 'subscription' && order.providerPriceId ? 'subscription' : 'payment', success_url: successUrl, cancel_url: cancelUrl,
+      mode: 'payment', success_url: successUrl, cancel_url: cancelUrl,
       client_reference_id: String(order.id), metadata: { platformOrderId: String(order.id) },
-      payment_intent_data: product.productType === 'subscription' && order.providerPriceId ? undefined : { metadata: { platformOrderId: String(order.id) } },
-      subscription_data: product.productType === 'subscription' && order.providerPriceId ? { metadata: { platformOrderId: String(order.id) } } : undefined,
-      line_items: { 0: recurring },
+      payment_intent_data: { metadata: { platformOrderId: String(order.id) } },
+      line_items: { 0: item },
     }, null, `platform-checkout-${order.id}`);
   }
 

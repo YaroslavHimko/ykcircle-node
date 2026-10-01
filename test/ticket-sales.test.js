@@ -13,6 +13,7 @@ function fixture() {
   const state = { order, tickets: [], sold: 0, registrations: 0, job: false, sent: false, attempts: 0, retry: false, locked: false };
   let transactionQueue = Promise.resolve();
   const execute = async (sql, params = []) => {
+    if (sql.includes('FROM product_configuration')) return [[{ settings: { paidEventsEnabled: true } }]];
     if (sql.includes('SELECT o.*')) return [[{ ...state.order }]];
     if (sql.includes('SELECT o.id, o.event_id')) return [[{ id: 1, eventId: 2, attendeeUserId: 3, checkoutSessionId: order.checkout_session_id, providerAccountId: order.providerAccountId }]];
     if (sql.includes("SET payment_status='paid'")) { state.order.payment_status = 'paid'; return [{ affectedRows: 1 }]; }
