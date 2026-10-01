@@ -1,5 +1,6 @@
 export const PUBLISH_EVENT = 'organizer.publish_event';
-export const PRODUCT_DEFAULTS = Object.freeze({ subscriptionsEnabled: false, paidEventsEnabled: false, paidVenuesEnabled: false });
+export const PUBLISH_ARTICLE = 'author.publish_article';
+export const PRODUCT_DEFAULTS = Object.freeze({ subscriptionsEnabled: false, paidEventsEnabled: false, paidVenuesEnabled: false, articlesPerMonth: 1 });
 export const accessError = (code, message, status = 403, details = {}) => Object.assign(new Error(message), { code, status, ...details });
 export const ownerKey = (owner) => `${owner.type}:${owner.id}`;
 export const parseOwner = (value, userId) => {
@@ -16,7 +17,7 @@ export class ProductAccess {
     return { ...PRODUCT_DEFAULTS, ...settings };
   }
   async configure(settings, actorId) {
-    if (Object.keys(settings).some((key) => !(key in PRODUCT_DEFAULTS)) || Object.values(settings).some((value) => typeof value !== 'boolean')) throw accessError('INVALID_CONFIGURATION', 'Configuration switches must be booleans.', 422);
+    if (Object.entries(settings).some(([key, value]) => !(key in PRODUCT_DEFAULTS) || (key === 'articlesPerMonth' ? !Number.isInteger(value) || value < 0 || value > 1000 : typeof value !== 'boolean'))) throw accessError('INVALID_CONFIGURATION', 'Use boolean switches and a monthly article limit between 0 and 1,000.', 422);
     const connection = await this.database.getConnection();
     try {
       await connection.beginTransaction();
@@ -49,6 +50,25 @@ export class ProductAccess {
   }
   async requirePaidFeature(feature, database = this.database) {
     if (!(await this.configuration(database))[feature]) throw accessError(feature === 'paidEventsEnabled' ? 'PAID_EVENTS_DISABLED' : 'PAID_VENUES_DISABLED', feature === 'paidEventsEnabled' ? 'Paid events are currently disabled.' : 'Paid venue bookings are currently disabled.');
+  }
+  async articleAccess(userId, database = this.database) {
+    const configuration = await this.configuration(database);
+    const [entitlements] = await database.execute(`SELECT e.id, e.feature, e.source_type AS source, e.ends_at AS endsAt
+      FROM platform_entitlements e JOIN platform_subscriptions s ON s.id=e.source_id
+      WHERE e.user_id=? AND e.organization_id IS NULL AND e.event_id IS NULL AND e.feature=?
+      AND e.source_type='subscription' AND e.revoked_at IS NULL AND e.starts_at<=UTC_TIMESTAMP()
+      AND e.ends_at>UTC_TIMESTAMP() AND s.subscriber_user_id=e.user_id AND s.subscriber_organization_id IS NULL
+      AND s.status='active' AND s.current_period_end>UTC_TIMESTAMP()`, [userId, PUBLISH_ARTICLE]);
+    const [usage] = await database.execute(`SELECT COUNT(*) AS used,
+      DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH) AS resetsAt
+      FROM article_publications WHERE user_id=? AND published_at>=DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
+      AND published_at<DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)`, [userId]);
+    const monthlyLimit = Number(configuration.articlesPerMonth);
+    const used = Number(usage[0]?.used || 0);
+    const remaining = Math.max(0, monthlyLimit - used);
+    return { owner: { type: 'user', id: userId }, subscriptionsEnabled: true, hasSubscription: entitlements.length > 0,
+      canPublish: entitlements.length > 0 && remaining > 0, accessSource: entitlements.length ? 'subscription' : null,
+      monthlyLimit, used, remaining, resetsAt: usage[0]?.resetsAt || null, entitlements };
   }
   async requirePublication(eventId, actorId, role) {
     // The stored organizing identity, never the acting administrator or seller, owns publishing access.

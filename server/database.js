@@ -52,14 +52,6 @@ export class Database {
         INDEX password_reset_tokens_expiry_index (expires_at),
         CONSTRAINT password_reset_tokens_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
-      await this.pool.execute(`CREATE TABLE IF NOT EXISTS contact_submissions (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, user_id INT UNSIGNED NULL,
-        name VARCHAR(160) NOT NULL, email VARCHAR(255) NOT NULL, contact VARCHAR(120) NULL,
-        activity VARCHAR(80) NOT NULL, additional_information TEXT NULL,
-        status ENUM('New', 'Approved', 'Contact Again', 'Ordered', 'Declined') NOT NULL DEFAULT 'New',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (email),
-        CONSTRAINT contact_submissions_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-      )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS legal_document_versions (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         document_type VARCHAR(64) NOT NULL,
@@ -208,7 +200,7 @@ export class Database {
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS events (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, manager_id INT UNSIGNED NOT NULL,
         group_id INT UNSIGNED NULL, series_id INT UNSIGNED NULL, recurrence_frequency ENUM('none','daily','weekly','monthly') NOT NULL DEFAULT 'none', recurrence_interval SMALLINT UNSIGNED NOT NULL DEFAULT 1, recurrence_count SMALLINT UNSIGNED NOT NULL DEFAULT 1, occurrence_number SMALLINT UNSIGNED NOT NULL DEFAULT 1,
-        title VARCHAR(200) NOT NULL, brand_name VARCHAR(160) NULL, logo_image MEDIUMTEXT NULL, short_description VARCHAR(240) NULL, description TEXT NULL, cover_image VARCHAR(1024) NULL, category_id INT UNSIGNED NULL, type_id INT UNSIGNED NULL,
+        title VARCHAR(200) NOT NULL, brand_name VARCHAR(160) NULL, logo_image MEDIUMTEXT NULL, short_description VARCHAR(240) NULL, description TEXT NULL, food_options JSON NULL, cover_image VARCHAR(1024) NULL, category_id INT UNSIGNED NULL, type_id INT UNSIGNED NULL,
         location_type ENUM('venue','custom','online') NOT NULL DEFAULT 'custom', location_visibility ENUM('public','registered','attendees_only','approximate') NOT NULL DEFAULT 'public',
         venue_id INT UNSIGNED NULL,
         custom_address_line_1 VARCHAR(255) NULL, custom_address_line_2 VARCHAR(255) NULL, custom_postal_code VARCHAR(32) NULL, custom_locality VARCHAR(120) NULL, custom_municipality VARCHAR(120) NULL, custom_region VARCHAR(120) NULL, custom_country VARCHAR(120) NULL, custom_country_code CHAR(2) NULL, custom_latitude DECIMAL(9,6) NULL, custom_longitude DECIMAL(9,6) NULL, custom_google_place_id VARCHAR(255) NULL, custom_formatted_address VARCHAR(500) NULL,
@@ -233,15 +225,6 @@ export class Database {
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (assigned_by_user_id) REFERENCES users(id) ON DELETE SET NULL
       )`);
-      await this.pool.execute(`CREATE TABLE IF NOT EXISTS application_activities (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(80) NOT NULL UNIQUE,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        sort_order INT NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )`);
-      await this.pool.execute(`INSERT IGNORE INTO application_activities (name, sort_order) VALUES
-        ('Publish an Article', 10), ('Travel Collaboration', 20), ('General Enquiry', 30)`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS group_memberships (
         group_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL,
         role ENUM('owner', 'moderator', 'member') NOT NULL DEFAULT 'member', status ENUM('invited', 'active', 'left', 'removed') NOT NULL DEFAULT 'active', joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -305,6 +288,25 @@ export class Database {
         UNIQUE KEY event_participant_user (event_id, user_id), INDEX (event_id),
         CONSTRAINT participants_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
         CONSTRAINT participants_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_followup_templates (
+        event_id INT UNSIGNED NOT NULL, audience ENUM('attended','no_show') NOT NULL,
+        subject VARCHAR(180) NOT NULL, body TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (event_id, audience),
+        CONSTRAINT event_followup_templates_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_followup_deliveries (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL,
+        participant_id INT UNSIGNED NOT NULL, audience ENUM('attended','no_show') NOT NULL,
+        recipient_email VARCHAR(255) NOT NULL, recipient_name VARCHAR(160) NOT NULL,
+        status ENUM('pending','sending','sent','failed') NOT NULL DEFAULT 'pending',
+        sent_at DATETIME NULL, error_message VARCHAR(500) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY event_followup_participant_unique (event_id, participant_id),
+        INDEX event_followup_queue (event_id, audience, status),
+        CONSTRAINT event_followup_deliveries_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+        CONSTRAINT event_followup_deliveries_participant_fk FOREIGN KEY (participant_id) REFERENCES event_participants(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_ratings (
         event_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL, rating TINYINT UNSIGNED NOT NULL,
@@ -477,6 +479,14 @@ export class Database {
         CONSTRAINT article_author_fk FOREIGN KEY (author_user_id) REFERENCES users(id) ON DELETE CASCADE,
         CONSTRAINT article_category_fk FOREIGN KEY (category_id) REFERENCES article_categories(id) ON DELETE SET NULL
       )`);
+      // Keep first-publication usage even if an article is archived or removed.
+      await this.pool.execute(`CREATE TABLE IF NOT EXISTS article_publications (
+        article_id INT UNSIGNED PRIMARY KEY, user_id INT UNSIGNED NOT NULL, published_at DATETIME NOT NULL,
+        INDEX article_publications_user_month (user_id, published_at),
+        CONSTRAINT article_publications_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`);
+      await this.pool.execute(`INSERT IGNORE INTO article_publications (article_id, user_id, published_at)
+        SELECT id, author_user_id, published_at FROM articles WHERE published_at IS NOT NULL`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS article_tags (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(80) NOT NULL, slug VARCHAR(100) NOT NULL UNIQUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -492,20 +502,6 @@ export class Database {
         alt_text VARCHAR(200) NOT NULL, caption VARCHAR(500) NULL, sort_order INT NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, INDEX (article_id, sort_order),
         CONSTRAINT article_media_article_fk FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
-      )`);
-      await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_owner_applications (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        user_id INT UNSIGNED NOT NULL UNIQUE,
-        business_name VARCHAR(160) NOT NULL,
-        message TEXT NULL,
-        status ENUM('pending','approved','declined') NOT NULL DEFAULT 'pending',
-        reviewed_by_user_id INT UNSIGNED NULL,
-        reviewed_at DATETIME NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX venue_owner_application_status (status, created_at),
-        CONSTRAINT venue_owner_application_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        CONSTRAINT venue_owner_application_reviewer_fk FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venues (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -985,6 +981,7 @@ export class Database {
       await this.ensureColumn('payment_accounts', 'details_submitted', 'BOOLEAN NULL');
       await this.ensureColumn('events', 'brand_name', 'VARCHAR(160) NULL');
       await this.ensureColumn('events', 'logo_image', 'MEDIUMTEXT NULL');
+      await this.ensureColumn('events', 'food_options', 'JSON NULL');
       await this.ensureColumn('venues', 'logo_image', 'MEDIUMTEXT NULL');
       await this.ensureColumn('event_payment_settings', 'seller_capacity', "ENUM('trader','private') NULL");
       await this.ensureColumn('event_payment_settings', 'refund_policy_snapshot', 'JSON NULL');

@@ -253,8 +253,9 @@ test('keeps rich event location columns and values aligned', async () => {
     managerId: 1, title: 'Location test', locationType: 'custom', customFormattedAddress: 'Stockholm, Sweden', customLatitude: 59.3293, customLongitude: 18.0686,
   }, 1);
 
-  assert.equal(insert.values.length, 41);
-  assert.equal((insert.sql.match(/\?/g) || []).length, 41);
+  assert.equal(insert.values.length, 42);
+  assert.equal((insert.sql.match(/\?/g) || []).length, 42);
+  assert.match(insert.sql, /description, food_options, cover_image/);
   assert.match(insert.sql, /venue_id, custom_address_line_1/);
   assert.match(insert.sql, /online_url, online_platform/);
 });

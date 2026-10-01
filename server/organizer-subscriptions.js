@@ -1,8 +1,12 @@
 import crypto from 'node:crypto';
-import { ProductAccess, PUBLISH_EVENT, accessError, ownerKey, parseOwner } from './product-access.js';
+import { ProductAccess, PUBLISH_EVENT, PUBLISH_ARTICLE, accessError, ownerKey, parseOwner } from './product-access.js';
 
 const providerId = (value) => typeof value === 'string' ? value : value?.id;
-export const safeReturnPath = (value) => /^\/profile\/events(?:\/[1-9]\d*\/edit)?$/.test(value || '') ? value : '/profile/events';
+export const safeReturnPath = (value) => /^\/profile\/(?:events|articles)(?:\/[1-9]\d*\/edit)?$/.test(value || '') ? value : '/profile/events';
+export const subscriptionFeature = (value = PUBLISH_EVENT) => {
+  if (![PUBLISH_EVENT, PUBLISH_ARTICLE].includes(value)) throw accessError('INVALID_SUBSCRIPTION_FEATURE', 'Choose event publishing or article space.', 422);
+  return value;
+};
 export const subscriptionPeriod = (subscription) => {
   const items = subscription.items?.data || [];
   return { start: subscription.current_period_start || Math.max(0, ...items.map((item) => item.current_period_start || 0)) || null,
@@ -36,9 +40,9 @@ export class OrganizerSubscriptions {
     const [organizations] = await this.database.execute("SELECT o.id, o.name, 'organization' AS type FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE m.user_id=? AND m.role IN ('owner','admin','manager') ORDER BY o.name", [userId]);
     return [{ type: 'user', id: userId, name: 'Personal account' }, ...organizations];
   }
-  async plans() {
+  async plans(feature = PUBLISH_EVENT) {
     const products = await this.queries.platformProducts();
-    return products.filter((plan) => plan.productType === 'subscription' && plan.entitlementFeature === PUBLISH_EVENT && plan.providerPriceId && ['month', 'year'].includes(plan.billingInterval));
+    return products.filter((plan) => plan.productType === 'subscription' && plan.entitlementFeature === feature && plan.providerPriceId && ['month', 'year'].includes(plan.billingInterval));
   }
   async billingProfiles(userId) {
     // Subscription managers may select their organization's billing identity;
@@ -49,34 +53,37 @@ export class OrganizerSubscriptions {
         WHERE member.organization_id=p.owner_organization_id AND member.user_id=? AND member.role IN ('owner','admin','manager')))`, [userId, userId]);
     return rows;
   }
-  async subscriptions(owner, database = this.database) {
+  async subscriptions(owner, database = this.database, feature = null) {
     const [rows] = await database.execute(`SELECT s.id, s.status, s.current_period_start AS currentPeriodStart, s.current_period_end AS currentPeriodEnd,
       s.trial_end AS trialEnd, s.cancel_at_period_end AS cancelAtPeriodEnd, s.provider_subscription_id AS providerSubscriptionId,
       p.code AS planCode, p.name AS planName FROM platform_subscriptions s JOIN platform_products p ON p.id=s.product_id
-      WHERE ${owner.type === 'organization' ? 's.subscriber_organization_id=? AND s.subscriber_user_id IS NULL' : 's.subscriber_user_id=? AND s.subscriber_organization_id IS NULL'} ORDER BY s.created_at DESC`, [owner.id]);
+      WHERE ${owner.type === 'organization' ? 's.subscriber_organization_id=? AND s.subscriber_user_id IS NULL' : 's.subscriber_user_id=? AND s.subscriber_organization_id IS NULL'}${feature ? ' AND p.entitlement_feature=?' : ''} ORDER BY s.created_at DESC`, feature ? [owner.id, feature] : [owner.id]);
     return rows.map((row) => ({ ...row, cancelAtPeriodEnd: Boolean(row.cancelAtPeriodEnd) }));
   }
-  async summary(owner, userId) {
+  async summary(owner, userId, feature = PUBLISH_EVENT) {
     await this.access.authorizeOwner(owner, userId);
-    const subscriptions = await this.subscriptions(owner);
+    if (feature === PUBLISH_ARTICLE && owner.type !== 'user') throw accessError('ARTICLE_PERSONAL_ACCOUNT', 'Article space belongs to your personal account.', 422);
+    const subscriptions = await this.subscriptions(owner, this.database, feature);
     const [invoices] = await this.database.execute(`SELECT i.provider_invoice_id AS id, i.status, i.currency, i.amount_due AS amountDue,
       i.amount_paid AS amountPaid, i.hosted_invoice_url AS hostedInvoiceUrl, i.invoice_pdf_url AS invoicePdfUrl FROM subscription_invoices i
-      JOIN platform_subscriptions s ON s.id=i.subscription_id WHERE ${owner.type === 'organization' ? 's.subscriber_organization_id=?' : 's.subscriber_user_id=? AND s.subscriber_organization_id IS NULL'} ORDER BY i.updated_at DESC LIMIT 100`, [owner.id]);
-    return { ...await this.access.access(owner), subscriptions, invoices };
+      JOIN platform_subscriptions s ON s.id=i.subscription_id JOIN platform_products p ON p.id=s.product_id WHERE ${owner.type === 'organization' ? 's.subscriber_organization_id=?' : 's.subscriber_user_id=? AND s.subscriber_organization_id IS NULL'} AND p.entitlement_feature=? ORDER BY i.updated_at DESC LIMIT 100`, [owner.id, feature]);
+    return { ...(feature === PUBLISH_ARTICLE ? await this.access.articleAccess(owner.id) : await this.access.access(owner)), feature, subscriptions, invoices };
   }
-  async checkout({ owner, user, priceId, billingProfileId, returnTo }) {
+  async checkout({ owner, user, priceId, billingProfileId, returnTo, feature = PUBLISH_EVENT }) {
+    subscriptionFeature(feature);
     await this.access.authorizeOwner(owner, user.id);
+    if (feature === PUBLISH_ARTICLE && owner.type !== 'user') throw accessError('ARTICLE_PERSONAL_ACCOUNT', 'Article space belongs to your personal account.', 422);
     if (![priceId, billingProfileId].every((value) => Number.isSafeInteger(value) && value > 0)) throw accessError('INVALID_CHECKOUT', 'Choose a subscription plan and billing profile.', 422);
-    if (!(await this.access.configuration()).subscriptionsEnabled) throw accessError('SUBSCRIPTIONS_DISABLED', 'Publishing is currently available without a subscription.', 409);
+    if (feature === PUBLISH_EVENT && !(await this.access.configuration()).subscriptionsEnabled) throw accessError('SUBSCRIPTIONS_DISABLED', 'Publishing is currently available without a subscription.', 409);
     if (!this.stripe.configured()) throw accessError('PAYMENT_PROVIDER_UNAVAILABLE', 'Subscription payments are not configured yet.', 503);
     return this.withOwnerLock(owner, async (connection) => {
       // Role escalation does not make another customer's billing profile purchasable.
       const [profiles] = await connection.execute(`SELECT id, legal_name AS name, billing_email AS email FROM billing_profiles WHERE id=? AND is_active=TRUE
         AND ${owner.type === 'organization' ? 'owner_organization_id=?' : 'owner_user_id=? AND owner_organization_id IS NULL'}`, [billingProfileId, owner.id]);
       if (!profiles[0]) throw accessError('BUYER_PROFILE_UNAVAILABLE', 'Select a billing profile belonging to this organizer.', 422);
-      const plan = (await this.plans()).find((entry) => Number(entry.priceId) === priceId);
+      const plan = (await this.plans(feature)).find((entry) => Number(entry.priceId) === priceId);
       if (!plan) throw accessError('PLAN_UNAVAILABLE', 'This subscription plan is unavailable.', 422);
-      const existing = await this.subscriptions(owner, connection);
+      const existing = await this.subscriptions(owner, connection, feature);
       if (existing.some((entry) => ['active', 'trialing', 'past_due', 'unpaid', 'paused', 'incomplete'].includes(entry.status))) throw accessError('SUBSCRIPTION_EXISTS', 'Manage your existing subscription instead of purchasing another.', 409);
       const client = this.stripe.stripeClient;
       const price = await client.prices.retrieve(plan.providerPriceId);
@@ -93,7 +100,7 @@ export class OrganizerSubscriptions {
         await connection.execute('UPDATE subscription_customers SET provider_customer_id=? WHERE owner_key=?', [customerId, key]);
       }
       // Reuse the saved attempt, including after an ambiguous provider timeout.
-      const [attempts] = await connection.execute('SELECT * FROM subscription_checkouts WHERE owner_key=? ORDER BY created_at DESC, id DESC LIMIT 1', [key]);
+      const [attempts] = await connection.execute('SELECT * FROM subscription_checkouts WHERE owner_key=? AND feature=? ORDER BY created_at DESC, id DESC LIMIT 1', [key, feature]);
       let attempt = attempts[0];
       if (attempt?.session_id) {
         const session = await client.checkout.sessions.retrieve(attempt.session_id);
@@ -107,9 +114,9 @@ export class OrganizerSubscriptions {
       if (attempt && Date.now() - new Date(attempt.created_at).getTime() > 23 * 3600000) throw accessError('CHECKOUT_RECONCILIATION_REQUIRED', 'A previous checkout needs administrator reconciliation before retrying.', 409);
       if (!attempt) {
         attempt = { id: crypto.randomUUID(), price_id: priceId, billing_profile_id: billingProfileId, provider_price_id: plan.providerPriceId, return_path: safeReturnPath(returnTo) };
-        await connection.execute(`INSERT INTO subscription_checkouts (id, owner_key, actor_user_id, billing_profile_id, product_id, price_id, provider_price_id, return_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [attempt.id, key, user.id, billingProfileId, plan.id, priceId, plan.providerPriceId, attempt.return_path]);
+        await connection.execute(`INSERT INTO subscription_checkouts (id, owner_key, actor_user_id, billing_profile_id, product_id, price_id, provider_price_id, return_path, feature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [attempt.id, key, user.id, billingProfileId, plan.id, priceId, plan.providerPriceId, attempt.return_path, feature]);
       }
-      const query = `ownerType=${owner.type}&ownerId=${owner.id}&returnTo=${encodeURIComponent(attempt.return_path)}`;
+      const query = `ownerType=${owner.type}&ownerId=${owner.id}&feature=${encodeURIComponent(feature)}&returnTo=${encodeURIComponent(attempt.return_path)}`;
       const metadata = { organizerCheckoutId: attempt.id, organizerOwner: key };
       const session = await client.checkout.sessions.create({ mode: 'subscription', customer: customerId,
         line_items: [{ price: attempt.provider_price_id, quantity: 1 }], client_reference_id: attempt.id, metadata,
@@ -119,12 +126,13 @@ export class OrganizerSubscriptions {
       return { checkoutUrl: session.url };
     });
   }
-  async portal(owner, userId) {
+  async portal(owner, userId, feature = PUBLISH_EVENT) {
+    subscriptionFeature(feature);
     await this.access.authorizeOwner(owner, userId);
     if (!this.stripe.configured()) throw accessError('PAYMENT_PROVIDER_UNAVAILABLE', 'Subscription payments are not configured.', 503);
     const [rows] = await this.database.execute('SELECT provider_customer_id AS id FROM subscription_customers WHERE owner_key=?', [ownerKey(owner)]);
     if (!rows[0]?.id) throw accessError('CUSTOMER_NOT_FOUND', 'No subscription billing account exists for this organizer.', 404);
-    const session = await this.stripe.stripeClient.billingPortal.sessions.create({ customer: rows[0].id, return_url: `${this.siteUrl}/profile/subscriptions?ownerType=${owner.type}&ownerId=${owner.id}` });
+    const session = await this.stripe.stripeClient.billingPortal.sessions.create({ customer: rows[0].id, return_url: `${this.siteUrl}/profile/subscriptions?ownerType=${owner.type}&ownerId=${owner.id}&feature=${encodeURIComponent(feature)}` });
     return { url: session.url };
   }
   async cancel(owner, userId, subscriptionId) {
@@ -152,6 +160,7 @@ export class OrganizerSubscriptions {
     const [attempts] = await this.database.execute(`SELECT c.*, customer.owner_type, customer.owner_id, customer.provider_customer_id FROM subscription_checkouts c JOIN subscription_customers customer ON customer.owner_key=c.owner_key WHERE c.id=?`, [attemptId]);
     const attempt = attempts[0];
     if (!attempt) throw accessError('CHECKOUT_NOT_FOUND', 'Unknown subscription checkout.', 409);
+    const feature = subscriptionFeature(attempt.feature || PUBLISH_EVENT);
     const owner = { type: attempt.owner_type, id: Number(attempt.owner_id) };
     await this.withOwnerLock(owner, async (connection) => {
       // Retrieve AFTER serializing this owner's updates. Old webhook payloads cannot overwrite new state.
@@ -164,7 +173,7 @@ export class OrganizerSubscriptions {
       if (!sessionId) throw accessError('CHECKOUT_PROCESSING', 'Checkout session has not been persisted yet.', 409);
       const session = await client.checkout.sessions.retrieve(sessionId);
       if (session.mode !== 'subscription' || session.status !== 'complete' || providerId(session.customer) !== attempt.provider_customer_id || providerId(session.subscription) !== subscriptionId || session.client_reference_id !== attempt.id || (currentAttempts[0]?.subscription_id && currentAttempts[0].subscription_id !== subscriptionId)) throw accessError('CHECKOUT_IDENTITY_MISMATCH', 'Checkout does not match the subscription.', 409);
-      const [prices] = await connection.execute(`SELECT price.provider_price_id, price.product_id FROM platform_prices price JOIN platform_products product ON product.id=price.product_id WHERE product.product_type='subscription' AND product.entitlement_feature=?`, [PUBLISH_EVENT]);
+      const [prices] = await connection.execute(`SELECT price.provider_price_id, price.product_id FROM platform_prices price JOIN platform_products product ON product.id=price.product_id WHERE product.product_type='subscription' AND product.entitlement_feature=?`, [feature]);
       const matchingPlan = subscription.items?.data?.length === 1 && prices.find((price) => price.provider_price_id === providerId(subscription.items.data[0].price));
       if (!matchingPlan) throw accessError('SUBSCRIPTION_PLAN_MISMATCH', 'Subscription plan mismatch.', 409);
       if (!attempt.subscription_id && providerId(subscription.items.data[0].price) !== attempt.provider_price_id) throw accessError('SUBSCRIPTION_PLAN_MISMATCH', 'Initial subscription price mismatch.', 409);
@@ -185,7 +194,7 @@ export class OrganizerSubscriptions {
         await connection.execute('UPDATE subscription_checkouts SET subscription_id=?, session_id=? WHERE id=?', [subscriptionId, sessionId, attempt.id]);
         // Rebuild only this subscription's grant, never manual/promotion/partner access.
         await connection.execute("UPDATE platform_entitlements SET revoked_at=UTC_TIMESTAMP() WHERE source_type='subscription' AND source_id=? AND revoked_at IS NULL", [id]);
-        if (subscriptionHasAccess(subscription)) await connection.execute(`INSERT INTO platform_entitlements (user_id, organization_id, feature, source_type, source_id, ends_at) VALUES (?, ?, ?, 'subscription', ?, FROM_UNIXTIME(?))`, [owner.type === 'user' ? owner.id : null, owner.type === 'organization' ? owner.id : null, PUBLISH_EVENT, id, period.end]);
+        if (subscriptionHasAccess(subscription)) await connection.execute(`INSERT INTO platform_entitlements (user_id, organization_id, feature, source_type, source_id, ends_at) VALUES (?, ?, ?, 'subscription', ?, FROM_UNIXTIME(?))`, [owner.type === 'user' ? owner.id : null, owner.type === 'organization' ? owner.id : null, feature, id, period.end]);
         if (invoice) await connection.execute(`INSERT INTO subscription_invoices (provider_invoice_id, subscription_id, status, currency, amount_due, amount_paid, hosted_invoice_url, invoice_pdf_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON DUPLICATE KEY UPDATE status=VALUES(status), amount_due=VALUES(amount_due), amount_paid=VALUES(amount_paid), hosted_invoice_url=VALUES(hosted_invoice_url), invoice_pdf_url=VALUES(invoice_pdf_url)`, [invoice.id, id, invoice.status || 'draft', invoice.currency.toUpperCase(), invoice.amount_due, invoice.amount_paid, invoice.hosted_invoice_url || null, invoice.invoice_pdf || null]);
         await this.audit(connection, null, subscriptionHasAccess(subscription) ? 'subscription_activated_or_updated' : 'subscription_access_ended', id, { owner, status: subscription.status, eventId: event.id });
@@ -239,10 +248,14 @@ export function registerSubscriptionRoutes(app, { service, authenticate, require
   const ownerFromQuery = (req) => parseOwner(req.query.ownerType ? { type: req.query.ownerType, id: req.query.ownerId } : null, req.user.id);
   app.get('/api/product-configuration', handler(() => service.access.configuration()));
   app.put('/api/admin/configuration', authenticate, staff, handler((req) => service.access.configure(req.body, req.user.id)));
-  app.get('/api/subscriptions/options', authenticate, handler(async (req) => ({ owners: await service.owners(req.user.id), plans: await service.plans(), billingProfiles: await service.billingProfiles(req.user.id), configuration: await service.access.configuration() })));
-  app.get('/api/subscriptions/me', authenticate, handler((req) => service.summary(ownerFromQuery(req), req.user.id)));
-  app.post('/api/subscriptions/checkout', authenticate, requireVerifiedUser, handler((req) => service.checkout({ owner: parseOwner(req.body.owner, req.user.id), user: req.user, priceId: Number(req.body.priceId), billingProfileId: Number(req.body.billingProfileId), returnTo: req.body.returnTo })));
-  app.post('/api/subscriptions/portal', authenticate, handler((req) => service.portal(parseOwner(req.body.owner, req.user.id), req.user.id)));
+  app.get('/api/my/article-access', authenticate, handler((req) => service.access.articleAccess(req.user.id)));
+  app.get('/api/subscriptions/options', authenticate, handler(async (req) => {
+    const feature = subscriptionFeature(req.query.feature);
+    return { owners: (await service.owners(req.user.id)).filter(owner => feature !== PUBLISH_ARTICLE || owner.type === 'user'), plans: await service.plans(feature), billingProfiles: await service.billingProfiles(req.user.id), configuration: await service.access.configuration() };
+  }));
+  app.get('/api/subscriptions/me', authenticate, handler((req) => service.summary(ownerFromQuery(req), req.user.id, subscriptionFeature(req.query.feature))));
+  app.post('/api/subscriptions/checkout', authenticate, requireVerifiedUser, handler((req) => service.checkout({ owner: parseOwner(req.body.owner, req.user.id), user: req.user, priceId: Number(req.body.priceId), billingProfileId: Number(req.body.billingProfileId), returnTo: req.body.returnTo, feature: subscriptionFeature(req.body.feature) })));
+  app.post('/api/subscriptions/portal', authenticate, handler((req) => service.portal(parseOwner(req.body.owner, req.user.id), req.user.id, subscriptionFeature(req.body.feature))));
   app.post('/api/subscriptions/:id/cancel', authenticate, handler((req) => service.cancel(parseOwner(req.body.owner, req.user.id), req.user.id, Number(req.params.id))));
   app.get('/api/admin/subscriptions', authenticate, staff, handler(() => service.customers()));
   app.post('/api/admin/subscriptions/grants', authenticate, staff, handler((req) => service.grant({ ...req.body, owner: parseOwner(req.body.owner, req.user.id) }, req.user.id)));

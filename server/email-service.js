@@ -21,19 +21,17 @@ const brandEmailHtml = (html = '') => {
 };
 
 export class EmailService {
-  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, passwordResetUrl, applicationUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, loginUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
+  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, passwordResetUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
     this.domain = domain;
     this.brandName = brandName;
     this.noReplyFrom = noReplyFrom;
     this.smtp = smtp;
     this.verificationUrl = verificationUrl;
     this.passwordResetUrl = passwordResetUrl;
-    this.applicationUrl = applicationUrl;
     this.managerEventUrl = managerEventUrl;
     this.eventDetailsUrl = eventDetailsUrl;
     this.invitationResponseUrl = invitationResponseUrl;
     this.groupInvitationUrl = groupInvitationUrl;
-    this.loginUrl = loginUrl;
     this.notificationFrom = notificationFrom;
     this.invitationFrom = invitationFrom;
     this.database = database;
@@ -41,7 +39,7 @@ export class EmailService {
     this.unsubscribeEndpointUrl = unsubscribeEndpointUrl;
     this.unsubscribeSecret = unsubscribeSecret;
     this.mailer = this.createMailer(smtp.verification);
-    this.notificationMailer = this.createMailer(smtp.applicationNotification);
+    this.notificationMailer = this.createMailer(smtp.notification || smtp.applicationNotification);
     this.invitationMailer = this.createMailer(smtp.invitation);
   }
 
@@ -131,12 +129,6 @@ export class EmailService {
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Account deleted</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your ${escapeHtml(this.brandName)} account has been deleted successfully. You will no longer be able to sign in with this account.</p><p style="font-size:13px;color:#7b879b">If you did not request this change, please contact us immediately.</p>`) });
   }
 
-  sendApplicationReceived(email, activity) {
-    return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `We received your ${this.brandName} application`,
-      text: `Thanks for your application.\n\nWe received your application for: ${activity}.\n\nUse the same email address when you register or log in.\n\nLog in to track your application: ${this.loginUrl}`,
-      html: this.layout(`<h1>Application received</h1><p style="font-size:16px;line-height:1.6;color:#526078">Thanks for getting in touch. We have received your application and our team will review it shortly.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;margin:24px 0;font-size:15px"><span style="color:#718096">Activity</span><br><strong>${escapeHtml(activity)}</strong></div><p style="font-size:16px;line-height:1.6;color:#526078">Use the same email address you entered in the contact form when you register or log in.</p><p style="margin:28px 0"><a href="${escapeHtml(this.loginUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Log in to track status</a></p>`) });
-  }
-
   sendRegistrationConfirmation(email, name, event) {
     const start = formatEventDate(event.startsAt, event.timezone);
     const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
@@ -161,6 +153,21 @@ export class EmailService {
     return this.sendCustomerMail(this.mailer, event, { from: this.noReplyFrom, to: email, subject: `Withdrawal received: ${event.title}`,
       text: `Hi ${name},\n\nYour withdrawal from ${event.title} has been received.\n\nEvent: ${event.title}\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}${end ? `\nEnds: ${end}` : ''}\nStatus: Withdrawn`,
       html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Withdrawal received</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your withdrawal from this event has been received successfully.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}<br><strong>Status:</strong> Withdrawn</div>`) });
+  }
+
+  async sendEventFollowup(email, name, event, audience, subject, body, deliveryId) {
+    if (!this.smtp?.host) throw new Error('Email delivery is not configured.');
+    const paragraphs = body.split(/\n\s*\n/).map((paragraph) => `<p style="font-size:16px;line-height:1.6">${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`).join('');
+    const heading = audience === 'attended' ? 'Thank you for joining us' : 'We hope to see you another time';
+    const result = await this.sendCustomerMail(this.notificationMailer, event, {
+      from: this.notificationFrom, to: email,
+      messageId: `<event-followup-${deliveryId}@${this.domain}>`,
+      subject,
+      text: `Hi ${name},\n\n${body}\n\n${event.title}`,
+      html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>${heading}</h1><p style="color:#666">${escapeHtml(event.title)}</p>${paragraphs}`),
+    });
+    if (!result.accepted?.length || result.rejected?.length) throw new Error('The email server did not accept this message.');
+    return result;
   }
 
   sendEventInvitation(email, name, event) {
@@ -203,15 +210,4 @@ export class EmailService {
       html: this.customerLayout(branding, `<p style="font-size:17px">Hi ${escapeHtml(managerName)},</p><h1>New event registration</h1><p style="font-size:16px;line-height:1.6;color:#526078">A new customer has registered for your event.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px"><strong>Event</strong><br>${escapeHtml(eventTitle)}${Number(events[0]?.fee) > 0 ? `<br><strong>Fee:</strong> ${escapeHtml(Number(events[0].fee).toFixed(2))} SEK` : ''}<br><br><strong>Customer</strong><br>${escapeHtml(customerName)}<br>${escapeHtml(customerEmail)}</div><p style="margin:28px 0"><a href="${escapeHtml(registrationUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View registration</a></p>`, 'Event management') });
   }
 
-  async notifyAdmins({ applicationId, email, phone, activity, additionalInformation }) {
-    if (!this.smtp.host) throw new Error('SMTP_HOST is not configured');
-    const [admins] = await this.database.execute("SELECT email FROM users WHERE role = 'admin'");
-    if (!admins.length) return;
-    const url = `${this.applicationUrl.replace(/\/$/, '')}/${applicationId}`;
-    const phoneText = phone || 'Not provided';
-    const notesText = additionalInformation || 'None';
-    return this.notificationMailer.sendMail({ from: this.notificationFrom, to: admins.map(({ email: address }) => address), subject: 'New application received',
-      text: `A new application was received.\n\nApplicant email: ${email}\nPhone: ${phoneText}\nActivity: ${activity}\nAdditional notes: ${notesText}\n\nView application: ${url}`,
-      html: this.layout(`<div style="display:inline-block;background:#e0f2fe;color:#0369a1;border-radius:999px;padding:6px 11px;font-size:12px;font-weight:700">NEW APPLICATION</div><h1>A new application has arrived</h1><table style="width:100%;border-collapse:collapse;font-size:15px"><tr><td style="padding:13px 0;color:#718096">Applicant email</td><td style="padding:13px 0;font-weight:700">${escapeHtml(email)}</td></tr><tr><td style="padding:13px 0;color:#718096">Phone</td><td style="padding:13px 0">${escapeHtml(phoneText)}</td></tr><tr><td style="padding:13px 0;color:#718096">Activity</td><td style="padding:13px 0">${escapeHtml(activity)}</td></tr></table><div style="margin-top:24px"><div style="font-size:13px;color:#718096;margin-bottom:8px">Additional notes</div><div style="background:#f8fafc;border-radius:10px;padding:16px;white-space:pre-wrap">${escapeHtml(notesText)}</div></div><p style="margin:28px 0 0"><a href="${escapeHtml(url)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View application</a></p>`, 'Application management') });
-  }
 }

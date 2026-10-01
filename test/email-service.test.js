@@ -3,10 +3,10 @@ import test from 'node:test';
 import { EmailService } from '../server/email-service.js';
 
 const makeService = (database = { execute: async () => [[]] }) => new EmailService({
-  smtp: { host: 'smtp.example.test', port: 587, secure: false, verification: {}, applicationNotification: {}, invitation: {} },
+  smtp: { host: 'smtp.example.test', port: 587, secure: false, verification: {}, notification: {}, invitation: {} },
   domain: 'ykcircle.test', brandName: 'Yk <Circle>', noReplyFrom: 'no-reply@ykcircle.test',
   verificationUrl: 'https://ykcircle.test/verify-email', passwordResetUrl: 'https://ykcircle.test/reset-password',
-  applicationUrl: 'https://ykcircle.test/admin/applications', managerEventUrl: 'https://ykcircle.test/manager/events',
+  managerEventUrl: 'https://ykcircle.test/manager/events',
   eventDetailsUrl: 'https://ykcircle.test/events/', invitationResponseUrl: 'https://ykcircle.test/invitation-response',
   groupInvitationUrl: 'https://ykcircle.test/group-invitation', loginUrl: 'https://ykcircle.test/login',
   unsubscribeUrl: 'https://ykcircle.test/unsubscribe', unsubscribeEndpointUrl: 'https://api.ykcircle.test/api/email/unsubscribe',

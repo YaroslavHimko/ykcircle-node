@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import express from 'express';
-import { ProductAccess, PUBLISH_EVENT, parseOwner } from '../server/product-access.js';
+import { ProductAccess, PUBLISH_EVENT, PUBLISH_ARTICLE, parseOwner } from '../server/product-access.js';
 import { OrganizerSubscriptions, subscriptionHasAccess, subscriptionPeriod, safeReturnPath } from '../server/organizer-subscriptions.js';
 import { Api } from '../server/api.js';
 import { Queries } from '../server/queries.js';
@@ -20,14 +20,14 @@ function fixture() {
       const organization = sql.includes('organization_id=? AND user_id IS NULL');
       return [state.entitlements.filter(e => (organization ? e.organizationId === p[0] && !e.userId : e.userId === p[0] && !e.organizationId) && !e.revoked && (!e.endsAt || +new Date(e.endsAt) > Date.now()))];
     }
-    if (sql.includes('FROM platform_subscriptions s')) return [state.subscriptions];
+    if (sql.includes('FROM platform_subscriptions s')) return [state.subscriptions.filter(s => !p[1] || (s.feature || PUBLISH_EVENT) === p[1])];
     if (sql.startsWith('SELECT id, legal_name')) return [p[0] === 5 && p[1] === 1 ? [{ id: 5, name: 'Organizer', email: 'owner@example.test' }] : []];
     if (sql.startsWith('INSERT IGNORE INTO subscription_customers')) { if (!state.customers.length) state.customers.push({ owner_key: p[0], owner_type: p[1], owner_id: p[2], created_at: new Date(), provider_customer_id: null }); return [{}]; }
     if (sql.startsWith('SELECT created_at FROM subscription_customers')) return [state.customers];
     if (sql.startsWith('SELECT provider_customer_id AS id')) return [state.customers.map(c => ({ id: c.provider_customer_id }))];
     if (sql.startsWith('UPDATE subscription_customers')) { state.customers[0].provider_customer_id = p[0]; return [{}]; }
-    if (sql.startsWith('SELECT * FROM subscription_checkouts')) return [state.attempts.slice(-1)];
-    if (sql.startsWith('INSERT INTO subscription_checkouts')) { state.attempts.push({ id: p[0], owner_key: p[1], actor_user_id: p[2], billing_profile_id: p[3], product_id: p[4], price_id: p[5], provider_price_id: p[6], return_path: p[7], created_at: new Date() }); return [{}]; }
+    if (sql.startsWith('SELECT * FROM subscription_checkouts')) return [state.attempts.filter(a => a.feature === p[1]).slice(-1)];
+    if (sql.startsWith('INSERT INTO subscription_checkouts')) { state.attempts.push({ id: p[0], owner_key: p[1], actor_user_id: p[2], billing_profile_id: p[3], product_id: p[4], price_id: p[5], provider_price_id: p[6], return_path: p[7], feature: p[8], created_at: new Date() }); return [{}]; }
     if (sql.startsWith('UPDATE subscription_checkouts SET session_id')) { state.attempts.at(-1).session_id = p[0]; return [{}]; }
     if (sql.startsWith('SELECT c.*, customer.')) return [state.attempts.filter(a => a.id === p[0]).map(a => ({ ...a, ...state.customers[0], id: a.id }))];
     if (sql.startsWith('SELECT session_id, subscription_id')) return [state.attempts.filter(a => a.id === p[0])];
@@ -65,6 +65,42 @@ function fixture() {
   const checkout = () => service.checkout({ owner: { type:'user', id:1 }, user: { id:1 }, billingProfileId:5, priceId:8, returnTo:'/profile/events/4/edit' });
   return { state, database, queries, service, calls, subscription, stripe, checkout };
 }
+
+test('article checkout is independent of event switches, subscriptions and pending checkouts', async () => {
+  const f = fixture();
+  const eventPlans = await f.queries.platformProducts();
+  f.queries.platformProducts = async () => [...eventPlans, { ...eventPlans[0], id: 9, priceId: 10, entitlementFeature: PUBLISH_ARTICLE }];
+  await f.checkout();
+  f.state.configuration.subscriptionsEnabled = false;
+  f.state.subscriptions.push({ status: 'active', feature: PUBLISH_EVENT });
+  const input = { owner: { type: 'user', id: 1 }, user: { id: 1 }, billingProfileId: 5, priceId: 10, feature: PUBLISH_ARTICLE, returnTo: '/profile/articles/2/edit' };
+  await f.service.checkout(input);
+  assert.equal(f.calls.filter(call => call[0] === 'checkout').length, 2);
+  assert.equal(f.state.attempts.at(-1).feature, PUBLISH_ARTICLE);
+  assert.match(f.calls.at(-1)[1].success_url, /feature=author.publish_article/);
+  assert.match(f.calls.at(-1)[1].success_url, /returnTo=%2Fprofile%2Farticles%2F2%2Fedit/);
+  await assert.rejects(f.service.checkout({ ...input, priceId: 8 }), { code: 'PLAN_UNAVAILABLE' });
+  f.state.subscriptions.push({ status: 'active', feature: PUBLISH_ARTICLE });
+  await assert.rejects(f.service.checkout(input), { code: 'SUBSCRIPTION_EXISTS' });
+  await assert.rejects(f.service.checkout({ ...input, owner: { type: 'organization', id: 4 } }), { code: 'ARTICLE_PERSONAL_ACCOUNT' });
+});
+
+test('article webhook grants the persisted checkout feature and revokes it after cancellation', async () => {
+  const f = fixture();
+  const plans = await f.queries.platformProducts();
+  f.queries.platformProducts = async () => [{ ...plans[0], entitlementFeature: PUBLISH_ARTICLE }];
+  await f.service.checkout({ owner: { type: 'user', id: 1 }, user: { id: 1 }, billingProfileId: 5, priceId: 8, feature: PUBLISH_ARTICLE });
+  f.state.session.status = 'complete';
+  const event = { id: 'evt_article', type: 'checkout.session.completed', data: { object: { id: 'cs_platform', subscription: 'sub_organizer' } } };
+  await f.service.webhook(event);
+  await f.service.webhook(event);
+  assert.equal(f.state.entitlements.length, 1);
+  assert.equal(f.state.entitlements[0].feature, PUBLISH_ARTICLE);
+  assert.equal((await f.service.access.access({ type: 'user', id: 1 })).canPublish, false);
+  f.subscription.status = 'canceled';
+  await f.service.webhook({ ...event, id: 'evt_article_cancel' });
+  assert.ok(f.state.entitlements[0].revoked);
+});
 
 test('subscription periods support the current Stripe item fields and cancellation retains access', () => {
   const { subscription } = fixture();

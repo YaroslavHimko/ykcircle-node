@@ -37,7 +37,7 @@ test('event insert and update preserve field alignment after removing optional f
     return [{ insertId: 5, affectedRows: 1 }];
   } };
   const queries = new Queries(executor);
-  const data = { managerId: 7, title: 'A gathering', timezone: 'Europe/Stockholm', cancellationPolicy: 'Contact host', fee: 25, currency: 'SEK', customFormattedAddress: 'Stockholm', onlinePlatform: 'Video' };
+  const data = { managerId: 7, title: 'A gathering', foodOptions: ['Vegetarian', 'Vegan'], timezone: 'Europe/Stockholm', cancellationPolicy: 'Contact host', fee: 25, currency: 'SEK', customFormattedAddress: 'Stockholm', onlinePlatform: 'Video' };
   await queries.insertRichEvent(executor, data, 1);
   await queries.updateRichEvent(5, 7, 'organizer', data);
   const columns = calls[0].sql.match(/INSERT INTO events\s*\(([^)]+)\)/)[1].split(',').map(value => value.trim());
@@ -45,6 +45,9 @@ test('event insert and update preserve field alignment after removing optional f
   assert.equal(stored.timezone, data.timezone);
   assert.equal(stored.cancellation_policy, data.cancellationPolicy);
   assert.equal(stored.participation_fee, 25);
+  assert.equal(stored.food_options, JSON.stringify(data.foodOptions));
+  assert.match(calls[1].sql, /food_options=COALESCE\(\?,food_options\)/);
+  assert.equal(calls[1].values[5], JSON.stringify(data.foodOptions));
   assert.equal(stored.custom_formatted_address, 'Stockholm');
   assert.equal(stored.online_platform, 'Video');
   for (const call of calls) {
@@ -74,15 +77,27 @@ test('draft create and update ignore retired fields and omit them from the API c
   t.after(() => new Promise(resolve => server.close(resolve)));
   const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60000 })).toString('base64url');
   const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
-  const body = { title: 'A gathering', startsAtUtc: '2099-01-01T12:00:00Z', timezone: 'UTC', customFormattedAddress: 'Stockholm, Sweden', customLatitude: 59.3293, customLongitude: 18.0686, ...Object.fromEntries(retiredFields.map(field => [field, 'retired-value'])) };
+  const body = { title: 'A gathering', foodOptions: [' Vegetarian ', 'Vegan'], startsAtUtc: '2099-01-01T12:00:00Z', timezone: 'UTC', customFormattedAddress: 'Stockholm, Sweden', customLatitude: 59.3293, customLongitude: 18.0686, ...Object.fromEntries(retiredFields.map(field => [field, 'retired-value'])) };
   for (const [method, route] of [['POST', '/api/events/drafts'], ['PATCH', '/api/events/5']]) {
     const response = await fetch(`http://127.0.0.1:${server.address().port}${route}`, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const result = await response.json();
     assert.equal(response.status, method === 'POST' ? 201 : 200, JSON.stringify(result));
     assert.equal(result.title, body.title);
+    assert.deepEqual(result.foodOptions, ['Vegetarian', 'Vegan']);
     for (const field of retiredFields) {
       assert.equal(Object.hasOwn(writes.at(-1), field), false, field);
       assert.equal(Object.hasOwn(result, field), false, field);
     }
   }
+  for (const foodOptions of ['Vegetarian', Array(13).fill('Meal'), [''], ['a'.repeat(101)]]) {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events/drafts`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, foodOptions }) });
+    assert.equal(response.status, 422);
+    assert.ok((await response.json()).fields.foodOptions);
+  }
+});
+
+test('event detail turns stored JSON food options into an attendee-facing list', () => {
+  const queries = new Queries({ execute: async () => [[]] });
+  assert.deepEqual(queries.normalizeRichEventLocation({ locationType: 'online', foodOptions: '["Vegetarian","Vegan"]' }).foodOptions, ['Vegetarian', 'Vegan']);
+  assert.deepEqual(queries.normalizeRichEventLocation({ locationType: 'online', foodOptions: null }).foodOptions, []);
 });

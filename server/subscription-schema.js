@@ -19,6 +19,7 @@ export async function initializeSubscriptionSchema(database) {
     return_path VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX subscription_checkout_owner (owner_key, created_at),
     CONSTRAINT subscription_checkout_customer_fk FOREIGN KEY (owner_key) REFERENCES subscription_customers(owner_key))`);
+  await database.ensureColumn('subscription_checkouts', 'feature', "VARCHAR(100) NOT NULL DEFAULT 'organizer.publish_event'");
   await pool.execute(`CREATE TABLE IF NOT EXISTS subscription_invoices (
     provider_invoice_id VARCHAR(255) PRIMARY KEY, subscription_id INT UNSIGNED NOT NULL, status VARCHAR(40) NOT NULL,
     currency CHAR(3) NOT NULL, amount_due BIGINT NOT NULL, amount_paid BIGINT NOT NULL, hosted_invoice_url TEXT NULL,

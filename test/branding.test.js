@@ -30,7 +30,7 @@ test('logos accept bounded JPEGs and reject URLs, active content, oversized and 
 
 test('event emails feature the customer and attach the logo inline without changing the sender address', async () => {
   const messages = [];
-  const service = new EmailService({ smtp: { host: 'smtp.test', verification: {}, invitation: {}, applicationNotification: {} }, domain: 'ykcircle.test', brandName: 'YKCircle', noReplyFrom: 'YKCircle <no-reply@ykcircle.test>', invitationFrom: 'invites@ykcircle.test', notificationFrom: 'updates@ykcircle.test', eventDetailsUrl: 'https://ykcircle.test/events', invitationResponseUrl: 'https://ykcircle.test/invitations' });
+  const service = new EmailService({ smtp: { host: 'smtp.test', verification: {}, invitation: {}, notification: {} }, domain: 'ykcircle.test', brandName: 'YKCircle', noReplyFrom: 'YKCircle <no-reply@ykcircle.test>', invitationFrom: 'invites@ykcircle.test', notificationFrom: 'updates@ykcircle.test', eventDetailsUrl: 'https://ykcircle.test/events', invitationResponseUrl: 'https://ykcircle.test/invitations' });
   service.mailer = service.invitationMailer = service.notificationMailer = { sendMail: async message => { messages.push(message); return { accepted: [message.to], rejected: [] }; } };
   const event = { ...branding, id: 5, title: 'Studio gathering', startsAt: '2099-01-01T12:00:00Z', timezone: 'UTC', invitationToken: 'token' };
   await service.sendRegistrationConfirmation('guest@example.test', 'Guest', event);
@@ -53,6 +53,20 @@ test('event emails feature the customer and attach the logo inline without chang
   assert.ok(offline.content.includes('YK-TICKET'));
   assert.doesNotMatch(offline.content, /cid:customer-logo/);
   assert.match(offline.content, /name="viewport"/);
+});
+
+test('attendance follow-up uses the organizer logo and escapes the organizer message', async () => {
+  const messages = [];
+  const service = new EmailService({ smtp: { host: 'smtp.test', verification: {}, invitation: {}, notification: {} }, domain: 'ykcircle.test', brandName: 'YKCircle', noReplyFrom: 'no-reply@ykcircle.test', notificationFrom: 'updates@ykcircle.test' });
+  service.notificationMailer = { sendMail: async (message) => { messages.push(message); return { accepted: [message.to], rejected: [] }; } };
+  await service.sendEventFollowup('guest@example.test', 'Guest', { ...branding, title: 'Studio gathering' }, 'attended', 'Thank you', 'Lovely to see you.\n\n<script>alert(1)</script>', 42);
+  assert.equal(messages[0].from.name, branding.brandName);
+  assert.equal(messages[0].from.address, 'updates@ykcircle.test');
+  assert.match(messages[0].html, /src="cid:customer-logo"/);
+  assert.match(messages[0].html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(messages[0].html, /<script>/);
+  assert.equal((messages[0].html.match(/YKCircle/g) || []).length, 1);
+  assert.equal(messages[0].messageId, '<event-followup-42@ykcircle.test>');
 });
 
 test('invoice PDFs embed the snapshotted customer logo with valid object offsets and name fallback', () => {

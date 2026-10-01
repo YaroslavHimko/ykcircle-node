@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { APPLICATION_STATUSES, isApplicationStatus } from '../server/application-status.js';
 import { EVENT_STATUSES, isEventStatus } from '../server/event-status.js';
 import { INVITATION_STATUSES, isInvitationStatus } from '../server/invitation-status.js';
 import { PARTICIPANT_STATUSES, isParticipantStatus } from '../server/participant-status.js';
@@ -8,7 +7,6 @@ import { REGISTRATION_STATUSES, isRegistrationStatus } from '../server/registrat
 import { EMAIL_UNSUBSCRIBE_REASONS } from '../server/email-unsubscribe-reasons.js';
 
 const statusModules = [
-  [APPLICATION_STATUSES, isApplicationStatus],
   [EVENT_STATUSES, isEventStatus],
   [INVITATION_STATUSES, isInvitationStatus],
   [PARTICIPANT_STATUSES, isParticipantStatus],

@@ -167,7 +167,7 @@ export class Queries {
   async publicEventParticipants(eventId) { const [rows] = await this.database.execute('SELECT p.id, p.user_id AS userId, COALESCE(u.name, p.participant_name) AS name, u.profile_picture AS profilePicture, p.joined_at AS joinedAt FROM event_participants p LEFT JOIN users u ON u.id = p.user_id WHERE p.event_id = ? ORDER BY p.joined_at DESC', [eventId]); return rows; }
   async eventParticipantStatus(eventId, userId) { const [rows] = await this.database.execute('SELECT status FROM event_participants WHERE event_id = ? AND user_id = ?', [eventId, userId]); return rows[0]?.status || null; }
   async publicEvents(userId = null) { const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber, e.title, e.description, e.custom_formatted_address AS location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.participation_fee AS fee, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, v.id AS venueId, v.name AS venueName, v.formatted_address AS venueLocation, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id AND vb.status = 'confirmed' LEFT JOIN venues v ON v.id = vb.venue_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.status = 'Published' AND e.visibility = 'Public' ORDER BY e.starts_at ASC, e.created_at DESC`, [userId]); return rows; }
-  async eventsForViewer(userId = null, role = null, { categorySlug = null } = {}) { const privileged = ['manager', 'admin'].includes(role); const access = privileged ? 'TRUE' : `e.manager_id = ? OR (e.status = 'Published' AND e.visibility = 'Private' AND (r.id IS NOT NULL OR EXISTS (SELECT 1 FROM event_invitations i JOIN users invited ON LOWER(invited.email) = LOWER(i.email) WHERE i.event_id = e.id AND invited.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW())))`; const params = privileged ? [userId] : [userId, userId, userId]; const categoryFilter = categorySlug ? ' AND c.slug = ?' : ''; if (categorySlug) params.push(categorySlug); const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber, e.title, e.description, e.custom_formatted_address AS location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.participation_fee AS fee, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, v.id AS venueId, v.name AS venueName, v.formatted_address AS venueLocation, c.id AS categoryId, c.name AS categoryName, c.slug AS categorySlug, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_categories c ON c.id = e.category_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id AND vb.status = 'confirmed' LEFT JOIN venues v ON v.id = vb.venue_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.deleted_at IS NULL AND ((e.status = 'Published' AND e.visibility = 'Public') OR (${access}))${categoryFilter} ORDER BY e.starts_at ASC, e.created_at DESC`, params); return rows; }
+  async eventsForViewer(userId = null, role = null, { categorySlug = null, managedOnly = false } = {}) { const privileged = ['manager', 'admin'].includes(role); const access = managedOnly ? 'e.manager_id = ?' : privileged ? 'TRUE' : `e.manager_id = ? OR (e.status = 'Published' AND e.visibility = 'Private' AND (r.id IS NOT NULL OR EXISTS (SELECT 1 FROM event_invitations i JOIN users invited ON LOWER(invited.email) = LOWER(i.email) WHERE i.event_id = e.id AND invited.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW())))`; const params = managedOnly ? [userId, userId] : privileged ? [userId] : [userId, userId, userId]; const categoryFilter = categorySlug ? ' AND c.slug = ?' : ''; if (categorySlug) params.push(categorySlug); const [rows] = await this.database.execute(`SELECT e.id, e.manager_id AS managerId, e.group_id AS groupId, g.name AS groupName, g.slug AS groupSlug, e.series_id AS seriesId, e.recurrence_frequency AS recurrenceFrequency, e.recurrence_interval AS recurrenceInterval, e.recurrence_count AS recurrenceCount, e.occurrence_number AS occurrenceNumber, e.title, e.description, e.custom_formatted_address AS location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.participation_fee AS fee, e.status, e.visibility, e.created_at AS createdAt, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl, v.id AS venueId, v.name AS venueName, v.formatted_address AS venueLocation, c.id AS categoryId, c.name AS categoryName, c.slug AS categorySlug, u.name AS managerName, r.id AS registrationId, r.status AS registrationStatus, r.payment_status AS registrationPaymentStatus, IF(r.id IS NULL, FALSE, TRUE) AS isRegistered FROM events e JOIN users u ON u.id = e.manager_id LEFT JOIN event_categories c ON c.id = e.category_id LEFT JOIN event_groups g ON g.id = e.group_id LEFT JOIN venue_bookings vb ON vb.event_id = e.id AND vb.status = 'confirmed' LEFT JOIN venues v ON v.id = vb.venue_id LEFT JOIN event_registrations r ON r.id = (SELECT MAX(r2.id) FROM event_registrations r2 WHERE r2.event_id = e.id AND r2.user_id = ?) WHERE e.deleted_at IS NULL AND (${managedOnly ? access : `(e.status = 'Published' AND e.visibility = 'Public') OR (${access})`})${categoryFilter} ORDER BY e.starts_at ASC, e.created_at DESC`, params); return rows; }
   async privateInvitationExists(eventId, userId) { const [rows] = await this.database.execute("SELECT i.id FROM event_invitations i JOIN users u ON LOWER(u.email) = LOWER(i.email) WHERE i.event_id = ? AND u.id = ? AND i.status = 'Pending' AND i.token_expires_at > NOW()", [eventId, userId]); return rows.length > 0; }
   async eventVisibility(eventId) { const [rows] = await this.database.execute('SELECT visibility FROM events WHERE id = ?', [eventId]); return rows[0]?.visibility; }
   async eventManagerId(eventId) { const [rows] = await this.database.execute('SELECT manager_id AS managerId FROM events WHERE id = ?', [eventId]); return rows[0]?.managerId; }
@@ -259,30 +259,6 @@ export class Queries {
       return user;
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   }
-  async applicationsForUser(email) { const [rows] = await this.database.execute('SELECT id, name, email, contact, activity, additional_information AS additionalInformation, status, created_at AS createdAt FROM contact_submissions WHERE email = ? ORDER BY created_at DESC', [email]); return rows; }
-  async applicationActivities() { const [rows] = await this.database.execute('SELECT id, name FROM application_activities WHERE is_active = TRUE ORDER BY sort_order ASC, name ASC'); return rows; }
-  async applications() { const [rows] = await this.database.execute('SELECT id, name, email, contact, activity, additional_information AS additionalInformation, status, created_at AS createdAt FROM contact_submissions ORDER BY created_at DESC'); return rows; }
-  async application(id) { const [rows] = await this.database.execute('SELECT id, name, email, contact, activity, additional_information AS additionalInformation, status, created_at AS createdAt FROM contact_submissions WHERE id = ?', [id]); return rows[0]; }
-  async updateApplicationStatus(id, status) { const [result] = await this.database.execute('UPDATE contact_submissions SET status = ? WHERE id = ?', [status, id]); return result.affectedRows > 0; }
-  async reviewOrganizerApplication(id, status) {
-    const connection = await this.database.getConnection();
-    try {
-      await connection.beginTransaction();
-      const [applications] = await connection.execute("SELECT id, email, activity, status FROM contact_submissions WHERE id = ? FOR UPDATE", [id]);
-      const application = applications[0];
-      if (!application || application.activity.trim().toLowerCase() !== 'event organizer') return { error: 'NOT_ORGANIZER_APPLICATION' };
-      if (status === 'Approved') {
-        const [users] = await connection.execute("SELECT id, role FROM users WHERE LOWER(email) = LOWER(?) FOR UPDATE", [application.email]);
-        if (!users[0]) return { error: 'CUSTOMER_NOT_FOUND' };
-        if (!['customer', 'organizer'].includes(users[0].role)) return { error: 'INVALID_CUSTOMER_ROLE' };
-        await connection.execute("UPDATE users SET role = 'organizer' WHERE id = ?", [users[0].id]);
-      }
-      await connection.execute('UPDATE contact_submissions SET status = ? WHERE id = ?', [status, id]);
-      await connection.commit();
-      return { success: true, status };
-    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
-  }
-  async createApplication(data) { const [result] = await this.database.execute('INSERT INTO contact_submissions (name, email, contact, activity, additional_information) VALUES (?, ?, ?, ?, ?)', [data.name, data.email, data.contact, data.activity, data.additionalInformation]); return result.insertId; }
   async createUser(data, sendVerification) {
     const connection = await this.database.getConnection();
     try { await connection.beginTransaction(); const [result] = await connection.execute('INSERT INTO users (profile_picture, name, email, password_hash, phone, role, isEmailConfirmed, verification_token_hash, verification_expires_at, verification_resend_available_at) VALUES (?, ?, ?, ?, ?, ?, FALSE, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR), DATE_ADD(NOW(), INTERVAL 30 SECOND))', [data.profilePicture, data.name, data.email, data.passwordHash, data.phone, data.role || 'customer', data.tokenHash]); if (data.termsVersion) await connection.execute("INSERT INTO user_legal_acceptances (user_id, document_type, version, source) VALUES (?, 'terms', ?, 'registration')", [result.insertId, data.termsVersion]); await connection.execute('INSERT INTO marketing_email_preferences (email, marketing_opt_in, policy_version, source) VALUES (?, ?, ?, \'registration\')', [data.email, Boolean(data.marketingConsent), data.marketingPolicyVersion || null]); await connection.execute('INSERT INTO audit_log (actor_user_id, event_type, entity_type, entity_id, metadata) VALUES (?, \'registration\', \'user\', ?, ?)', [result.insertId, String(result.insertId), JSON.stringify({ termsVersion: data.termsVersion, marketingConsent: Boolean(data.marketingConsent) })]); await sendVerification(); await connection.commit(); return result.insertId; }
@@ -304,7 +280,7 @@ export class Queries {
     await this.database.execute('INSERT INTO event_ratings (event_id, user_id, rating) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE rating = VALUES(rating), updated_at = CURRENT_TIMESTAMP', [eventId, userId, rating]);
     return { summary: await this.eventRatingSummary(eventId, userId) };
   }
-  async updateParticipantStatus(id, managerId, status, isAdmin = false) { const ownership = isAdmin ? '' : ' AND e.manager_id = ?'; const params = isAdmin ? [status, id] : [status, id, managerId]; const [result] = await this.database.execute(`UPDATE event_participants p JOIN events e ON e.id = p.event_id SET p.status = ? WHERE p.id = ?${ownership}`, params); return result.affectedRows > 0; }
+  async updateParticipantStatus(id, managerId, status, isAdmin = false) { const ownership = isAdmin ? '' : ' AND e.manager_id = ?'; const params = isAdmin ? [status, id] : [status, id, managerId]; const [result] = await this.database.execute(`UPDATE event_participants p JOIN events e ON e.id = p.event_id SET p.status = ? WHERE p.id = ? AND NOT EXISTS (SELECT 1 FROM event_followup_deliveries d WHERE d.participant_id = p.id)${ownership}`, params); return result.affectedRows > 0; }
   async updateParticipantPaymentStatus(id, managerId, status, role) { const globalAccess = ['manager', 'admin'].includes(role); const ownership = globalAccess ? '' : ' AND e.manager_id = ?'; const params = globalAccess ? [status, id] : [status, id, managerId]; const [result] = await this.database.execute(`UPDATE event_participants p JOIN events e ON e.id = p.event_id SET p.payment_status = ? WHERE p.id = ?${ownership}`, params); return result.affectedRows > 0; }
   async participantFee(id) { const [rows] = await this.database.execute('SELECT e.participation_fee AS fee FROM event_participants p JOIN events e ON e.id = p.event_id WHERE p.id = ?', [id]); return Number(rows[0]?.fee || 0); }
   async updateRegistrationPaymentStatus(id, managerId, status, role) { const globalAccess = ['manager', 'admin'].includes(role); const ownership = globalAccess ? '' : ' AND e.manager_id = ?'; const params = globalAccess ? [status, id] : [status, id, managerId]; const [result] = await this.database.execute(`UPDATE event_registrations r JOIN events e ON e.id = r.event_id SET r.payment_status = ? WHERE r.id = ?${ownership} AND r.status = 'Pending'`, params); return result.affectedRows > 0; }
@@ -485,7 +461,7 @@ export class Queries {
   }
   richEventInsertValues(data, occurrenceNumber = 1) {
     const recurrence = data.recurrence || { frequency: 'none', interval: 1, count: 1 };
-    const values = [data.managerId, data.title, data.brandName, data.logoImage, data.shortDescription, data.description, data.coverImage, data.categoryId, data.typeId,
+    const values = [data.managerId, data.title, data.brandName, data.logoImage, data.shortDescription, data.description, JSON.stringify(data.foodOptions || []), data.coverImage, data.categoryId, data.typeId,
       data.locationType, data.locationVisibility, data.startsAt, data.endsAt,
       data.timezone, data.cancellationPolicy, data.pricingType, data.fee, data.currency,
       data.registrationType, data.externalRegistrationUrl, data.visibility, data.groupId, recurrence.frequency, recurrence.interval, recurrence.count, occurrenceNumber,
@@ -496,10 +472,10 @@ export class Queries {
   }
   async insertRichEvent(connection, data, occurrenceNumber) {
     const values = this.richEventInsertValues(data, occurrenceNumber);
-    if (values.length !== 41) throw new Error(`Rich event parameter contract failed: expected 41 values, received ${values.length}.`);
+    if (values.length !== 42) throw new Error(`Rich event parameter contract failed: expected 42 values, received ${values.length}.`);
     const placeholders = values.map(() => '?').join(', ');
     const [result] = await connection.query(`INSERT INTO events
-      (manager_id, title, brand_name, logo_image, short_description, description, cover_image, category_id, type_id, location_type, location_visibility, starts_at, ends_at, timezone, cancellation_policy, pricing_type, participation_fee, currency,
+      (manager_id, title, brand_name, logo_image, short_description, description, food_options, cover_image, category_id, type_id, location_type, location_visibility, starts_at, ends_at, timezone, cancellation_policy, pricing_type, participation_fee, currency,
        registration_type, external_registration_url, visibility, group_id, recurrence_frequency, recurrence_interval, recurrence_count, occurrence_number,
        venue_id, custom_address_line_1, custom_address_line_2, custom_postal_code, custom_locality, custom_municipality, custom_region,
        custom_country, custom_country_code, custom_latitude, custom_longitude, custom_google_place_id, custom_formatted_address, online_url, online_platform, status)
@@ -587,7 +563,7 @@ export class Queries {
   }
   async updateRichEvent(id, managerId, role, data, executor = this.database) {
     const scope = ['manager', 'admin'].includes(role) ? '' : ' AND manager_id = ?';
-    const params = [data.title, data.brandName, data.logoImage, data.shortDescription, data.description, data.coverImage, data.categoryId, data.typeId,
+    const params = [data.title, data.brandName, data.logoImage, data.shortDescription, data.description, data.foodOptions === undefined ? null : JSON.stringify(data.foodOptions), data.coverImage, data.categoryId, data.typeId,
       data.locationType, data.locationVisibility, data.startsAt, data.endsAt,
       data.timezone, data.cancellationPolicy, data.pricingType, data.fee, data.currency,
       data.registrationType, data.externalRegistrationUrl, data.visibility, data.venueId, data.customAddressLine1, data.customAddressLine2,
@@ -595,7 +571,7 @@ export class Queries {
       data.customLatitude, data.customLongitude, data.customGooglePlaceId, data.customFormattedAddress, data.onlineUrl, data.onlinePlatform, id]
       .map((value) => value === undefined || (typeof value === 'number' && Number.isNaN(value)) ? null : value);
     if (!['manager', 'admin'].includes(role)) params.push(managerId);
-    const [result] = await executor.query(`UPDATE events SET title=?, brand_name=COALESCE(?,brand_name), logo_image=COALESCE(?,logo_image), short_description=?, description=?, cover_image=?, category_id=?, type_id=?, location_type=?, location_visibility=?, starts_at=?, ends_at=?, timezone=?, cancellation_policy=?, pricing_type=?, participation_fee=?, currency=?, registration_type=?, external_registration_url=?, visibility=?, venue_id=?, custom_address_line_1=?, custom_address_line_2=?, custom_postal_code=?, custom_locality=?, custom_municipality=?, custom_region=?, custom_country=?, custom_country_code=?, custom_latitude=?, custom_longitude=?, custom_google_place_id=?, custom_formatted_address=?, online_url=?, online_platform=? WHERE id=? AND deleted_at IS NULL${scope}`, params);
+    const [result] = await executor.query(`UPDATE events SET title=?, brand_name=COALESCE(?,brand_name), logo_image=COALESCE(?,logo_image), short_description=?, description=?, food_options=COALESCE(?,food_options), cover_image=?, category_id=?, type_id=?, location_type=?, location_visibility=?, starts_at=?, ends_at=?, timezone=?, cancellation_policy=?, pricing_type=?, participation_fee=?, currency=?, registration_type=?, external_registration_url=?, visibility=?, venue_id=?, custom_address_line_1=?, custom_address_line_2=?, custom_postal_code=?, custom_locality=?, custom_municipality=?, custom_region=?, custom_country=?, custom_country_code=?, custom_latitude=?, custom_longitude=?, custom_google_place_id=?, custom_formatted_address=?, online_url=?, online_platform=? WHERE id=? AND deleted_at IS NULL${scope}`, params);
     return result.affectedRows > 0;
   }
   async updateEventSchedule(id, managerId, role, { startsAt, endsAt, venueId, timezone }) {
@@ -625,6 +601,8 @@ export class Queries {
   normalizeRichEventLocation(event, { publicView = false } = {}) {
     if (!event) return null;
     const normalized = { ...event };
+    const foodOptions = jsonValue(normalized.foodOptions);
+    normalized.foodOptions = Array.isArray(foodOptions) ? foodOptions : [];
     // All occurrence fields exposed by the API are unambiguous UTC instants.
     // The event timezone remains the canonical local-time context.
     for (const key of ['startsAt', 'endsAt', 'publishedAt', 'createdAt', 'updatedAt']) normalized[key] = utcTimestamp(normalized[key]);
@@ -665,7 +643,7 @@ export class Queries {
   }
   async richEvent(id, userId = null, role = null) {
     const privileged = ['manager', 'admin'].includes(role);
-    const [rows] = await this.database.query(`SELECT e.id, e.manager_id AS managerId, e.organizer_organization_id AS organizerOrganizationId, e.title, e.brand_name AS brandName, e.logo_image AS logoImage, e.short_description AS shortDescription, e.description, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl,
+    const [rows] = await this.database.query(`SELECT e.id, e.manager_id AS managerId, e.organizer_organization_id AS organizerOrganizationId, e.title, e.brand_name AS brandName, e.logo_image AS logoImage, e.short_description AS shortDescription, e.description, e.food_options AS foodOptions, e.cover_image AS coverImage, e.cover_image AS coverImageUrl, e.cover_image AS thumbnailUrl,
       e.category_id AS categoryId, c.name AS categoryName, e.type_id AS typeId, t.name AS typeName,
       e.location_type AS locationType, e.location_visibility AS locationVisibility, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone,
       e.cancellation_policy AS cancellationPolicy,
@@ -681,9 +659,75 @@ export class Queries {
     return this.normalizeRichEventLocation(rows[0], { publicView: !privileged && (!userId || rows[0]?.managerId !== userId) });
   }
   async publishRichEvent(id, managerId, role) { const privileged = ['manager', 'admin'].includes(role); const [events] = await this.database.execute(`SELECT COALESCE(series_id, id) AS seriesId FROM events WHERE id = ? AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? [id] : [id, managerId]); if (!events[0]) return false; const [result] = await this.database.execute('UPDATE events SET status = ?, published_at = COALESCE(published_at, NOW()) WHERE deleted_at IS NULL AND (id = ? OR series_id = ?)', ['Published', events[0].seriesId, events[0].seriesId]); return result.affectedRows > 0; }
-  async updateEventStatus(id, userId, status, role) { const globalAccess = ['manager', 'admin'].includes(role); const ownership = globalAccess ? '' : ' AND manager_id = ?'; const params = globalAccess ? [status, id] : [status, id, userId]; const [result] = await this.database.execute(`UPDATE events SET status = ? WHERE id = ?${ownership}`, params); return result.affectedRows > 0; }
+  async updateEventStatus(id, userId, status, role) { const globalAccess = ['manager', 'admin'].includes(role); const ownership = globalAccess ? '' : ' AND manager_id = ?'; const params = globalAccess ? [status, id] : [status, id, userId]; const [result] = await this.database.execute(`UPDATE events SET status = ? WHERE id = ? AND status <> 'Completed'${ownership}`, params); return result.affectedRows > 0; }
+  async finishEvent(id, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [result] = await this.database.execute(`UPDATE events SET status = 'Completed' WHERE id = ? AND status = 'Published' AND COALESCE(ends_at, starts_at) <= UTC_TIMESTAMP() AND deleted_at IS NULL${privileged ? '' : ' AND manager_id = ?'}`, privileged ? [id] : [id, userId]);
+    return result.affectedRows > 0;
+  }
+  async managedFollowupEvent(id, userId, role) {
+    const privileged = ['manager', 'admin'].includes(role);
+    const [rows] = await this.database.execute(`SELECT e.id, e.title, e.brand_name AS brandName, e.logo_image AS logoImage, e.status, e.starts_at AS startsAt, e.ends_at AS endsAt, e.manager_id AS managerId, u.name AS managerName FROM events e JOIN users u ON u.id = e.manager_id WHERE e.id = ? AND e.deleted_at IS NULL${privileged ? '' : ' AND e.manager_id = ?'}`, privileged ? [id] : [id, userId]);
+    return rows[0] || null;
+  }
+  async eventFollowupOverview(eventId) {
+    const [attendance] = await this.database.execute(`SELECT
+      SUM(p.status = 'Attended') AS attended,
+      SUM(p.status = 'No Show') AS noShow,
+      SUM(p.status = 'Pending') AS unmarked,
+      SUM(p.status = 'Attended' AND COALESCE(NULLIF(TRIM(p.participant_email), ''), u.email) IS NOT NULL) AS attendedWithEmail,
+      SUM(p.status = 'No Show' AND COALESCE(NULLIF(TRIM(p.participant_email), ''), u.email) IS NOT NULL) AS noShowWithEmail
+      FROM event_participants p LEFT JOIN users u ON u.id = p.user_id WHERE p.event_id = ?`, [eventId]);
+    const [templates] = await this.database.execute('SELECT audience, subject, body FROM event_followup_templates WHERE event_id = ?', [eventId]);
+    const [deliveries] = await this.database.execute('SELECT audience, status, COUNT(*) AS total FROM event_followup_deliveries WHERE event_id = ? GROUP BY audience, status', [eventId]);
+    return {
+      attendance: Object.fromEntries(Object.entries(attendance[0] || {}).map(([key, value]) => [key, Number(value || 0)])),
+      templates: Object.fromEntries(templates.map(({ audience, subject, body }) => [audience, { subject, body }])),
+      deliveries: deliveries.reduce((result, item) => { result[item.audience] ||= {}; result[item.audience][item.status] = Number(item.total); return result; }, {}),
+    };
+  }
+  async saveEventFollowupTemplate(eventId, audience, subject, body) {
+    const [locked] = await this.database.execute('SELECT id FROM event_followup_deliveries WHERE event_id = ? AND audience = ? LIMIT 1', [eventId, audience]);
+    if (locked.length) return false;
+    await this.database.execute('INSERT INTO event_followup_templates (event_id, audience, subject, body) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE subject = VALUES(subject), body = VALUES(body)', [eventId, audience, subject, body]);
+    return true;
+  }
+  async queueEventFollowup(eventId, audience) {
+    const participantStatus = audience === 'attended' ? 'Attended' : 'No Show';
+    await this.database.execute(`INSERT IGNORE INTO event_followup_deliveries (event_id, participant_id, audience, recipient_email, recipient_name)
+      SELECT p.event_id, p.id, ?, COALESCE(NULLIF(TRIM(p.participant_email), ''), u.email), COALESCE(NULLIF(TRIM(p.participant_name), ''), u.name, 'Guest')
+      FROM event_participants p JOIN events e ON e.id = p.event_id LEFT JOIN users u ON u.id = p.user_id
+      WHERE p.event_id = ? AND e.status = 'Completed' AND p.status = ? AND COALESCE(NULLIF(TRIM(p.participant_email), ''), u.email) IS NOT NULL`, [audience, eventId, participantStatus]);
+    const [rows] = await this.database.execute(`SELECT d.id, d.recipient_email AS email, d.recipient_name AS name FROM event_followup_deliveries d
+      JOIN event_participants p ON p.id = d.participant_id WHERE d.event_id = ? AND d.audience = ? AND d.status IN ('pending','failed') AND p.status = ? ORDER BY d.id LIMIT 25`, [eventId, audience, participantStatus]);
+    return rows;
+  }
+  async claimEventFollowupDelivery(id) {
+    const [result] = await this.database.execute("UPDATE event_followup_deliveries SET status = 'sending', error_message = NULL WHERE id = ? AND status IN ('pending','failed')", [id]);
+    return result.affectedRows > 0;
+  }
+  async finishEventFollowupDelivery(id, error = null) {
+    await this.database.execute("UPDATE event_followup_deliveries SET status = ?, sent_at = CASE WHEN ? IS NULL THEN UTC_TIMESTAMP() ELSE NULL END, error_message = ? WHERE id = ? AND status = 'sending'", [error ? 'failed' : 'sent', error, error ? String(error).slice(0, 500) : null, id]);
+  }
   async registrations(eventId, managerId, isAdmin = false) { await this.database.execute("UPDATE event_registrations r JOIN events e ON e.id = r.event_id SET r.payment_status = CASE WHEN e.participation_fee > 0 THEN 'Payment Required' ELSE 'Not Required' END WHERE r.event_id = ? AND r.status <> 'Withdrawn' AND r.payment_status <> 'Paid'", [eventId]); const ownership = isAdmin ? '' : ' AND e.manager_id = ?'; const params = isAdmin ? [eventId] : [eventId, managerId]; const [rows] = await this.database.execute(`SELECT r.id, r.event_id AS eventId, r.user_id AS userId, r.status, r.payment_status AS paymentStatus, r.created_at AS createdAt, COALESCE(u.name, r.attendee_name) AS name, COALESCE(r.attendee_email, u.email) AS email, COALESCE(r.attendee_phone, u.phone) AS phone FROM event_registrations r JOIN events e ON e.id = r.event_id LEFT JOIN users u ON u.id = r.user_id WHERE r.event_id = ? AND r.status <> 'Withdrawn'${ownership} ORDER BY r.created_at DESC`, params); return rows; }
   async userRegistrations(userId) { const [rows] = await this.database.execute('SELECT r.id, r.event_id AS eventId, r.status, r.created_at AS createdAt, e.title, e.custom_formatted_address AS location, e.starts_at AS startsAt FROM event_registrations r JOIN events e ON e.id = r.event_id WHERE r.user_id = ? ORDER BY r.created_at DESC', [userId]); return rows; }
+  async attendingEvents(userId, email) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const [rows] = await this.database.execute(`SELECT e.id, e.title, e.custom_formatted_address AS location,
+      e.starts_at AS startsAt, e.ends_at AS endsAt, e.status,
+      (SELECT JSON_ARRAYAGG(o.id) FROM ticket_orders o WHERE o.event_id = e.id AND o.attendee_user_id = ?
+        AND o.payment_status = 'paid' AND EXISTS (SELECT 1 FROM issued_tickets t WHERE t.ticket_order_id = o.id)) AS ticketOrderIds,
+      EXISTS (SELECT 1 FROM event_registrations r WHERE r.event_id = e.id
+        AND (r.user_id = ? OR LOWER(r.attendee_email) = ?) AND r.status NOT IN ('Cancelled', 'Declined', 'Withdrawn')) AS isRegistered,
+      EXISTS (SELECT 1 FROM event_participants p WHERE p.event_id = e.id
+        AND (p.user_id = ? OR LOWER(p.participant_email) = ?)) AS isParticipating,
+      EXISTS (SELECT 1 FROM event_invitations i WHERE i.event_id = e.id AND LOWER(i.email) = ?
+        AND (i.status = 'Accepted' OR (i.status = 'Pending' AND i.token_expires_at > NOW()))) AS isInvited
+      FROM events e WHERE e.deleted_at IS NULL AND e.status IN ('Published', 'Completed', 'Cancelled')
+      HAVING isRegistered OR isParticipating OR isInvited
+      ORDER BY e.starts_at DESC, e.id DESC`, [userId, userId, normalizedEmail, userId, normalizedEmail, normalizedEmail]);
+    return rows.map((row) => ({ ...row, ticketOrderIds: jsonValue(row.ticketOrderIds) || [], isRegistered: Boolean(row.isRegistered), isParticipating: Boolean(row.isParticipating), isInvited: Boolean(row.isInvited) }));
+  }
   async registration(id, managerId) { const [rows] = await this.database.execute("SELECT r.id, r.event_id AS eventId, r.user_id AS userId, r.status, COALESCE(r.attendee_email, u.email) AS email, COALESCE(u.name, r.attendee_name) AS name, e.title, e.brand_name AS brandName, e.logo_image AS logoImage, e.description, e.custom_formatted_address AS location, e.starts_at AS startsAt, e.ends_at AS endsAt, e.timezone FROM event_registrations r JOIN events e ON e.id = r.event_id LEFT JOIN users u ON u.id = r.user_id WHERE r.id = ? AND r.status <> 'Withdrawn' AND e.manager_id = ?", [id, managerId]); return rows[0]; }
   async existingEventRegistration(eventId, userId = null, email = null) {
     const normalizedEmail = String(email || '').trim().toLowerCase();
@@ -876,12 +920,12 @@ export class Queries {
   */
   async articleCategories() { const [rows] = await this.database.execute('SELECT id, name, slug, description, sort_order AS sortOrder FROM article_categories WHERE is_active = TRUE ORDER BY sort_order, name'); return rows; }
   articleColumns() { return "a.id, a.slug, a.title, a.excerpt, a.body, a.cover_image AS coverImage, a.cover_alt_text AS coverAltText, a.status, a.is_indexable AS isIndexable, a.published_at AS publishedAt, a.created_at AS createdAt, a.updated_at AS updatedAt, a.author_user_id AS authorUserId, u.name AS authorName, c.id AS categoryId, c.name AS categoryName, c.slug AS categorySlug, GROUP_CONCAT(DISTINCT t.slug ORDER BY t.slug SEPARATOR ',') AS tagSlugs"; }
-  async articles({ categorySlug = null, tagSlug = null, page = 1, limit = 20, editorId = null, editorRole = null } = {}) { const privileged = ['manager', 'admin'].includes(editorRole); const admin = editorRole === 'admin'; const conditions = [privileged ? `BINARY a.status <> BINARY 'removed'${admin ? '' : ' AND a.author_user_id = ?'}` : "BINARY a.status = BINARY 'published' AND a.is_indexable = TRUE AND a.published_at IS NOT NULL AND a.published_at <= NOW()"] ; const params = privileged && !admin ? [editorId] : []; if (categorySlug) { conditions.push('c.slug = ?'); params.push(categorySlug); } if (tagSlug) { conditions.push('EXISTS (SELECT 1 FROM article_tag_assignments filter_ata JOIN article_tags filter_t ON filter_t.id = filter_ata.tag_id WHERE filter_ata.article_id = a.id AND filter_t.slug = ?)'); params.push(tagSlug); } const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50); const offset = (Math.max(Number(page) || 1, 1) - 1) * safeLimit; const [rows] = await this.database.execute(`SELECT ${this.articleColumns()} FROM articles a JOIN users u ON u.id = a.author_user_id LEFT JOIN article_categories c ON c.id = a.category_id LEFT JOIN article_tag_assignments ata ON ata.article_id = a.id LEFT JOIN article_tags t ON t.id = ata.tag_id WHERE ${conditions.join(' AND ')} GROUP BY a.id, u.name, c.id, c.name, c.slug ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ? OFFSET ?`, [...params, safeLimit, offset]); return rows.map((row) => ({ ...row, tags: row.tagSlugs ? row.tagSlugs.split(',') : [], tagSlugs: undefined })); }
+  async articles({ categorySlug = null, tagSlug = null, page = 1, limit = 20, editorId = null, editorRole = null } = {}) { const privileged = editorId != null; const admin = editorRole === 'admin'; const conditions = [privileged ? `BINARY a.status <> BINARY 'removed'${admin ? '' : ' AND a.author_user_id = ?'}` : "BINARY a.status = BINARY 'published' AND a.is_indexable = TRUE AND a.published_at IS NOT NULL AND a.published_at <= NOW()"] ; const params = privileged && !admin ? [editorId] : []; if (categorySlug) { conditions.push('c.slug = ?'); params.push(categorySlug); } if (tagSlug) { conditions.push('EXISTS (SELECT 1 FROM article_tag_assignments filter_ata JOIN article_tags filter_t ON filter_t.id = filter_ata.tag_id WHERE filter_ata.article_id = a.id AND filter_t.slug = ?)'); params.push(tagSlug); } const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50); const offset = (Math.max(Number(page) || 1, 1) - 1) * safeLimit; const [rows] = await this.database.execute(`SELECT ${this.articleColumns()} FROM articles a JOIN users u ON u.id = a.author_user_id LEFT JOIN article_categories c ON c.id = a.category_id LEFT JOIN article_tag_assignments ata ON ata.article_id = a.id LEFT JOIN article_tags t ON t.id = ata.tag_id WHERE ${conditions.join(' AND ')} GROUP BY a.id, u.name, c.id, c.name, c.slug ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ? OFFSET ?`, [...params, safeLimit, offset]); return rows.map((row) => ({ ...row, tags: row.tagSlugs ? row.tagSlugs.split(',') : [], tagSlugs: undefined })); }
   async articleBySlug(slug, userId = null, role = null) { const isAdmin = role === 'admin'; const [rows] = await this.database.execute(`SELECT ${this.articleColumns()} FROM articles a JOIN users u ON u.id = a.author_user_id LEFT JOIN article_categories c ON c.id = a.category_id LEFT JOIN article_tag_assignments ata ON ata.article_id = a.id LEFT JOIN article_tags t ON t.id = ata.tag_id WHERE a.slug = ? AND (${isAdmin ? "BINARY a.status <> BINARY 'removed'" : "(BINARY a.status = BINARY 'published' AND a.is_indexable = TRUE AND a.published_at IS NOT NULL AND a.published_at <= NOW()) OR a.author_user_id = ?"}) GROUP BY a.id, u.name, c.id, c.name, c.slug`, isAdmin ? [slug] : [slug, userId]); if (!rows[0]) return null; return { ...rows[0], tags: rows[0].tagSlugs ? rows[0].tagSlugs.split(',') : [], tagSlugs: undefined }; }
   async articleForEditor(id, userId, role) { const privileged = role === 'admin'; const [rows] = await this.database.execute(`SELECT id, slug, author_user_id AS authorUserId, cover_image AS coverImage FROM articles WHERE id = ?${privileged ? '' : ' AND author_user_id = ?'}`, privileged ? [id] : [id, userId]); return rows[0] || null; }
-  async createArticle(data) { const [result] = await this.database.execute('INSERT INTO articles (slug, author_user_id, category_id, title, excerpt, body, status, is_indexable, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)', [data.slug, data.authorUserId, data.categoryId, data.title, data.excerpt, data.body, data.status, data.isIndexable]); if (data.status === 'published') await this.database.execute('UPDATE articles SET published_at = NOW() WHERE id = ?', [result.insertId]); return result.insertId; }
+  async createArticle(data, executor = this.database) { const [result] = await executor.execute('INSERT INTO articles (slug, author_user_id, category_id, title, excerpt, body, status, is_indexable, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)', [data.slug, data.authorUserId, data.categoryId, data.title, data.excerpt, data.body, data.status, data.isIndexable]); if (data.status === 'published') await executor.execute('UPDATE articles SET published_at = NOW() WHERE id = ?', [result.insertId]); return result.insertId; }
   async updateArticle(id, userId, role, data) { const privileged = role === 'admin'; const [result] = await this.database.execute(`UPDATE articles SET category_id=?, title=?, excerpt=?, body=?, is_indexable=? WHERE id=?${privileged ? '' : ' AND author_user_id=?'}`, [...data, id, ...(privileged ? [] : [userId])]); return result.affectedRows > 0; }
-  async setArticleStatus(id, userId, role, status, isIndexable = null) { const privileged = role === 'admin'; const params = [status]; let sql = 'UPDATE articles SET status = ?'; if (status === 'published') sql += ', published_at = COALESCE(published_at, NOW())'; if (isIndexable !== null) { sql += ', is_indexable = ?'; params.push(isIndexable); } sql += ` WHERE id = ?${privileged ? '' : ' AND author_user_id = ?'}`; params.push(id, ...(privileged ? [] : [userId])); const [result] = await this.database.execute(sql, params); return result.affectedRows > 0; }
+  async setArticleStatus(id, userId, role, status, isIndexable = null, executor = this.database) { const privileged = role === 'admin'; const params = [status]; let sql = 'UPDATE articles SET status = ?'; if (status === 'published') sql += ', published_at = COALESCE(published_at, NOW())'; if (isIndexable !== null) { sql += ', is_indexable = ?'; params.push(isIndexable); } sql += ` WHERE id = ?${privileged ? '' : ' AND author_user_id = ?'}`; params.push(id, ...(privileged ? [] : [userId])); const [result] = await executor.execute(sql, params); return result.affectedRows > 0; }
   async setArticleCover(id, userId, role, filename, altText) { const privileged = role === 'admin'; const [result] = await this.database.execute(`UPDATE articles SET cover_image=?, cover_alt_text=? WHERE id=?${privileged ? '' : ' AND author_user_id=?'}`, [filename, altText, id, ...(privileged ? [] : [userId])]); return result.affectedRows > 0; }
   async addArticleMedia(articleId, filename, altText, caption) { const [rows] = await this.database.execute('SELECT COALESCE(MAX(sort_order), 0) + 1 AS nextOrder FROM article_media WHERE article_id = ?', [articleId]); const [result] = await this.database.execute('INSERT INTO article_media (article_id, filename, alt_text, caption, sort_order) VALUES (?, ?, ?, ?, ?)', [articleId, filename, altText, caption, rows[0].nextOrder]); return result.insertId; }
   async articleMedia(articleId) { const [rows] = await this.database.execute('SELECT id, filename, alt_text AS altText, caption, sort_order AS sortOrder, created_at AS createdAt FROM article_media WHERE article_id = ? ORDER BY sort_order, id', [articleId]); return rows; }
@@ -889,41 +933,6 @@ export class Queries {
   async articleImageVisible(filename, userId = null, role = null) { const isAdmin = role === 'admin'; const [rows] = await this.database.execute(`SELECT a.id FROM articles a LEFT JOIN article_media m ON m.article_id = a.id WHERE (a.cover_image = ? OR m.filename = ?) AND (${isAdmin ? 'TRUE' : "(BINARY a.status = BINARY 'published' AND a.is_indexable = TRUE AND a.published_at IS NOT NULL AND a.published_at <= NOW()) OR a.author_user_id = ?"}) LIMIT 1`, isAdmin ? [filename, filename] : [filename, filename, userId]); return rows[0] || null; }
   async deleteArticleMedia(id, articleId) { const [result] = await this.database.execute('DELETE FROM article_media WHERE id = ? AND article_id = ?', [id, articleId]); return result.affectedRows > 0; }
   async syncArticleTags(articleId, tags) { const connection = await this.database.getConnection(); try { await connection.beginTransaction(); await connection.execute('DELETE FROM article_tag_assignments WHERE article_id = ?', [articleId]); for (const tag of tags) { await connection.execute('INSERT INTO article_tags (name, slug) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)', [tag.name, tag.slug]); const [rows] = await connection.execute('SELECT id FROM article_tags WHERE slug = ?', [tag.slug]); await connection.execute('INSERT INTO article_tag_assignments (article_id, tag_id) VALUES (?, ?)', [articleId, rows[0].id]); } await connection.commit(); } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); } }
-  async venueOwnerApplication(userId) {
-    const [rows] = await this.database.execute(`SELECT a.id, a.user_id AS userId, a.business_name AS businessName, a.message, a.status, a.created_at AS createdAt, a.updated_at AS updatedAt, a.reviewed_at AS reviewedAt, reviewer.name AS reviewerName
-      FROM venue_owner_applications a LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by_user_id WHERE a.user_id = ?`, [userId]);
-    return rows[0] || null;
-  }
-  async createVenueOwnerApplication(userId, { businessName, message = null }) {
-    await this.database.execute(`INSERT INTO venue_owner_applications (user_id, business_name, message, status, reviewed_by_user_id, reviewed_at)
-      VALUES (?, ?, ?, 'pending', NULL, NULL)
-      ON DUPLICATE KEY UPDATE business_name = VALUES(business_name), message = VALUES(message), status = 'pending', reviewed_by_user_id = NULL, reviewed_at = NULL`, [userId, businessName, message]);
-    return this.venueOwnerApplication(userId);
-  }
-  async venueOwnerApplications(status = null) {
-    const [rows] = await this.database.execute(`SELECT a.id, a.user_id AS userId, a.business_name AS businessName, a.message, a.status, a.created_at AS createdAt, a.updated_at AS updatedAt, a.reviewed_at AS reviewedAt,
-      u.name AS userName, u.email AS userEmail, u.role AS userRole, reviewer.name AS reviewerName
-      FROM venue_owner_applications a JOIN users u ON u.id = a.user_id LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by_user_id${status ? ' WHERE a.status = ?' : ''} ORDER BY a.created_at DESC`, status ? [status] : []);
-    return rows;
-  }
-  async reviewVenueOwnerApplication(id, status, reviewerId) {
-    const connection = await this.database.getConnection();
-    try {
-      await connection.beginTransaction();
-      const [applications] = await connection.execute('SELECT user_id AS userId FROM venue_owner_applications WHERE id = ? FOR UPDATE', [id]);
-      const application = applications[0];
-      if (!application) { await connection.rollback(); return { error: 'NOT_FOUND' }; }
-      if (status === 'approved') {
-        const [users] = await connection.execute('SELECT role FROM users WHERE id = ? FOR UPDATE', [application.userId]);
-        if (!users[0]) { await connection.rollback(); return { error: 'USER_NOT_FOUND' }; }
-        if (!['customer', 'organizer', 'venue_owner'].includes(users[0].role)) { await connection.rollback(); return { error: 'ROLE_NOT_ELIGIBLE' }; }
-        await connection.execute("UPDATE users SET role = 'venue_owner' WHERE id = ?", [application.userId]);
-      }
-      await connection.execute('UPDATE venue_owner_applications SET status = ?, reviewed_by_user_id = ?, reviewed_at = NOW() WHERE id = ?', [status, reviewerId, id]);
-      await connection.commit();
-      return { userId: application.userId, status, role: status === 'approved' ? 'venue_owner' : null };
-    } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
-  }
   venueColumns(prefix = 'v') {
     return `${prefix}.id, ${prefix}.organization_id AS organizationId, ${prefix}.billing_profile_id AS billingProfileId, ${prefix}.owner_user_id AS ownerUserId, ${prefix}.name, ${prefix}.slug, ${prefix}.business_name AS businessName, ${prefix}.logo_image AS logoImage, ${prefix}.short_description AS shortDescription, ${prefix}.description, ${prefix}.address_line_1 AS addressLine1, ${prefix}.address_line_2 AS addressLine2, ${prefix}.postal_code AS postalCode, ${prefix}.country, ${prefix}.country_code AS countryCode, ${prefix}.city, ${prefix}.municipality, ${prefix}.region, ${prefix}.latitude, ${prefix}.longitude, ${prefix}.google_place_id AS googlePlaceId, ${prefix}.formatted_address AS formattedAddress, ${prefix}.location_visibility AS locationVisibility, ${prefix}.timezone, ${prefix}.venue_type_id AS venueTypeId, ${prefix}.capacity_min AS capacityMin, ${prefix}.capacity_max AS capacityMax, ${prefix}.standing_capacity AS standingCapacity, ${prefix}.seated_capacity AS seatedCapacity, ${prefix}.dining_capacity AS diningCapacity, ${prefix}.classroom_capacity AS classroomCapacity, ${prefix}.size_sqm AS sizeSqm, ${prefix}.price_from AS priceFrom, ${prefix}.price_unit AS priceUnit, ${prefix}.currency, ${prefix}.pricing_description AS pricingDescription, ${prefix}.minimum_booking_hours AS minimumBookingHours, ${prefix}.website_url AS websiteUrl, ${prefix}.phone, ${prefix}.contact_email AS contactEmail, ${prefix}.availability_type AS availabilityType, ${prefix}.house_rules_text AS houseRulesText, ${prefix}.is_active AS isActive, ${prefix}.is_verified AS isVerified, ${prefix}.is_featured AS isFeatured, ${prefix}.verification_status AS verificationStatus, ${prefix}.moderation_status AS moderationStatus, ${prefix}.published_at AS publishedAt, ${prefix}.created_at AS createdAt, ${prefix}.updated_at AS updatedAt, (SELECT vm.filename FROM venue_media vm WHERE vm.venue_id = ${prefix}.id AND vm.is_cover = TRUE ORDER BY vm.sort_order, vm.id LIMIT 1) AS coverImage`;
   }
@@ -2455,6 +2464,10 @@ export class Queries {
   async createPrivacyRequest(request) {
     const [result] = await this.database.execute('INSERT INTO privacy_requests (reference, user_id, name, email, category, message) VALUES (?, ?, ?, ?, ?, ?)', [request.reference, request.userId, request.name, request.email, request.category, request.message]);
     return result.insertId;
+  }
+  async contactMessages() {
+    const [rows] = await this.database.execute('SELECT id, reference, name, email, category, message, status, created_at AS createdAt FROM privacy_requests ORDER BY created_at DESC, id DESC');
+    return rows;
   }
   async createModerationDecision(decision) {
     const [result] = await this.database.execute(`INSERT INTO moderation_decisions

@@ -172,7 +172,7 @@ test('HTTP checkout, signed webhook, and buyer order return complete the purchas
 });
 
 test('ticket email contains escaped admission codes, test label and offline attachment', async () => {
-  const service = new EmailService({ smtp: { host: 'smtp.test', verification: {}, applicationNotification: {}, invitation: {} }, domain: 'ykcircle.test', noReplyFrom: 'no-reply@ykcircle.test' });
+  const service = new EmailService({ smtp: { host: 'smtp.test', verification: {}, notification: {}, invitation: {} }, domain: 'ykcircle.test', noReplyFrom: 'no-reply@ykcircle.test' });
   let message;
   service.mailer = { sendMail: async (data) => { message = data; return { accepted: [data.to], rejected: [] }; } };
   await service.sendTickets({ id: 1, attendeeEmail: 'buyer@example.test', eventTitle: '<script>test</script>', orderNumber: 'TKT-TEST', testMode: true,
