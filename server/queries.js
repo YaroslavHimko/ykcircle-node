@@ -1885,7 +1885,7 @@ export class Queries {
     return { ...await this.decorateVenue(rows[0], { publicView: !managed }), canManage: managed, availability: await this.venueAvailability(id), images: await this.venueMedia(id) };
   }
   async venueBySlug(slug, userId = null, role = null) { const [rows] = await this.database.execute('SELECT id FROM venues WHERE slug = ?', [slug]); return rows[0] ? this.venue(rows[0].id, userId, role) : null; }
-  async venuesForViewer(userId = null, role = null, { managedOnly = false, city = null, venueType = null, eventType = null, amenities = [], minCapacity = null, maxCapacity = null, maxPrice = null, verifiedOnly = false } = {}) {
+  async venuesForViewer(userId = null, role = null, { managedOnly = false, ownedOnly = false, city = null, venueType = null, eventType = null, amenities = [], minCapacity = null, maxCapacity = null, maxPrice = null, verifiedOnly = false } = {}) {
     const privileged = ['manager', 'admin'].includes(role);
     // Do not add an owner predicate for an anonymous visitor.  Besides making
     // the public intent unambiguous, this avoids relying on a NULL-bound
@@ -1894,7 +1894,10 @@ export class Queries {
     // active venues are always represented by the current schema contract.
     let filter = 'TRUE';
     let parameters = [];
-    if (managedOnly) {
+    if (ownedOnly) {
+      filter = 'v.owner_user_id = ?';
+      parameters = [userId];
+    } else if (managedOnly) {
       if (!privileged) {
         filter = "(v.owner_user_id = ? OR EXISTS (SELECT 1 FROM organization_members managed_member WHERE managed_member.organization_id = v.organization_id AND managed_member.user_id = ? AND managed_member.role IN ('owner','admin','manager')))";
         parameters = [userId, userId];
@@ -1919,8 +1922,8 @@ export class Queries {
     // The public listing only surfaces an inactive venue through the owner
     // predicate above, so an owner check is sufficient to flag it there.
     return Promise.all(rows.map(async (venue) => ({
-      ...await this.decorateVenue(venue, { publicView: !managedOnly && !privileged }),
-      canManage: managedOnly || privileged || (userId !== null && venue.ownerUserId === userId),
+      ...await this.decorateVenue(venue, { publicView: !ownedOnly && !managedOnly && !privileged }),
+      canManage: ownedOnly || managedOnly || privileged || (userId !== null && venue.ownerUserId === userId),
     })));
   }
   async createVenue(ownerUserId, data) {

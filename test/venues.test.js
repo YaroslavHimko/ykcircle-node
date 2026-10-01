@@ -66,6 +66,20 @@ test('a manager can see every venue, including inactive and managed listings', a
   assert.deepEqual(calls[1].parameters, []);
 });
 
+test('owned venue listings stay personal for every role and include inactive drafts', async () => {
+  for (const role of ['customer', 'venue_owner', 'organizer', 'manager', 'admin']) {
+    const queries = new Queries({ execute: async (sql, parameters) => {
+      assert.match(sql, /WHERE v.owner_user_id = \? ORDER BY/);
+      assert.deepEqual(parameters, [42]);
+      return [[{ id: 7, ownerUserId: 42, isActive: false, moderationStatus: 'draft' }]];
+    } });
+    queries.decorateVenue = async (venue, options) => { assert.equal(options.publicView, false); return venue; };
+    const venues = await queries.venuesForViewer(42, role, { ownedOnly: true });
+    assert.equal(venues[0].canManage, true);
+    assert.equal(venues[0].isActive, false);
+  }
+});
+
 test('only exposes active venues publicly and labels active promotions as sponsored', async () => {
   const calls = [];
   const queries = new Queries({

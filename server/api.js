@@ -1420,6 +1420,10 @@ export class Api {
       try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user.id, req.user.role, { managedOnly: true })); }
       catch (error) { console.error('Managed venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load your venues.' }); }
     });
+    app.get('/api/my/venues', authenticate, async (req, res) => {
+      try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user.id, req.user.role, { ownedOnly: true })); }
+      catch (error) { console.error('Owned venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load your venues.' }); }
+    });
     app.get('/api/manager/venues', authenticate, requireRoleManager, async (req, res) => {
       try { await ensureTable(); return sendVenueList(res, await this.queries.venuesForViewer(req.user.id, req.user.role, { managedOnly: true })); }
       catch (error) { console.error('Manager venue lookup failed:', error.message); return res.status(500).json({ error: 'Unable to load venues.' }); }
