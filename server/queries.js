@@ -714,7 +714,11 @@ export class Queries {
   async attendingEvents(userId, email) {
     const normalizedEmail = String(email || '').trim().toLowerCase();
     const [rows] = await this.database.execute(`SELECT e.id, e.title, e.custom_formatted_address AS location,
-      e.starts_at AS startsAt, e.ends_at AS endsAt, e.status,
+      e.starts_at AS startsAt, e.ends_at AS endsAt, e.status, e.visibility,
+      e.manager_id AS managerId, u.name AS managerName, e.brand_name AS brandName,
+      e.short_description AS shortDescription, e.description, e.cover_image AS coverImage,
+      e.location_type AS locationType, e.participation_fee AS fee, e.currency, e.timezone,
+      v.name AS venueName,
       (SELECT JSON_ARRAYAGG(o.id) FROM ticket_orders o WHERE o.event_id = e.id AND o.attendee_user_id = ?
         AND o.payment_status = 'paid' AND EXISTS (SELECT 1 FROM issued_tickets t WHERE t.ticket_order_id = o.id)) AS ticketOrderIds,
       EXISTS (SELECT 1 FROM event_registrations r WHERE r.event_id = e.id
@@ -723,7 +727,8 @@ export class Queries {
         AND (p.user_id = ? OR LOWER(p.participant_email) = ?)) AS isParticipating,
       EXISTS (SELECT 1 FROM event_invitations i WHERE i.event_id = e.id AND LOWER(i.email) = ?
         AND (i.status = 'Accepted' OR (i.status = 'Pending' AND i.token_expires_at > NOW()))) AS isInvited
-      FROM events e WHERE e.deleted_at IS NULL AND e.status IN ('Published', 'Completed', 'Cancelled')
+      FROM events e JOIN users u ON u.id=e.manager_id LEFT JOIN venues v ON v.id=e.venue_id
+      WHERE e.deleted_at IS NULL AND e.status IN ('Published', 'Completed', 'Cancelled')
       HAVING isRegistered OR isParticipating OR isInvited
       ORDER BY e.starts_at DESC, e.id DESC`, [userId, userId, normalizedEmail, userId, normalizedEmail, normalizedEmail]);
     return rows.map((row) => ({ ...row, ticketOrderIds: jsonValue(row.ticketOrderIds) || [], isRegistered: Boolean(row.isRegistered), isParticipating: Boolean(row.isParticipating), isInvited: Boolean(row.isInvited) }));
