@@ -2244,7 +2244,7 @@ export class Queries {
       b.buyer_billing_profile_id AS buyerBillingProfileId, b.booking_type AS bookingType, b.booking_date AS bookingDate,
       b.start_at AS startAt, b.end_at AS endAt, b.occupied_start_at AS occupiedStartAt, b.occupied_end_at AS occupiedEndAt,
       b.venue_timezone AS venueTimezone, b.status, b.currency, b.subtotal AS storedSubtotal,
-      v.organization_id AS sellerOrganizationId, v.owner_user_id AS sellerOwnerUserId, v.billing_profile_id AS legacySellerBillingProfileId,
+      v.organization_id AS sellerOrganizationId, v.owner_user_id AS sellerOwnerUserId,
       v.name AS venueName, v.business_name AS venueBrandName, v.logo_image AS venueLogoImage, v.formatted_address AS venueAddress, v.price_from AS fallbackRate,
       organization.default_billing_profile_id AS organizationDefaultBillingProfileId, organization.name AS organizationName,
       event.title AS eventTitle, booking.hourly_rate AS hourlyRate, booking.daily_rate AS dailyRate,

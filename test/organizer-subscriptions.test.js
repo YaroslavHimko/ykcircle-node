@@ -7,6 +7,14 @@ import { OrganizerSubscriptions, subscriptionHasAccess, subscriptionPeriod, safe
 import { Api } from '../server/api.js';
 import { Queries } from '../server/queries.js';
 
+test('free launch blocks both event and article subscription checkout', async () => {
+  const service = new OrganizerSubscriptions({ queries: { database: {} }, siteUrl: 'https://ykcircle.test' });
+  service.access = { authorizeOwner: async () => {}, configuration: async () => ({ subscriptionsEnabled: false }) };
+  for (const feature of [PUBLISH_EVENT, PUBLISH_ARTICLE]) {
+    await assert.rejects(service.checkout({ user: { id: 1 }, owner: { type: 'user', id: 1 }, priceId: 1, billingProfileId: 1, feature }), { code: 'SUBSCRIPTIONS_DISABLED' });
+  }
+});
+
 function fixture() {
   const state = { configuration: { subscriptionsEnabled: true, paidEventsEnabled: false, paidVenuesEnabled: false }, members: [1], events: [], entitlements: [], subscriptions: [], customers: [], attempts: [], received: new Set(), audit: [], session: null, queries: [] };
   const execute = async (sql, p = []) => {
@@ -66,12 +74,11 @@ function fixture() {
   return { state, database, queries, service, calls, subscription, stripe, checkout };
 }
 
-test('article checkout is independent of event switches, subscriptions and pending checkouts', async () => {
+test('article checkout is independent of event subscriptions and pending checkouts when subscriptions are enabled', async () => {
   const f = fixture();
   const eventPlans = await f.queries.platformProducts();
   f.queries.platformProducts = async () => [...eventPlans, { ...eventPlans[0], id: 9, priceId: 10, entitlementFeature: PUBLISH_ARTICLE }];
   await f.checkout();
-  f.state.configuration.subscriptionsEnabled = false;
   f.state.subscriptions.push({ status: 'active', feature: PUBLISH_EVENT });
   const input = { owner: { type: 'user', id: 1 }, user: { id: 1 }, billingProfileId: 5, priceId: 10, feature: PUBLISH_ARTICLE, returnTo: '/profile/articles/2/edit' };
   await f.service.checkout(input);
@@ -262,6 +269,11 @@ test('HTTP draft creation remains allowed; both publishing APIs enforce the subs
 });
 test('HTTP paid-feature bypasses are denied even for managers; configuration is staff-only', async t=>{
   const f=await apiFixture(t);
+  for (const path of ['/api/platform/orders', '/api/platform/orders/1/checkout', '/api/PLATFORM/ORDERS/%31/CHECKOUT/']) {
+    const response = await f.request(path, {}, 'POST', 99);
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).code, 'PAID_SERVICES_DISABLED');
+  }
   for(const [path,body,method] of [['/api/events/drafts',{pricingType:'paid',fee:5},'POST'],['/api/groups/2/events/drafts',{fee:5},'POST'],['/api/events/4/payment-settings',{paymentsEnabled:true},'PUT'],['/api/events/4/ticket-checkout',{},'POST'],['/api/ticket-orders/1/checkout',{},'POST'],['/api/venues',{priceFrom:50},'POST'],['/api/venues/2/booking-settings',{hourlyRate:50},'PUT']]) {
     const response=await f.request(path,body,method,99);assert.equal(response.status,403,`${path}: ${await response.text()}`);
   }

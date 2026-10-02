@@ -6,9 +6,9 @@ export class ArticlePublishing {
   async requireSlot(userId, connection, articleId = null) {
     const access = await this.access.articleAccess(userId, connection);
     const subscribeUrl = `/profile/subscriptions?feature=author.publish_article&returnTo=${encodeURIComponent(articleId ? `/profile/articles/${articleId}/edit` : '/profile/articles')}`;
-    if (!access.hasSubscription) throw accessError('ARTICLE_SUBSCRIPTION_REQUIRED', 'Buy an article space subscription before publishing.', 403, { subscribeUrl });
+    if (access.subscriptionsEnabled && !access.hasSubscription) throw accessError('ARTICLE_SUBSCRIPTION_REQUIRED', 'Buy an article space subscription before publishing.', 403, { subscribeUrl });
     const [previous] = articleId ? await connection.execute('SELECT article_id FROM article_publications WHERE article_id=?', [articleId]) : [[]];
-    if (!previous.length && !access.remaining) throw accessError('ARTICLE_MONTHLY_LIMIT', `You have used your ${access.monthlyLimit} article spaces for this calendar month (UTC).`, 409, { resetsAt: access.resetsAt });
+    if (access.subscriptionsEnabled && !previous.length && !access.remaining) throw accessError('ARTICLE_MONTHLY_LIMIT', `You have used your ${access.monthlyLimit} article spaces for this calendar month (UTC).`, 409, { resetsAt: access.resetsAt });
     return !previous.length;
   }
 

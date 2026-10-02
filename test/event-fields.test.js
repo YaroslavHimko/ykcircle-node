@@ -2,33 +2,11 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
 import express from 'express';
-import { Database } from '../server/database.js';
 import { Queries } from '../server/queries.js';
 import { Api } from '../server/api.js';
 
 const retired = ['capacity', 'minimum_attendees', 'language_code', 'registration_deadline', 'minimum_age', 'what_to_bring', 'meeting_instructions'];
 const retiredFields = ['capacity', 'minimumAttendees', 'languageCode', 'registrationDeadline', 'minimumAge', 'whatToBring', 'meetingInstructions'];
-
-test('event field migration handles existing, fresh and partially migrated schemas idempotently', async () => {
-  for (const columns of [retired, [], retired.slice(2)]) {
-    const existing = new Set(['title', 'starts_at', ...columns]);
-    const alterations = [];
-    const database = Object.create(Database.prototype);
-    database.pool = { execute: async (sql) => {
-      if (sql.startsWith('SELECT')) return [[...existing].map(name => ({ name }))];
-      alterations.push(sql);
-      for (const clause of sql.replace('ALTER TABLE events ', '').split(', ')) {
-        assert.match(clause, /^DROP COLUMN /);
-        assert.equal(existing.delete(clause.replace('DROP COLUMN ', '')), true);
-      }
-      return [{}];
-    } };
-    await database.removeRetiredEventFields();
-    await database.removeRetiredEventFields();
-    assert.deepEqual([...existing], ['title', 'starts_at']);
-    assert.equal(alterations.length, columns.length ? 1 : 0);
-  }
-});
 
 test('event insert and update preserve field alignment after removing optional fields', async () => {
   const calls = [];

@@ -2,11 +2,11 @@
 
 ## Rollout
 
-The agreed rule is **drafts stay available; subscription access is checked when publishing**. Both `POST /api/events/:id/publish` and the legacy status endpoint apply the same check. A denied publication returns `403 SUBSCRIPTION_REQUIRED`, the organizing owner, and a local Subscribe URL. The editor redirects there and preserves the saved draft. Returning from Checkout never publishes automatically.
+The agreed rule is **drafts stay available; subscription access is checked when publishing**. Both `POST /api/events/:id/publish` and the status endpoint apply the same check. A denied publication returns `403 SUBSCRIPTION_REQUIRED`, the organizing owner, and a local Subscribe URL. The editor redirects there and preserves the saved draft. Returning from Checkout never publishes automatically.
 
-Database initialization applies additive schema changes: product configuration, explicit event organization identity, Stripe customer/checkout mappings, subscription invoice references, trial dates, and canonical Stripe subscription statuses. Existing events, bookings, tickets, and invoices are not cancelled or rewritten. No migration has been run against production as part of this change.
+Database initialization creates the complete fresh-install schema. Historical upgrade and backfill code has been removed for the database reset. See [free launch](free-launch.md).
 
-All three switches default to **off** in `product_configuration`. Administrators and managers can change them under **Profile menu → Configuration** (`/admin/configuration`). They are persisted in the database and checked per request, without a restart. The old `ENABLE_PAID_EVENTS` environment value is not an override for these product switches; its existing legal-readiness use remains separate.
+All four switches default to **off** in `product_configuration`. Administrators and managers can change them under **Profile menu → Configuration** (`/admin/configuration`). They are persisted in the database and checked per request, without a restart. The old `ENABLE_PAID_EVENTS` environment value is not an override for these product switches; its existing legal-readiness use remains separate.
 
 1. Deploy the API and frontend together, allowing database initialization to finish.
 2. Configure the platform Stripe secret key and the separate `STRIPE_SUBSCRIPTION_WEBHOOK_SECRET` (or `runtime.stripe.subscriptionWebhookSecret` in `server/config.local.js`). Keep the existing ticket `webhookSecret` and onboarding `thinWebhookSecret`. Subscription Checkout uses the platform account; it never uses a seller's Connect account.
@@ -79,4 +79,4 @@ Subscriptions are available at `/profile/subscriptions` and `/subscribe`, linked
 
 ## Verification
 
-`node --test` includes HTTP tests for draft/publish behavior, manager-only configuration, bypass attempts, signature rejection, and canonical subscription reconciliation. Service tests cover owner isolation, expiry, period-end cancellation, duplicate/concurrent checkout, ambiguous provider timeouts, price mismatch, replay/out-of-order delivery, and preservation of unrelated entitlement sources. Frontend production build and mobile browser checks are performed locally with mocked APIs. Deployment should additionally exercise migrations against a backed-up staging MySQL database and complete a real Stripe test-mode lifecycle before enabling charging.
+`node --test` includes HTTP tests for draft/publish behavior, manager-only configuration, bypass attempts, signature rejection, and canonical subscription reconciliation. Service tests cover owner isolation, expiry, period-end cancellation, duplicate/concurrent checkout, ambiguous provider timeouts, price mismatch, replay/out-of-order delivery, and preservation of unrelated entitlement sources. Frontend production build and mobile browser checks are performed locally with mocked APIs. Deployment should additionally exercise fresh schema initialization against a staging MySQL database and complete a real Stripe test-mode lifecycle before enabling charging.

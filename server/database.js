@@ -7,29 +7,7 @@ export class Database {
     this.initialized = null;
   }
 
-  // The application historically bootstrapped its schema with CREATE TABLE IF
-  // NOT EXISTS.  Financial columns must therefore be additive for deployed
-  // databases too; never rely on a fresh database when rolling this out.
-  async ensureColumn(table, column, definition) {
-    const [rows] = await this.pool.execute(`SELECT 1 FROM information_schema.columns
-      WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, [table, column]);
-    if (!rows[0]) await this.pool.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
-  }
-  async removeRetiredEventFields() {
-    const columns = ['capacity', 'minimum_attendees', 'language_code', 'registration_deadline', 'minimum_age', 'what_to_bring', 'meeting_instructions'];
-    const [rows] = await this.pool.execute(
-      "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'events'",
-    );
-    const existing = new Set(rows.map((row) => row.name));
-    const retired = columns.filter((column) => existing.has(column));
-    if (retired.length) await this.pool.execute('ALTER TABLE events ' + retired.map((column) => 'DROP COLUMN ' + column).join(', '));
-  }
-  async hasIndex(table, index) {
-    const [rows] = await this.pool.execute(`SELECT 1 FROM information_schema.statistics
-      WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`, [table, index]);
-    return Boolean(rows[0]);
-  }
-
+  // Fresh-install schema. Existing databases must already match this release.
   async initialize() {
     this.initialized ||= (async () => {
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS users (
@@ -206,6 +184,7 @@ export class Database {
         CONSTRAINT event_groups_organizer_fk FOREIGN KEY (organizer_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS events (
+        organizer_organization_id INT UNSIGNED NULL,
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, manager_id INT UNSIGNED NOT NULL,
         group_id INT UNSIGNED NULL, series_id INT UNSIGNED NULL, recurrence_frequency ENUM('none','daily','weekly','monthly') NOT NULL DEFAULT 'none', recurrence_interval SMALLINT UNSIGNED NOT NULL DEFAULT 1, recurrence_count SMALLINT UNSIGNED NOT NULL DEFAULT 1, occurrence_number SMALLINT UNSIGNED NOT NULL DEFAULT 1,
         title VARCHAR(200) NOT NULL, brand_name VARCHAR(160) NULL, logo_image MEDIUMTEXT NULL, short_description VARCHAR(240) NULL, description TEXT NULL, food_options JSON NULL, cover_image VARCHAR(1024) NULL, category_id INT UNSIGNED NULL, type_id INT UNSIGNED NULL,
@@ -224,7 +203,6 @@ export class Database {
         CONSTRAINT events_group_fk FOREIGN KEY (group_id) REFERENCES event_groups(id) ON DELETE SET NULL,
         CONSTRAINT events_series_fk FOREIGN KEY (series_id) REFERENCES events(id) ON DELETE SET NULL
       )`);
-      await this.removeRetiredEventFields();
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_representatives (
         event_id INT UNSIGNED NOT NULL, user_id INT UNSIGNED NOT NULL,
         assigned_by_user_id INT UNSIGNED NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -493,8 +471,6 @@ export class Database {
         INDEX article_publications_user_month (user_id, published_at),
         CONSTRAINT article_publications_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`);
-      await this.pool.execute(`INSERT IGNORE INTO article_publications (article_id, user_id, published_at)
-        SELECT id, author_user_id, published_at FROM articles WHERE published_at IS NOT NULL`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS article_tags (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, name VARCHAR(80) NOT NULL, slug VARCHAR(100) NOT NULL UNIQUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -579,6 +555,8 @@ export class Database {
         CONSTRAINT venue_media_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS venue_bookings (
+        invoice_generation_error VARCHAR(500) NULL,
+        invoice_generation_status ENUM('not_required','pending','succeeded','failed') NOT NULL DEFAULT 'not_required',
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         venue_id INT UNSIGNED NOT NULL,
         event_id INT UNSIGNED NULL,
@@ -857,9 +835,10 @@ export class Database {
         CONSTRAINT platform_orders_invoice_fk FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS platform_subscriptions (
+        trial_end DATETIME NULL,
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, subscriber_user_id INT UNSIGNED NULL, subscriber_organization_id INT UNSIGNED NULL,
         buyer_billing_profile_id INT UNSIGNED NULL, product_id INT UNSIGNED NOT NULL, buyer_capacity ENUM('consumer','business') NOT NULL,
-        status ENUM('pending','active','past_due','cancelled','expired') NOT NULL DEFAULT 'pending',
+        status ENUM('pending','active','past_due','cancelled','expired','incomplete','incomplete_expired','trialing','unpaid','paused','canceled') NOT NULL DEFAULT 'pending',
         current_period_start DATETIME NULL, current_period_end DATETIME NULL, cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
         provider VARCHAR(80) NULL, provider_customer_id VARCHAR(255) NULL, provider_subscription_id VARCHAR(255) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -898,6 +877,10 @@ export class Database {
         CONSTRAINT event_ticket_types_event_fk FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS ticket_orders (
+        test_mode BOOLEAN NOT NULL DEFAULT FALSE,
+        checkout_expires_at DATETIME NULL,
+        checkout_key VARCHAR(100) NULL,
+        checkout_session_id VARCHAR(255) NULL,
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, order_number VARCHAR(64) NOT NULL UNIQUE, event_id INT UNSIGNED NULL,
         attendee_user_id INT UNSIGNED NULL, attendee_email VARCHAR(255) NOT NULL, seller_billing_profile_id INT UNSIGNED NULL,
         payment_account_id INT UNSIGNED NULL, currency CHAR(3) NOT NULL, subtotal DECIMAL(12,2) NOT NULL,
@@ -918,11 +901,9 @@ export class Database {
         CONSTRAINT ticket_order_items_order_fk FOREIGN KEY (ticket_order_id) REFERENCES ticket_orders(id) ON DELETE RESTRICT,
         CONSTRAINT ticket_order_items_type_fk FOREIGN KEY (ticket_type_id) REFERENCES event_ticket_types(id) ON DELETE SET NULL
       )`);
-      await this.ensureColumn('ticket_orders', 'checkout_session_id', 'VARCHAR(255) NULL');
-      await this.ensureColumn('ticket_orders', 'checkout_key', 'VARCHAR(100) NULL');
-      await this.ensureColumn('ticket_orders', 'checkout_expires_at', 'DATETIME NULL');
-      await this.ensureColumn('ticket_orders', 'test_mode', 'BOOLEAN NOT NULL DEFAULT FALSE');
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS issued_tickets (
+        checked_in_by_user_id INT UNSIGNED NULL,
+        checked_in_at DATETIME NULL,
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ticket_order_id INT UNSIGNED NOT NULL,
         ticket_order_item_id INT UNSIGNED NOT NULL, ordinal INT UNSIGNED NOT NULL,
         code VARCHAR(64) NOT NULL UNIQUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -930,8 +911,6 @@ export class Database {
         FOREIGN KEY (ticket_order_id) REFERENCES ticket_orders(id) ON DELETE RESTRICT,
         FOREIGN KEY (ticket_order_item_id) REFERENCES ticket_order_items(id) ON DELETE RESTRICT
       )`);
-      await this.ensureColumn('issued_tickets', 'checked_in_at', 'DATETIME NULL');
-      await this.ensureColumn('issued_tickets', 'checked_in_by_user_id', 'INT UNSIGNED NULL');
       // Durable delivery jobs are committed with tickets. SMTP failure cannot lose a purchase.
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS ticket_email_deliveries (
         ticket_order_id INT UNSIGNED PRIMARY KEY, sent_at DATETIME NULL, attempts INT UNSIGNED NOT NULL DEFAULT 0,
@@ -983,51 +962,6 @@ export class Database {
         starts_at DATETIME NOT NULL, ends_at DATETIME NOT NULL, status ENUM('draft','scheduled','active','paused','ended') NOT NULL DEFAULT 'draft', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX venue_promotions_active (status, starts_at, ends_at), CONSTRAINT venue_promotions_venue_fk FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
       )`);
-      // Additive compatibility migrations. Existing production rows are left
-      // untouched; the new nullable fields are populated only by new flows.
-      await this.ensureColumn('organizations', 'default_billing_profile_id', 'INT UNSIGNED NULL');
-      await this.ensureColumn('payment_accounts', 'details_submitted', 'BOOLEAN NULL');
-      await this.ensureColumn('events', 'brand_name', 'VARCHAR(160) NULL');
-      await this.ensureColumn('events', 'logo_image', 'MEDIUMTEXT NULL');
-      await this.ensureColumn('events', 'food_options', 'JSON NULL');
-      await this.ensureColumn('venues', 'logo_image', 'MEDIUMTEXT NULL');
-      await this.ensureColumn('event_payment_settings', 'seller_capacity', "ENUM('trader','private') NULL");
-      await this.ensureColumn('event_payment_settings', 'refund_policy_snapshot', 'JSON NULL');
-      await this.ensureColumn('invoices', 'context_type', 'VARCHAR(64) NULL');
-      await this.ensureColumn('invoices', 'context_id', 'VARCHAR(128) NULL');
-      await this.ensureColumn('invoices', 'invoice_series_id', 'INT UNSIGNED NULL');
-      await this.ensureColumn('invoices', 'paid_date', 'DATE NULL');
-      await this.ensureColumn('invoices', 'manual_payment_note', 'TEXT NULL');
-      const [invoicePaymentMethodColumns] = await this.pool.execute(`SELECT column_type AS columnType FROM information_schema.columns
-        WHERE table_schema = DATABASE() AND table_name = 'invoices' AND column_name = 'manual_payment_method'`);
-      if (invoicePaymentMethodColumns[0] && !String(invoicePaymentMethodColumns[0].columnType).includes("'bankgiro'")) {
-        await this.pool.execute("ALTER TABLE invoices MODIFY COLUMN manual_payment_method ENUM('bank_transfer','bankgiro','plusgiro','swish','cash','other') NULL");
-      }
-      await this.ensureColumn('venue_bookings', 'invoice_generation_status', "ENUM('not_required','pending','succeeded','failed') NOT NULL DEFAULT 'not_required'");
-      await this.ensureColumn('venue_bookings', 'invoice_generation_error', 'VARCHAR(500) NULL');
-      await this.ensureColumn('platform_orders', 'checkout_idempotency_key', 'VARCHAR(128) NULL');
-      // This is additive for historic acceptance evidence. The old unique key
-      // prevented us from retaining a second acceptance for the same version
-      // in a distinct Event, Venue, Organization, booking, or order context.
-      await this.ensureColumn('user_legal_acceptances', 'context_type', 'VARCHAR(64) NULL');
-      await this.ensureColumn('user_legal_acceptances', 'context_id', 'VARCHAR(128) NULL');
-      await this.ensureColumn('user_legal_acceptances', 'organization_id', 'INT UNSIGNED NULL');
-      if (await this.hasIndex('user_legal_acceptances', 'user_legal_acceptance')) {
-        await this.pool.execute('ALTER TABLE user_legal_acceptances DROP INDEX user_legal_acceptance');
-      }
-      if (!await this.hasIndex('user_legal_acceptances', 'user_legal_context_lookup')) {
-        await this.pool.execute('CREATE INDEX user_legal_context_lookup ON user_legal_acceptances (user_id, document_type, context_type, context_id, organization_id, accepted_at)');
-      }
-      // Invoice numbers belong to a legal seller profile, not to an
-      // organization. Retiring this index does not alter legacy numbers.
-      if (await this.hasIndex('invoices', 'invoice_number_per_seller')) {
-        // The legacy composite key may be the index MySQL chose for
-        // invoices_seller_fk. Keep an explicit replacement before removing it.
-        if (!await this.hasIndex('invoices', 'invoices_seller')) await this.pool.execute('ALTER TABLE invoices ADD INDEX invoices_seller (seller_organization_id)');
-        await this.pool.execute('ALTER TABLE invoices DROP INDEX invoice_number_per_seller');
-      }
-      if (!await this.hasIndex('invoices', 'invoice_number_per_profile')) await this.pool.execute('ALTER TABLE invoices ADD UNIQUE KEY invoice_number_per_profile (seller_billing_profile_id, invoice_number)');
-      if (!await this.hasIndex('platform_orders', 'platform_order_idempotency')) await this.pool.execute('ALTER TABLE platform_orders ADD UNIQUE KEY platform_order_idempotency (buyer_user_id, checkout_idempotency_key)');
     })();
     return this.initialized;
   }

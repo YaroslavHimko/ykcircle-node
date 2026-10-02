@@ -1,6 +1,6 @@
 export const PUBLISH_EVENT = 'organizer.publish_event';
 export const PUBLISH_ARTICLE = 'author.publish_article';
-export const PRODUCT_DEFAULTS = Object.freeze({ subscriptionsEnabled: false, paidEventsEnabled: false, paidVenuesEnabled: false, articlesPerMonth: 1 });
+export const PRODUCT_DEFAULTS = Object.freeze({ subscriptionsEnabled: false, paidEventsEnabled: false, paidVenuesEnabled: false, paidServicesEnabled: false, articlesPerMonth: 1 });
 export const accessError = (code, message, status = 403, details = {}) => Object.assign(new Error(message), { code, status, ...details });
 export const ownerKey = (owner) => `${owner.type}:${owner.id}`;
 export const parseOwner = (value, userId) => {
@@ -66,8 +66,8 @@ export class ProductAccess {
     const monthlyLimit = Number(configuration.articlesPerMonth);
     const used = Number(usage[0]?.used || 0);
     const remaining = Math.max(0, monthlyLimit - used);
-    return { owner: { type: 'user', id: userId }, subscriptionsEnabled: true, hasSubscription: entitlements.length > 0,
-      canPublish: entitlements.length > 0 && remaining > 0, accessSource: entitlements.length ? 'subscription' : null,
+    return { owner: { type: 'user', id: userId }, subscriptionsEnabled: configuration.subscriptionsEnabled, hasSubscription: entitlements.length > 0,
+      canPublish: !configuration.subscriptionsEnabled || (entitlements.length > 0 && remaining > 0), accessSource: !configuration.subscriptionsEnabled ? 'early_access' : entitlements.length ? 'subscription' : null,
       monthlyLimit, used, remaining, resetsAt: usage[0]?.resetsAt || null, entitlements };
   }
   async requirePublication(eventId, actorId, role) {

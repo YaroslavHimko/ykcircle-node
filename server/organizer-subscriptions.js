@@ -78,7 +78,7 @@ export class OrganizerSubscriptions {
     await this.access.authorizeOwner(owner, user.id);
     if (feature === PUBLISH_ARTICLE && owner.type !== 'user') throw accessError('ARTICLE_PERSONAL_ACCOUNT', 'Article space belongs to your personal account.', 422);
     if (![priceId, billingProfileId].every((value) => Number.isSafeInteger(value) && value > 0)) throw accessError('INVALID_CHECKOUT', 'Choose a subscription plan and billing profile.', 422);
-    if (feature === PUBLISH_EVENT && !(await this.access.configuration()).subscriptionsEnabled) throw accessError('SUBSCRIPTIONS_DISABLED', 'Publishing is currently available without a subscription.', 409);
+    if (!(await this.access.configuration()).subscriptionsEnabled) throw accessError('SUBSCRIPTIONS_DISABLED', 'Publishing is currently available without a subscription.', 409);
     if (!this.stripe.configured()) throw accessError('PAYMENT_PROVIDER_UNAVAILABLE', 'Subscription payments are not configured yet.', 503);
     return this.withOwnerLock(owner, async (connection) => {
       // Role escalation does not make another customer's billing profile purchasable.

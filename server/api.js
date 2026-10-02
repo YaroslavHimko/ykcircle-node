@@ -658,6 +658,10 @@ export class Api {
       const resumeCheckout = /^\/ticket-orders\/[^/]+\/checkout$/.test(path);
       const venueWrite = /^\/venues(?:\/[^/]+)?(?:\/booking-settings)?$/.test(path);
       try {
+        if (/^\/platform\/orders(?:\/[^/]+\/checkout)?$/.test(path)) {
+          await ensureTable();
+          if (!(await this.subscriptions.access.configuration()).paidServicesEnabled) return res.status(403).json({ code: 'PAID_SERVICES_DISABLED', error: 'Paid platform services are currently disabled.' });
+        }
         if (resumeCheckout || (eventWrite && (body.pricingType === 'paid' || Number(body.fee) > 0)) || (ticketWrite && (Number(body.price) > 0 || body.paymentsEnabled || body.ticketSalesEnabled || path.endsWith('/ticket-checkout')))) {
           await ensureTable(); await this.subscriptions.access.requirePaidFeature('paidEventsEnabled');
         }

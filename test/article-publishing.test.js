@@ -8,10 +8,10 @@ import { Queries } from '../server/queries.js';
 import { Api } from '../server/api.js';
 
 function fixture() {
-  const state = { articles: [], publications: [], active: new Set(), limit: 1, statements: [] };
+  const state = { articles: [], publications: [], active: new Set(), subscriptionsEnabled: true, limit: 1, statements: [] };
   const execute = async (sql, p = []) => {
     state.statements.push({ sql, p });
-    if (sql.includes('FROM product_configuration')) return [[{ settings: { articlesPerMonth: state.limit } }]];
+    if (sql.includes('FROM product_configuration')) return [[{ settings: { articlesPerMonth: state.limit, subscriptionsEnabled: state.subscriptionsEnabled } }]];
     if (sql.includes('FROM platform_entitlements e JOIN platform_subscriptions')) {
       assert.match(sql, /s.status='active'/);
       assert.match(sql, /s.current_period_end>UTC_TIMESTAMP\(\)/);
@@ -50,6 +50,23 @@ function fixture() {
   return { state, database, queries, service: new ArticlePublishing(queries) };
 }
 const article = (overrides = {}) => ({ authorUserId: 1, slug: 'my-article', categoryId: null, title: 'My new article', excerpt: 'An interesting article introduction.', body: 'An article body with enough content to pass validation.', status: 'draft', isIndexable: true, ...overrides });
+
+test('free launch allows publishing without a subscription or paid quota', async () => {
+  const f = fixture(); f.state.subscriptionsEnabled = false; f.state.limit = 0;
+  const id = await f.service.create(article({ status: 'published' }));
+  const draft = await f.service.create(article({ slug: 'another-story' }));
+  assert.equal(await f.service.publish(draft, 1, 'customer'), true);
+  await f.queries.setArticleStatus(id, 1, 'customer', 'archived');
+  assert.equal(await f.service.publish(id, 1, 'customer'), true);
+  assert.equal(f.state.publications.length, 2);
+  const access = await f.service.access.articleAccess(1);
+  assert.equal(access.subscriptionsEnabled, false);
+  assert.equal(access.hasSubscription, false);
+  assert.equal(access.canPublish, true);
+  assert.equal(access.accessSource, 'early_access');
+  f.state.subscriptionsEnabled = true;
+  await assert.rejects(f.service.create(article({ status: 'published' })), { code: 'ARTICLE_SUBSCRIPTION_REQUIRED' });
+});
 
 test('drafts are free, while direct publishing needs a paid article subscription', async () => {
   const f = fixture();
