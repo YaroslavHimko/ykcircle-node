@@ -22,11 +22,20 @@ const brandEmailHtml = (html = '') => {
 
 import { optionalEmailAllowed } from './email-preferences.js';
 
+const senderAddress = (value, name, fallback) => {
+  if (value && typeof value === 'object') return { name, ...value };
+  const match = String(value || '').match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+  return match ? { name: match[1].replace(/^"|"$/g, '') || name, address: match[2] } : { name, address: value || fallback };
+};
+
 export class EmailService {
-  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, passwordResetUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, database }) {
+  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, passwordResetUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, replyTo, privacyReplyTo, database }) {
     this.domain = domain;
     this.brandName = brandName;
-    this.noReplyFrom = noReplyFrom;
+    const senderName = !brandName || brandName === domain ? 'YKCircle' : brandName;
+    this.noReplyFrom = senderAddress(noReplyFrom, senderName, `notifications@${domain}`);
+    this.replyTo = replyTo || `support@${domain}`;
+    this.privacyReplyTo = privacyReplyTo || `privacy@${domain}`;
     this.smtp = smtp;
     this.verificationUrl = verificationUrl;
     this.passwordResetUrl = passwordResetUrl;
@@ -34,8 +43,8 @@ export class EmailService {
     this.eventDetailsUrl = eventDetailsUrl;
     this.invitationResponseUrl = invitationResponseUrl;
     this.groupInvitationUrl = groupInvitationUrl;
-    this.notificationFrom = notificationFrom;
-    this.invitationFrom = invitationFrom;
+    this.notificationFrom = senderAddress(notificationFrom, `${senderName} Events`, `notifications@${domain}`);
+    this.invitationFrom = senderAddress(invitationFrom, `${senderName} Invitations`, `notifications@${domain}`);
     this.database = database;
     this.unsubscribeUrl = unsubscribeUrl;
     this.unsubscribeEndpointUrl = unsubscribeEndpointUrl;
@@ -56,12 +65,16 @@ export class EmailService {
     }
     if (!allowed.length) return { accepted: [], rejected: recipients, suppressed: true };
     const unsubscribeLink = `${this.unsubscribeEndpointUrl}?token=${encodeURIComponent(this.unsubscribeToken(allowed[0]))}`;
-    return this.notificationMailer.sendMail({ ...message, to: allowed, text: `${message.text || ''}\n\nUnsubscribe from marketing emails: ${unsubscribeLink}`, html: `${brandEmailHtml(message.html)}<p><a href="${escapeHtml(unsubscribeLink)}">Unsubscribe from marketing emails</a></p>` });
+    return this.sendMail(this.notificationMailer, { ...message, from: this.noReplyFrom, to: allowed, text: `${message.text || ''}\n\nUnsubscribe from marketing emails: ${unsubscribeLink}`, html: `${brandEmailHtml(message.html)}<p><a href="${escapeHtml(unsubscribeLink)}">Unsubscribe from marketing emails</a></p>` });
   }
 
   createMailer(credentials) {
     return nodemailer.createTransport({ host: this.smtp.host, port: this.smtp.port, secure: this.smtp.secure,
       auth: credentials?.user ? { user: credentials.user, pass: credentials.password } : undefined });
+  }
+
+  sendMail(mailer, message) {
+    return mailer.sendMail({ replyTo: this.replyTo, ...message });
   }
 
   layout(content, subtitle = '') {
@@ -77,7 +90,7 @@ export class EmailService {
   }
 
   sendCustomerMail(mailer, branding, message) {
-    const name = branding.brandName || branding.managerName || branding.legalName || branding.title || 'Event organizer';
+    const name = branding.brandName || branding.managerName || branding.legalName || message.from?.name || branding.title || 'Event organizer';
     const logo = logoImage(branding.logoImage);
     const { offlineTickets, ...mail } = message;
     const attachments = [...(mail.attachments || [])];
@@ -86,12 +99,12 @@ export class EmailService {
     // Keep the configured, authenticated sender address; change only its label.
     const configured = mail.from;
     const address = typeof configured === 'string' ? (configured.match(/<([^>]+)>/)?.[1] || configured) : configured.address;
-    return mailer.sendMail({ ...mail, from: { name, address }, text: `${name}\n\n${mail.text}\n\nDelivered via ${this.brandName}.`, attachments });
+    return this.sendMail(mailer, { ...mail, from: { name, address }, text: `${name}\n\n${mail.text}\n\nDelivered via ${this.brandName}.`, attachments });
   }
 
   sendVerification(email, name, token) {
     const url = `${this.verificationUrl}?token=${encodeURIComponent(token)}`;
-    return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Verify your ${this.brandName} email address`,
+    return this.sendMail(this.mailer, { from: this.noReplyFrom, to: email, subject: `Verify your ${this.brandName} email address`,
       text: `Hi ${name},\n\nVerify your email address by opening this link:\n${url}\n\nThis link expires in 24 hours.`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Confirm your email address</h1><p style="font-size:16px;line-height:1.6;color:#526078">Thanks for creating your account. Click the button below to verify your email and finish setting up your profile.</p><p style="margin:28px 0"><a href="${url}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Verify my email</a></p><p style="font-size:13px;line-height:1.5;color:#7b879b">This verification link expires in 24 hours. If you did not create this account, you can safely ignore this email.</p>`) });
   }
@@ -120,13 +133,13 @@ export class EmailService {
 
   sendPasswordReset(email, name, token) {
     const url = `${this.passwordResetUrl}?token=${encodeURIComponent(token)}`;
-    return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Reset your ${this.brandName} password`,
+    return this.sendMail(this.mailer, { from: this.noReplyFrom, to: email, subject: `Reset your ${this.brandName} password`,
       text: `Hi ${name},\n\nReset your password by opening this link:\n${url}\n\nThis link expires in one hour. If you did not request a password reset, you can safely ignore this email.`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Reset your password</h1><p style="font-size:16px;line-height:1.6;color:#526078">We received a request to reset your password. Use the button below to choose a new one.</p><p style="margin:28px 0"><a href="${escapeHtml(url)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Reset password</a></p><p style="font-size:13px;line-height:1.5;color:#7b879b">This link expires in one hour. If you did not request a password reset, you can safely ignore this email.</p>`) });
   }
 
   sendAccountDeleted(email, name) {
-    return this.mailer.sendMail({ from: this.noReplyFrom, to: email, subject: `Your ${this.brandName} account was deleted`,
+    return this.sendMail(this.mailer, { from: this.noReplyFrom, to: email, replyTo: this.privacyReplyTo, subject: `Your ${this.brandName} account was deleted`,
       text: `Hi ${name},\n\nYour ${this.brandName} account has been deleted successfully. If you did not request this, please contact us immediately.`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>Account deleted</h1><p style="font-size:16px;line-height:1.6;color:#526078">Your ${escapeHtml(this.brandName)} account has been deleted successfully. You will no longer be able to sign in with this account.</p><p style="font-size:13px;color:#7b879b">If you did not request this change, please contact us immediately.</p>`) });
   }
@@ -188,7 +201,7 @@ export class EmailService {
     const responseUrl = `${this.groupInvitationUrl}?token=${encodeURIComponent(token)}`;
     const acceptUrl = `${responseUrl}&action=accept`;
     const declineUrl = `${responseUrl}&action=decline`;
-    return this.invitationMailer.sendMail({ from: this.invitationFrom, to: email, subject: `You are invited to join ${group.name}`,
+    return this.sendMail(this.invitationMailer, { from: this.invitationFrom, to: email, subject: `You are invited to join ${group.name}`,
       text: `Hi ${name || 'there'},\n\nYou have been invited to join the private group ${group.name}.\n\nAccept invitation: ${acceptUrl}\nDecline invitation: ${declineUrl}\n\nIf you do not yet have an account, register with this email address before accepting.`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name || 'there')},</p><h1>You are invited to a private group</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to join <strong>${escapeHtml(group.name)}</strong>.</p><p style="font-size:14px;line-height:1.6;color:#526078">If you do not yet have an account, register with this email address before accepting the invitation.</p><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Accept invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p>`, 'Private group invitation') });
   }

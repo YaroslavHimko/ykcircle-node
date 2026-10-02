@@ -13,6 +13,33 @@ const makeService = (database = { execute: async () => [[]] }) => new EmailServi
   unsubscribeSecret: 'test-secret', notificationFrom: 'info@ykcircle.test', invitationFrom: 'hello@ykcircle.test', database,
 });
 
+test('automatic emails share the notifications address and route replies to support or privacy', async () => {
+  const messages = [];
+  const service = new EmailService({
+    smtp: { host: 'smtp.example.test', verification: {}, notification: {}, invitation: {} },
+    domain: 'ykcircle.test', brandName: 'YKCircle', replyTo: 'support@ykcircle.test', privacyReplyTo: 'privacy@ykcircle.test',
+    verificationUrl: 'https://ykcircle.test/verify-email', passwordResetUrl: 'https://ykcircle.test/reset-password',
+    groupInvitationUrl: 'https://ykcircle.test/group-invitation', eventDetailsUrl: 'https://ykcircle.test/events',
+    invitationResponseUrl: 'https://ykcircle.test/invitation-response',
+    database: { execute: async () => [[{ enabled: 1 }]] },
+  });
+  service.mailer = service.invitationMailer = service.notificationMailer = { sendMail: async message => { messages.push(message); return { accepted: [message.to] }; } };
+  await service.sendVerification('reader@example.test', 'Reader', 'verify');
+  await service.sendPasswordReset('reader@example.test', 'Reader', 'reset');
+  await service.sendGroupInvitation('reader@example.test', 'Reader', { name: 'Neighbours' }, 'invite');
+  await service.sendEventInvitation('reader@example.test', 'Reader', { id: 1, title: 'Meetup' }, 'invite');
+  await service.sendGroupEventNotification('reader@example.test', 'Reader', { name: 'Neighbours' }, { id: 1, title: 'Meetup' });
+  await service.sendAccountDeleted('reader@example.test', 'Reader');
+  for (const message of messages) assert.equal(message.from.address, 'notifications@ykcircle.test');
+  for (const message of messages.slice(0, -1)) assert.equal(message.replyTo, 'support@ykcircle.test');
+  assert.equal(messages.at(-1).replyTo, 'privacy@ykcircle.test');
+  assert.equal(messages[0].from.name, 'YKCircle');
+  assert.equal(messages[2].from.name, 'YKCircle Invitations');
+  assert.equal(messages[3].from.name, 'YKCircle Invitations');
+  assert.equal(messages[4].from.name, 'YKCircle Events');
+  service.mailer.close?.();
+});
+
 test('creates stable, case-insensitive unsubscribe tokens', () => {
   const service = makeService();
 

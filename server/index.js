@@ -58,6 +58,8 @@ const start = async () => {
     noReplyFrom: config.email.from.noReply,
     notificationFrom: config.email.from.notification,
     invitationFrom: config.email.from.invitation,
+    replyTo: config.email.replyTo,
+    privacyReplyTo: config.operator.privacyEmail,
     database,
   });
   const ftpService = new FtpService(config.ftp.profilePictures);

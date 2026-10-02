@@ -11,10 +11,10 @@ export default {
   },
   operator: {
     name: process.env.PLATFORM_OPERATOR_NAME,
-    email: process.env.PLATFORM_OPERATOR_EMAIL,
-    privacyEmail: process.env.PRIVACY_EMAIL,
-    supportEmail: process.env.SUPPORT_EMAIL,
-    moderationEmail: process.env.MODERATION_EMAIL,
+    email: process.env.PLATFORM_OPERATOR_EMAIL || process.env.SUPPORT_EMAIL || `support@${domain}`,
+    privacyEmail: process.env.PRIVACY_EMAIL || `privacy@${domain}`,
+    supportEmail: process.env.SUPPORT_EMAIL || `support@${domain}`,
+    moderationEmail: process.env.MODERATION_EMAIL || `moderation@${domain}`,
     country: process.env.PLATFORM_COUNTRY || 'Sweden',
     organisationNumber: process.env.PLATFORM_ORGANISATION_NUMBER || null,
     vatNumber: process.env.PLATFORM_VAT_NUMBER || null,
@@ -23,10 +23,10 @@ export default {
   legal: {
     paymentProvider: process.env.PAYMENT_PROVIDER || null,
     paymentProviderPrivacyUrl: process.env.PAYMENT_PROVIDER_PRIVACY_URL || null,
-    billingSupportEmail: process.env.BILLING_SUPPORT_EMAIL || null,
-    ticketSupportEmail: process.env.TICKET_SUPPORT_EMAIL || null,
+    billingSupportEmail: process.env.BILLING_SUPPORT_EMAIL || `billing@${domain}`,
+    ticketSupportEmail: process.env.TICKET_SUPPORT_EMAIL || process.env.SUPPORT_EMAIL || `support@${domain}`,
     ticketSupportUrl: process.env.TICKET_SUPPORT_URL || null,
-    venueSupportEmail: process.env.VENUE_SUPPORT_EMAIL || null,
+    venueSupportEmail: process.env.VENUE_SUPPORT_EMAIL || process.env.SUPPORT_EMAIL || `support@${domain}`,
     venueSupportUrl: process.env.VENUE_SUPPORT_URL || null,
     organizerSupportUrl: process.env.ORGANIZER_SUPPORT_URL || null,
     businessSupportUrl: process.env.BUSINESS_SUPPORT_URL || null,
@@ -47,18 +47,21 @@ export default {
     port: Number(process.env.DB_PORT || 3306),
   },
   email: {
+    replyTo: process.env.EMAIL_REPLY_TO || process.env.SUPPORT_EMAIL || `support@${domain}`,
     smtp: {
       host: process.env.SMTP_HOST,
       port: Number(process.env.SMTP_PORT || 587),
       secure: process.env.SMTP_SECURE === 'true',
+      // Shared SMTP login for all automatic emails; per-stream overrides are optional.
+      transactional: { user: process.env.SMTP_USER || `notifications@${domain}`, password: process.env.SMTP_PASSWORD },
       verification: { user: process.env.SMTP_VERIFICATION_USER, password: process.env.SMTP_VERIFICATION_PASSWORD },
       notification: { user: process.env.NOTIFICATION_USER || process.env.APPLICATION_NOTIFICATION_USER, password: process.env.NOTIFICATION_PASSWORD || process.env.APPLICATION_NOTIFICATION_PASSWORD },
       invitation: { user: process.env.INVITATION_USER, password: process.env.INVITATION_PASSWORD },
     },
     from: {
-      noReply: process.env.NO_REPLY_FROM || `no-reply@${domain}`,
-      notification: process.env.NOTIFICATION_FROM || process.env.APPLICATION_NOTIFICATION_FROM || `info@${domain}`,
-      invitation: process.env.INVITATION_FROM || `hello@${domain}`,
+      noReply: process.env.NO_REPLY_FROM || `notifications@${domain}`,
+      notification: process.env.NOTIFICATION_FROM || process.env.APPLICATION_NOTIFICATION_FROM || `notifications@${domain}`,
+      invitation: process.env.INVITATION_FROM || `notifications@${domain}`,
     },
     urls: {
       verification: process.env.EMAIL_VERIFICATION_URL || `${siteUrl}/verify-email`,

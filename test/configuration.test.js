@@ -8,6 +8,44 @@ const values = (runtime = {}) => ({
   runtime: { authSecret: 'correct-horse-battery-staple-with-more-than-thirty-two-characters', allowedOrigins: ['https://ykcircle.test'], ...runtime },
 });
 
+test('five mailboxes cover contacts and share one transactional SMTP login', () => {
+  const config = new Configuration({ ...values(), email: { smtp: { host: 'smtp.example.test', transactional: { user: 'notifications@ykcircle.test', password: 'test-mailbox-password' } } } });
+  assert.equal(config.operator.email, 'support@ykcircle.test');
+  assert.equal(config.operator.supportEmail, 'support@ykcircle.test');
+  assert.equal(config.operator.privacyEmail, 'privacy@ykcircle.test');
+  assert.equal(config.operator.moderationEmail, 'moderation@ykcircle.test');
+  assert.equal(config.legal.billingSupportEmail, 'billing@ykcircle.test');
+  assert.equal(config.legal.ticketSupportEmail, 'support@ykcircle.test');
+  assert.equal(config.legal.venueSupportEmail, 'support@ykcircle.test');
+  assert.equal(config.email.replyTo, 'support@ykcircle.test');
+  for (const role of ['noReply', 'notification', 'invitation']) assert.equal(config.email.from[role], 'notifications@ykcircle.test');
+  for (const role of ['verification', 'notification', 'invitation']) assert.deepEqual(config.email.smtp[role], { user: 'notifications@ykcircle.test', password: 'test-mailbox-password' });
+});
+
+test('shared SMTP deployment settings override local credentials and allow explicit per-stream overrides', () => {
+  const overrides = { SMTP_USER: 'notifications@example.test', SMTP_PASSWORD: 'shared-test-password', SMTP_HOST: 'smtp.example.test', SMTP_SECURE: 'false', INVITATION_USER: 'special@example.test', INVITATION_PASSWORD: 'special-test-password' };
+  const previous = Object.fromEntries(Object.keys(overrides).map(key => [key, process.env[key]]));
+  Object.assign(process.env, overrides);
+  try {
+    const config = new Configuration({ ...values(), email: { smtp: { secure: true, verification: { user: 'old@example.test', password: 'old-test-password' } } } });
+    assert.equal(config.email.smtp.host, overrides.SMTP_HOST);
+    assert.equal(config.email.smtp.secure, false);
+    for (const role of ['verification', 'notification']) assert.deepEqual(config.email.smtp[role], { user: overrides.SMTP_USER, password: overrides.SMTP_PASSWORD });
+    assert.deepEqual(config.email.smtp.invitation, { user: overrides.INVITATION_USER, password: overrides.INVITATION_PASSWORD });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+});
+
+test('support routes can share a mailbox or be overridden independently', () => {
+  const config = new Configuration({ ...values(), operator: { supportEmail: 'help@example.test' }, legal: { venueSupportEmail: 'venues@example.test' }, email: { replyTo: 'replies@example.test', smtp: { applicationNotification: { user: 'legacy@example.test', password: 'test-password' } } } });
+  assert.equal(config.operator.email, 'help@example.test');
+  assert.equal(config.legal.ticketSupportEmail, 'help@example.test');
+  assert.equal(config.legal.venueSupportEmail, 'venues@example.test');
+  assert.equal(config.email.replyTo, 'replies@example.test');
+  assert.deepEqual(config.email.smtp.notification, { user: 'legacy@example.test', password: 'test-password' });
+});
+
 test('rejects a missing, short or predictable authentication secret', () => {
   assert.throws(() => new Configuration(values({ authSecret: 'short' })), /AUTH_SECRET/);
   assert.throws(() => new Configuration(values({ authSecret: 'a'.repeat(64) })), /AUTH_SECRET/);

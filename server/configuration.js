@@ -47,10 +47,10 @@ export class Configuration {
     const operatorValues = values.operator || {};
     this.operator = {
       name: process.env.PLATFORM_OPERATOR_NAME || operatorValues.name || values.platformOperatorName || null,
-      email: process.env.PLATFORM_OPERATOR_EMAIL || operatorValues.email || values.platformOperatorEmail || null,
-      privacyEmail: process.env.PRIVACY_EMAIL || operatorValues.privacyEmail || values.privacyEmail || null,
-      supportEmail: process.env.SUPPORT_EMAIL || operatorValues.supportEmail || values.supportEmail || null,
-      moderationEmail: process.env.MODERATION_EMAIL || operatorValues.moderationEmail || values.moderationEmail || null,
+      email: process.env.PLATFORM_OPERATOR_EMAIL || operatorValues.email || values.platformOperatorEmail || process.env.SUPPORT_EMAIL || operatorValues.supportEmail || values.supportEmail || `support@${domain}`,
+      privacyEmail: process.env.PRIVACY_EMAIL || operatorValues.privacyEmail || values.privacyEmail || `privacy@${domain}`,
+      supportEmail: process.env.SUPPORT_EMAIL || operatorValues.supportEmail || values.supportEmail || `support@${domain}`,
+      moderationEmail: process.env.MODERATION_EMAIL || operatorValues.moderationEmail || values.moderationEmail || `moderation@${domain}`,
       country: process.env.PLATFORM_COUNTRY || operatorValues.country || values.platformCountry || 'Sweden',
       organisationNumber: process.env.PLATFORM_ORGANISATION_NUMBER || operatorValues.organisationNumber || null,
       vatNumber: process.env.PLATFORM_VAT_NUMBER || operatorValues.vatNumber || null,
@@ -61,10 +61,10 @@ export class Configuration {
     this.legal = {
       paymentProvider: process.env.PAYMENT_PROVIDER ?? legalValues.paymentProvider ?? null,
       paymentProviderPrivacyUrl: process.env.PAYMENT_PROVIDER_PRIVACY_URL ?? legalValues.paymentProviderPrivacyUrl ?? null,
-      billingSupportEmail: process.env.BILLING_SUPPORT_EMAIL ?? legalValues.billingSupportEmail ?? null,
-      ticketSupportEmail: process.env.TICKET_SUPPORT_EMAIL ?? legalValues.ticketSupportEmail ?? null,
+      billingSupportEmail: process.env.BILLING_SUPPORT_EMAIL ?? legalValues.billingSupportEmail ?? `billing@${domain}`,
+      ticketSupportEmail: process.env.TICKET_SUPPORT_EMAIL ?? legalValues.ticketSupportEmail ?? this.operator.supportEmail,
       ticketSupportUrl: process.env.TICKET_SUPPORT_URL ?? legalValues.ticketSupportUrl ?? null,
-      venueSupportEmail: process.env.VENUE_SUPPORT_EMAIL ?? legalValues.venueSupportEmail ?? null,
+      venueSupportEmail: process.env.VENUE_SUPPORT_EMAIL ?? legalValues.venueSupportEmail ?? this.operator.supportEmail,
       venueSupportUrl: process.env.VENUE_SUPPORT_URL ?? legalValues.venueSupportUrl ?? null,
       organizerSupportUrl: process.env.ORGANIZER_SUPPORT_URL ?? legalValues.organizerSupportUrl ?? null,
       businessSupportUrl: process.env.BUSINESS_SUPPORT_URL ?? legalValues.businessSupportUrl ?? null,
@@ -87,19 +87,28 @@ export class Configuration {
     const emailValues = values.email || {};
     const emailUrls = emailValues.urls || {};
     const emailFrom = emailValues.from || {};
+    const smtpValues = emailValues.smtp || values.smtp || {};
+    // One notifications mailbox can authenticate every transactional stream.
+    // Keep per-stream settings available for deployments that need overrides.
+    const credentials = (local, user, password) => ({
+      user: user || process.env.SMTP_USER || local?.user || smtpValues.transactional?.user || `notifications@${domain}`,
+      password: password || process.env.SMTP_PASSWORD || local?.password || smtpValues.transactional?.password,
+    });
     this.email = {
-      smtp: emailValues.smtp || values.smtp || {
-        host: process.env.SMTP_HOST,
-        port: Number(process.env.SMTP_PORT || 587),
-        secure: process.env.SMTP_SECURE === 'true',
-        verification: { user: process.env.SMTP_VERIFICATION_USER, password: process.env.SMTP_VERIFICATION_PASSWORD },
-        notification: { user: process.env.NOTIFICATION_USER || process.env.APPLICATION_NOTIFICATION_USER, password: process.env.NOTIFICATION_PASSWORD || process.env.APPLICATION_NOTIFICATION_PASSWORD },
-        invitation: { user: process.env.INVITATION_USER, password: process.env.INVITATION_PASSWORD },
+      smtp: {
+        ...smtpValues,
+        host: process.env.SMTP_HOST || smtpValues.host,
+        port: Number(process.env.SMTP_PORT || smtpValues.port || 587),
+        secure: environmentBoolean('SMTP_SECURE') ?? smtpValues.secure ?? false,
+        verification: credentials(smtpValues.verification, process.env.SMTP_VERIFICATION_USER, process.env.SMTP_VERIFICATION_PASSWORD),
+        notification: credentials(smtpValues.notification || smtpValues.applicationNotification, process.env.NOTIFICATION_USER || process.env.APPLICATION_NOTIFICATION_USER, process.env.NOTIFICATION_PASSWORD || process.env.APPLICATION_NOTIFICATION_PASSWORD),
+        invitation: credentials(smtpValues.invitation, process.env.INVITATION_USER, process.env.INVITATION_PASSWORD),
       },
+      replyTo: process.env.EMAIL_REPLY_TO || emailValues.replyTo || this.operator.supportEmail,
       from: {
-        noReply: process.env.NO_REPLY_FROM || emailFrom.noReply || values.noReplyFrom || `no-reply@${domain}`,
-        notification: process.env.NOTIFICATION_FROM || process.env.APPLICATION_NOTIFICATION_FROM || emailFrom.notification || emailFrom.applicationNotification || values.notificationFrom || values.applicationNotificationFrom || `info@${domain}`,
-        invitation: process.env.INVITATION_FROM || emailFrom.invitation || values.invitationFrom || `hello@${domain}`,
+        noReply: process.env.NO_REPLY_FROM || emailFrom.noReply || values.noReplyFrom || `notifications@${domain}`,
+        notification: process.env.NOTIFICATION_FROM || process.env.APPLICATION_NOTIFICATION_FROM || emailFrom.notification || emailFrom.applicationNotification || values.notificationFrom || values.applicationNotificationFrom || `notifications@${domain}`,
+        invitation: process.env.INVITATION_FROM || emailFrom.invitation || values.invitationFrom || `notifications@${domain}`,
       },
       urls: {
         verification: process.env.EMAIL_VERIFICATION_URL || emailUrls.verification || values.emailVerificationUrl || `${siteUrl}/verify-email`,
