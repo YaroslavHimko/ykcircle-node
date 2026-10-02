@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Configuration } from '../server/configuration.js';
-import { legalDocument, legalDocumentIndex, legalReadiness } from '../server/legal-documents.js';
+import { legalDocument, legalDocumentIndex, legalReadiness, checkLegalStartup } from '../server/legal-documents.js';
 
 const values = (runtime = {}) => ({
   site: { domain: 'ykcircle.test', siteUrl: 'https://ykcircle.test', apiUrl: 'https://api.ykcircle.test' },
@@ -183,7 +183,28 @@ test('early-access disclosures require real controller and provider details with
     assert.doesNotMatch(document.content, /\]\([^)]*\/(?:paid-services|tickets-refunds|organizer-terms|venue-terms|account\/billing)/);
   }
   config.legal.subprocessors[0].region = null;
-  assert.ok((await legalReadiness(config)).blockers.some(value => value.includes('processing locations')));
+  assert.ok((await legalReadiness(config)).warnings.some(value => value.includes('processing locations')));
   config.operator.name = 'Example Founder';
   assert.ok((await legalReadiness(config)).blockers.some(value => value.includes('sample operator')));
+});
+
+test('strict legal startup permits outstanding provider reviews without claiming readiness', async () => {
+  const config = new Configuration({ ...values({ legalRequireReady: true }),
+    operator: { name: 'Robin Lind', registeredAddress: 'Testgatan 12, 123 45 Stockholm, Sweden' },
+    legal: { subprocessors: [
+      { name: 'Hostinger hosting and backups', purpose: 'Hosting', region: 'Netherlands; backups Lithuania', transferSafeguards: null },
+      { name: 'Hostinger email', purpose: 'Email', region: null, transferSafeguards: null },
+    ] },
+  });
+  const warnings = [];
+  const logger = { info() {}, warn: (...args) => warnings.push(args) };
+  const result = await checkLegalStartup(config, logger);
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.blockers, []);
+  assert.equal(result.warnings.length, 3);
+  assert.equal(warnings.length, 1);
+  config.legal.subprocessors[1].region = 'Netherlands';
+  assert.equal((await checkLegalStartup(config, logger)).warnings.length, 2);
+  config.operator.name = null;
+  await assert.rejects(checkLegalStartup(config, logger), /LEGAL_OPERATOR_NAME/);
 });

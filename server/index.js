@@ -8,7 +8,7 @@ import { Queries } from './queries.js';
 import { Api } from './api.js';
 import { FtpService } from './ftp-service.js';
 import { createRateLimiter } from './rate-limit.js';
-import { legalDocument, legalDocuments, legalReadiness } from './legal-documents.js';
+import { legalDocument, legalDocuments, checkLegalStartup } from './legal-documents.js';
 
 const securityHeaders = (req, res, next) => {
   req.cspNonce = crypto.randomBytes(16).toString('base64');
@@ -123,9 +123,7 @@ const start = async () => {
   // Keep every published legal version in the audit table at deployment time,
   // not only when the next person registers. Historic versions remain intact.
   for (const descriptor of legalDocuments()) await queries.ensureLegalDocumentVersion(await legalDocument(descriptor.slug, config));
-  const readiness = await legalReadiness(config);
-  console.info('Legal readiness:', { ready: readiness.ready, blockerCount: readiness.blockers.length });
-  if (config.runtime.legalRequireReady && !readiness.ready) throw new Error(`Legal launch readiness failed: ${readiness.blockers.join(' ')}`);
+  await checkLegalStartup(config);
   await queries.configureRetentionPolicies(config.runtime.retention);
   const runRetention = async () => { try { await queries.applyRetentionPolicies(config.runtime.retention); } catch (error) { console.error('Retention cleanup failed:', error.message); } };
   await runRetention();

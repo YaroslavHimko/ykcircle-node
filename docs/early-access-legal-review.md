@@ -26,7 +26,7 @@ Replace an old sample `SUBPROCESSORS_JSON` value with the actual Hostinger inven
 
 The operator confirmed Hostinger server `server517` is in the Netherlands and its backups are in Lithuania. These locations are recorded in the local hosting entry and appear in the public provider list. The server name is an internal reference and is not included in that public entry.
 
-The email processing location and applicable transfer arrangements (including any separate support or subprocessor access) remain unconfirmed. The local email `region` and both entries' `transferSafeguards` remain unset; the readiness check continues to report those items. Website and backup locations alone do not establish where email or support processing occurs. Review the applicable [Hostinger data processing addendum](https://www.hostinger.com/legal/dpa).
+The operator also confirmed email is hosted in the same region as the server: the Netherlands. Applicable transfer arrangements (including any separate support or subprocessor access) remain unconfirmed. Both entries' `transferSafeguards` remain unset; the readiness check reports them as warnings. Review the applicable [Hostinger data processing addendum](https://www.hostinger.com/legal/dpa).
 
 Set production `SUBPROCESSORS_JSON` to this JSON to match the current local inventory, then replace the null values when confirmed:
 
@@ -43,7 +43,7 @@ Set production `SUBPROCESSORS_JSON` to this JSON to match the current local inve
   {
     "name": "Hostinger email",
     "purpose": "Email hosting and delivery",
-    "region": null,
+    "region": "Netherlands",
     "transferSafeguards": null,
     "privacyUrl": "https://www.hostinger.com/legal/privacy-policy",
     "dpaUrl": "https://www.hostinger.com/legal/dpa"
@@ -51,11 +51,13 @@ Set production `SUBPROCESSORS_JSON` to this JSON to match the current local inve
 ]
 ```
 
-`LEGAL_REQUIRE_READY=true` will prevent startup until the configured readiness blockers are resolved. Payment-provider settings are no longer required by that check during this free release. Its result checks configuration completeness; it is not a legal-compliance certificate.
+`LEGAL_REQUIRE_READY=true` prevents startup for blocking issues such as missing controller details, an absent provider inventory, or unresolved policy placeholders. Unconfirmed provider locations or transfer arrangements are logged as warnings and do not stop the API. The readiness response includes both `blockers` and `warnings`; `ready` remains false while either list has items. Payment-provider settings are not required during this free release. This checks configuration completeness, not legal compliance.
+
+If the previous release exits with `Legal launch readiness failed` only for provider-location/transfer review items, set `LEGAL_REQUIRE_READY=false` temporarily and restart the API to restore service. Deploy the corrected startup check, update production `SUBPROCESSORS_JSON` from the inventory above, and restore `LEGAL_REQUIRE_READY=true` to retain the controller checks. No payment switches need changing.
 
 ## Processing facts still requiring operational verification
 
-- Confirm the email processing location, any additional support/subprocessor processing, transfer arrangements, backup rotation and the deployment's actual optional scripts/storage. The source inventory covers the application's current browser-storage keys; it is not a scan of hosting-injected scripts.
+- Confirm any additional support/subprocessor processing, transfer arrangements, backup rotation and the deployment's actual optional scripts/storage. Hosting and email locations are confirmed as the Netherlands, with backups in Lithuania. The source inventory covers the application's current browser-storage keys; it is not a scan of hosting-injected scripts.
 - If embedded Maps is enabled, configure consent and include its actual processing in the provider inventory. The policy text follows the runtime Maps setting. Verify the deployed consent behavior.
 - Account deletion disables/anonymizes core account fields and hides owned content; it does not automatically erase every historical record or media attachment. The revised notice describes that limit. Handle remaining-data requests and retention reviews in practice, including retained support/moderation records and backups. Token cleanup runs on startup and daily; it does not establish a universal retention period for other data.
 - Exercise registration/verification, privacy export/deletion, support, moderation and appeals against the deployed service before accepting real users. Update production environment overrides and deploy both repositories together.

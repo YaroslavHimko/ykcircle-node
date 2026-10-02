@@ -77,6 +77,7 @@ export const currentLegalDocument = async (documentType, config) => legalDocumen
 
 export const legalReadiness = async (config = {}) => {
   const blockers = [];
+  const warnings = [];
   const operator = config.operator || {};
   const legal = config.legal || {};
   for (const [key, label] of [['name', 'LEGAL_OPERATOR_NAME'], ['email', 'PLATFORM_OPERATOR_EMAIL'], ['privacyEmail', 'PRIVACY_EMAIL'], ['supportEmail', 'SUPPORT_EMAIL'], ['moderationEmail', 'MODERATION_EMAIL'], ['registeredAddress', 'LEGAL_ADDRESS']]) {
@@ -87,8 +88,8 @@ export const legalReadiness = async (config = {}) => {
   if (!Array.isArray(legal.subprocessors) || !legal.subprocessors.length) blockers.push('An accurate service-provider inventory is not configured.');
   else for (const provider of legal.subprocessors) {
     if (!provider || typeof provider !== 'object' || !provider.name || !provider.purpose || placeholder.test(provider.name)) blockers.push('Each service provider needs its actual name and purpose.');
-    if (!provider?.region || placeholder.test(provider.region)) blockers.push('Confirm processing locations for ' + (provider?.name || 'each provider') + '.');
-    if (!provider?.transferSafeguards || placeholder.test(provider.transferSafeguards)) blockers.push('Confirm transfer arrangements for ' + (provider?.name || 'each provider') + '.');
+    if (!provider?.region || placeholder.test(provider.region)) warnings.push('Confirm processing locations for ' + (provider?.name || 'each provider') + '.');
+    if (!provider?.transferSafeguards || placeholder.test(provider.transferSafeguards)) warnings.push('Confirm transfer arrangements for ' + (provider?.name || 'each provider') + '.');
   }
   if (config.runtime?.maps?.enabled && !config.runtime.maps.requiresConsent) blockers.push('Optional embedded maps must require the external-media choice.');
   const rendered = await Promise.all(documents.map((document) => legalDocument(document.slug, config)));
@@ -96,7 +97,16 @@ export const legalReadiness = async (config = {}) => {
     const placeholders = document.content.match(/\[[A-Z][A-Z0-9 /",_-]+\]/g) || [];
     if (placeholders.length) blockers.push(`${document.title} has unresolved placeholders: ${[...new Set(placeholders)].join(', ')}`);
   }
-  return { ready: blockers.length === 0, blockers, documents: rendered.map(({ slug, documentType, version, contentHash }) => ({ slug, documentType, version, contentHash })) };
+  return { ready: blockers.length === 0 && warnings.length === 0, blockers, warnings, documents: rendered.map(({ slug, documentType, version, contentHash }) => ({ slug, documentType, version, contentHash })) };
+};
+
+// Provider-review gaps remain visible without making every API endpoint unavailable.
+export const checkLegalStartup = async (config, logger = console) => {
+  const readiness = await legalReadiness(config);
+  logger.info('Legal readiness:', { ready: readiness.ready, blockerCount: readiness.blockers.length, warningCount: readiness.warnings.length });
+  if (readiness.warnings.length) logger.warn('Legal review outstanding:', readiness.warnings);
+  if (config.runtime?.legalRequireReady && readiness.blockers.length) throw new Error(`Legal launch readiness failed: ${readiness.blockers.join(' ')}`);
+  return readiness;
 };
 
 export const legalDocuments = () => documents.map((document) => ({ ...document }));
