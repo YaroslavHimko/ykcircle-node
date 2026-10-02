@@ -1,87 +1,42 @@
-# YKCircle Cookie & Similar Technologies Policy
+# YKCircle Cookie & Browser Storage Policy
 
-> **Draft — publish only after auditing the real website/app implementation.**  
-> Last updated: 7 September 2026
+> Last updated: 2 October 2026
 
-## 1. Scope
+## 1. Who is responsible
 
-YKCircle may use cookies, local storage, SDK storage, pixels and similar technologies.
+[LEGAL OPERATOR NAME] operates YKCircle as an individual based in [OPERATOR COUNTRY]. Contact [PRIVACY EMAIL] or write to [REGISTERED ADDRESS] about browser storage and privacy.
 
-This Policy must match the technologies actually loaded in production.
+## 2. Storage used by the website
 
-Do not invent a cookie inventory.
+The website uses browser local storage and session storage as well as any technologies identified below. Local storage normally remains until removed by the website or you; session storage normally ends when the tab is closed. Browser settings can clear either type.
 
-## 2. Strictly necessary
+| Storage key | Purpose | Duration / removal |
+| --- | --- | --- |
+| authToken | Keeps you signed in to the account you requested | Removed on logout or when the site handles an invalid session; the token also has a server-checked expiry |
+| authUser | Stores the signed-in account display details | Updated with your profile; removed on logout or account deletion |
+| ykcircle-cookie-consent | Remembers necessary/optional categories and when you chose them | Until replaced by a new choice or browser data is cleared |
+| ykcircle-owner-calendar-view | Remembers your chosen venue-calendar view | Until changed or browser data is cleared |
+| ykcircle-venue-taxonomy-v1 | Avoids repeatedly loading the venue filters used in your current tab | Current browser tab/session |
 
-May include technologies needed for authentication, session security, CSRF/security, rate limiting/security state, load balancing, legal/cookie preferences and essential checkout/session continuity.
+The sign-in and choice records support the service or settings you request. Clearing them may sign you out or cause settings to be requested again.
 
-Where a technology is strictly necessary to provide a user-requested service, consent may not be required under the applicable cookie rule, but the inventory/purpose still needs to be documented appropriately.
+Additional deployment storage information: [COOKIE INVENTORY]
 
-## 3. Preferences
+## 3. Optional providers
 
-May include optional preferences such as language, UI settings, calendar view, selected city and non-essential personalization.
+Analytics providers: [ACTUAL ANALYTICS PROVIDERS OR "NONE"]
+Marketing providers: [ACTUAL MARKETING PROVIDERS OR "NONE"]
 
-Classify each technology based on its real purpose.
+Choosing an optional category does not itself install a provider. Optional tracking requires the relevant choice before it is used. Rejecting optional categories does not prevent access to the core community features.
 
-## 4. Analytics
+[MAPS PRIVACY DESCRIPTION]
 
-Analytics technologies must not be loaded before valid consent where consent is required.
+## 4. Change your choices
 
-Analytics provider(s): [ACTUAL ANALYTICS PROVIDERS OR "NONE"]
+Use **Manage cookie settings** on this page or **Cookie settings** in the footer to accept, reject or customize optional categories. Optional categories start disabled. You can change your choice later just as easily.
 
-## 5. Marketing
+Withdrawing a choice stops subsequent optional use; it does not undo information already sent. A third-party script already loaded in the current page may remain active until you reload or close the page. Clear browser data if you also want to remove data that a provider has already stored.
 
-Advertising, retargeting and marketing-attribution technologies must not be loaded before valid consent where consent is required.
-
-Marketing provider(s): [ACTUAL MARKETING PROVIDERS OR "NONE"]
-
-## 6. Maps and embedded third-party content
-
-Audit Google Maps/Places and any embedded third-party content for cookies/local storage, network requests, consent requirements and privacy disclosures.
-
-Do not classify a map SDK as strictly necessary merely because the feature is useful. Determine whether it is necessary for the specific user-requested function and whether non-essential storage/processing occurs.
-
-Where appropriate, defer loading until the required choice is made.
-
-## 7. Payment SDKs
-
-Audit [PAYMENT PROVIDER] SDK/Checkout behavior separately.
-
-Some payment/security technologies may be necessary for a user-requested payment.
-
-Do not automatically classify every provider technology as marketing.
-
-## 8. Consent controls
-
-Where consent is required, users should be able to:
-
-- accept all non-essential categories;
-- reject non-essential categories;
-- customize categories;
-- change/withdraw their choice later.
-
-Do not preselect optional categories.
-
-Rejecting should be as easy as accepting.
-
-## 9. Consent record
-
-Store consent version, timestamp and selected categories, plus only additional region/context needed for compliance.
-
-Do not store more identifying information than needed to prove/manage preference.
-
-## 10. Cookie inventory
-
-Generate from a real production audit.
-
-| Name / Storage key | Provider | Purpose | Category | Duration | Trigger |
-|---|---|---|---|---|---|
-| [ACTUAL] | [ACTUAL] | [ACTUAL] | [ACTUAL] | [ACTUAL] | [ACTUAL] |
-
-## 11. Change settings
-
-Cookie settings: [COOKIE SETTINGS LINK]
-
-## 12. Contact
-
-[PRIVACY EMAIL]
+Cookie choices: [COOKIE SETTINGS LINK]
+Privacy Policy: [PRIVACY POLICY URL]
+Service providers: [SUBPROCESSOR LIST URL]

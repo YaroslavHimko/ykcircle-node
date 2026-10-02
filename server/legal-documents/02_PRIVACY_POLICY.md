@@ -1,256 +1,88 @@
 # YKCircle Privacy Policy
 
-> **Draft for legal review before production/commercial launch.**  
-> Last updated: 7 September 2026
+> Last updated: 2 October 2026
 
-## 1. Controller
+## 1. Your data controller
 
-**Controller:** [LEGAL OPERATOR NAME]  
-**Organisation number:** [ORGANISATION NUMBER, IF APPLICABLE]  
-**Address:** [REGISTERED ADDRESS]  
+**[LEGAL OPERATOR NAME]**, an individual based in [OPERATOR COUNTRY], determines how personal data is used to operate YKCircle and is its data controller. YKCircle is the service name.
+
+**Postal contact address:** [REGISTERED ADDRESS]
 **Privacy contact:** [PRIVACY EMAIL]
 
-In some business-user workflows, the role of YKCircle and an organizer/venue may vary depending on who determines the purposes and means of processing. Before commercial launch, review whether any organizer/venue functionality requires a data-processing agreement or additional controller-to-controller information.
+You can use either contact to ask about your data or exercise your rights.
 
-## 2. Scope
+## 2. Information processed during free early access
 
-This Policy describes personal data processed through YKCircle's accounts and profiles, Groups, Events, Venues and venue galleries, venue availability and booking, messaging and notifications, Billing Profiles and invoices, paid YKCircle services, ticket orders/payment-status synchronization, moderation/reporting/appeals, maps/location features, support and security systems.
+- Account details: your name, email address, password hash, optional phone and profile picture, verification state and account preferences.
+- Community activity: the events, articles, groups and venue listings you create; memberships, invitations, registrations, optional food choices shared with event hosts, attendance, ratings, booking requests and related messages.
+- Location information: addresses, cities, coordinates and timezones you supply for events and venues; device timezone used to display dates; device location only when you request a location feature and allow browser access.
+- Support and safety: contact requests, reports, appeals, moderation decisions and correspondence, including information submitted by other members.
+- Technical records: request and security information such as IP address, browser information, authentication/session state, error records and audit events.
 
-## 3. Data categories
+Information comes from you, your browser and your interactions with the service. Other members can supply your name or email when inviting you, or information about you in messages, activity records and reports. Contact me for details about information received from someone else.
 
-Depending on how you use YKCircle, we may process:
+Required account and activity fields are necessary to provide the feature requested; without them that feature may be unavailable. Optional profile details and optional consents are not conditions of having an account. Do not send identity documents or sensitive personal information unless specifically requested for a justified purpose.
 
-### Account and authentication data
-Name, email, authentication identifiers, account status, verification states, security/session data.
+## 3. Why information is used
 
-### Profile data
-Profile image, bio, selected city/home area, interests, languages and preferences.
+| Purpose | Basis and scope |
+| --- | --- |
+| Create and verify your account; provide the events, groups, articles, bookings and notifications you request | Performance of the service agreement with you |
+| Answer account and service questions | Performance of that agreement; legitimate interest in answering other enquiries |
+| Deliver a member's invitation to someone without an account | Legitimate interest in facilitating the requested invitation, subject to the recipient's preferences and right to object |
+| Keep accounts secure, investigate abuse, moderate content and defend legal claims | Legitimate interests in protecting people and the service; a legal obligation where a specific law requires processing |
+| Send optional marketing email | Your consent, which can be withdrawn in your profile or through the email's unsubscribe link |
+| Load optional external maps or access device location | Your choice and, where required, consent; browser location permission can be withdrawn in browser settings |
+| Respond to data-rights requests and binding legal demands | Compliance with the relevant legal obligation |
 
-### Group/community data
-Group memberships, Group content, messages, invitations, participation information.
+Essential verification and security messages are separate from optional marketing. A preference change does not prevent messages necessary to administer your account.
 
-### Event data
-Events you create, RSVP/attendance state, invitations, ticket/order state, organizer identity, date/time/timezone, Event location and Event images.
+## 4. Who can see information
 
-### Venue data
-Venue listings, location/address, coordinates, timezone, gallery images, availability, bookings/requests, booking messages and organization details.
+Public listings, articles and public group content may be viewed without an account and indexed by search engines. Names and participation information may be visible to other participants. Check the visibility of content before submitting it.
 
-### Billing Profile data
-Depending on profile type: legal name, organization name, organization number, VAT number, billing address, country, billing email, phone and profile ownership/authorization information.
+Event hosts receive the participant and contact information needed to administer their event. Group hosts manage membership and invitations. Venue hosts and people requesting bookings receive the information and correspondence needed to handle those requests. They must use it only for justified purposes. If a host uses data for their own separate purposes, they are responsible for explaining that use and handling the corresponding rights requests.
 
-A Billing Profile is not the same as payment-provider identity verification.
+The operator and authorized moderators can access information needed to administer the service, handle support and investigate safety issues. Service providers process information for hosting, storage, delivery of email and other functions disclosed in the provider list. Information may also be disclosed where a binding legal requirement applies or where necessary and lawful to establish or defend a claim.
 
-### Invoice/accounting data
-Invoice number, seller/buyer snapshots, addresses and organization identifiers, line items, tax/VAT, amounts, currency, issue/due dates, payment status/reference, invoice PDF and invoice history.
+Service providers and processing locations: [SUBPROCESSOR LIST URL]
 
-### Payment/ticket data
-YKCircle may process limited metadata such as payment-provider account reference, provider customer/payment/order reference, payment status, amount, currency, refund/dispute status and connected-account capability/onboarding status.
+## 5. Maps, external links and international processing
 
-YKCircle should not store full payment-card numbers or raw payment credentials.
+[MAPS PRIVACY DESCRIPTION]
 
-Where organizers use connected Payment Accounts, the provider may independently collect identity, KYC, bank and payment-card information.
+Following an external link sends you to the linked service. Its provider receives information through your interaction with that service.
 
-### Location and timezone data
-YKCircle may process profile/home city selected by the user, Event/Venue locations and coordinates, Event/Venue IANA timezone, automatically detected device timezone, and precise device geolocation only when the user chooses a feature that requires it and grants any required permission.
+The provider list identifies processing locations and applicable transfer arrangements. Where information is transferred outside the EEA, an applicable adequacy decision or appropriate safeguards must cover the transfer. Contact [PRIVACY EMAIL] for information about the arrangements that apply and how to obtain a copy of relevant safeguards.
 
-Device timezone can normally be detected without precise location permission.
+## 6. Storage periods and deletion
 
-Current precise device coordinates should not be silently persisted as a profile attribute.
+Account and activity records are held while needed to provide your account and the activities you participate in. Closing an account disables access, replaces core account identifiers, removes its profile picture reference, hides owned listings and replaces authored event/group message text. It does not automatically erase every historical participation record, message attachment, report or backup. Contact me for review of any remaining personal information.
 
-### Technical/security data
-IP address, browser/device information, request logs, session identifiers, security events, rate-limit information, error logs and anti-fraud signals.
+Expired password-reset records are eligible for cleanup after [RESET RETENTION DAYS] days, expired verification tokens after [VERIFICATION RETENTION DAYS] days, and expired pending or declined invitations after [INVITATION RETENTION DAYS] days. These periods run after expiry, and deletion occurs when cleanup runs.
 
-### Support/moderation data
-Reports, appeals, correspondence, moderation decisions, evidence supplied by users and internal safety/fraud notes where justified.
+Support, moderation and security records are kept only while needed to resolve the issue, protect against a continuing risk, meet a specific legal requirement or handle a claim. The nature of the issue, its resolution, applicable limitation periods and any legal hold determine the period. Backups follow the storage provider's rotation and recovery arrangements; they are not a reason to reuse deleted information for unrelated purposes. You can ask for the retention criteria and status of your records.
 
-## 4. Purposes and lawful bases
+## 7. Your choices and rights
 
-YKCircle must maintain an internal record of processing activities and validate the lawful basis for each real processing purpose.
+Depending on the processing and applicable exceptions, you can request access, correction, erasure, restriction or a portable copy of information you supplied. You can object to processing based on legitimate interests, explaining your situation. You can object to direct marketing at any time and withdraw consent without affecting earlier lawful processing.
 
-Typical examples may include:
+Use [PRIVACY EMAIL] or the postal address above. I normally respond within one month. If an extension is permitted because of complexity or the number of requests, I will explain it within that month. Proportionate information may be requested to verify your identity.
 
-| Purpose | Indicative lawful basis |
-|---|---|
-| Account registration and core Platform delivery | Contract |
-| Event/Group/Venue functionality | Contract |
-| Venue booking | Contract |
-| YKCircle paid services | Contract |
-| Invoice/accounting retention | Legal obligation |
-| Payment/order synchronization | Contract / legal obligation where applicable |
-| Security and fraud prevention | Legitimate interests |
-| Abuse/moderation | Legitimate interests / legal obligation where applicable |
-| Legal claims | Legitimate interests / legal obligation where applicable |
-| Non-essential analytics | Consent where required |
-| Marketing communications | Consent or another lawful basis where permitted |
-| Precise geolocation for optional "near me" functionality | Consent/device permission or another valid basis as assessed |
+Your profile includes data-download and account-deletion controls: [ACCOUNT DELETION URL]
 
-Do not use consent as a blanket basis for processing necessary to provide a contract.
+You can complain to Sweden's supervisory authority, [Integritetsskyddsmyndigheten (IMY)](https://www.imy.se/en/individuals/), or another competent supervisory authority. You do not have to contact me first.
 
-## 5. Public and restricted content
+## 8. Automated processing and security
 
-Public Events, Groups, profiles, Venue listings, reviews and other public content may be visible without login and may be indexed by search engines.
+The service uses automatic validation, access controls and security checks. It does not use solely automated decisions producing legal or similarly significant effects about you. You can contact moderation to request review of an access or content decision.
 
-Private, draft, restricted, members-only, removed or moderated content should not be intentionally indexed.
+Access controls, password hashing and other safeguards help protect information. No online service can promise absolute security. Please report suspected account compromise to [SUPPORT EMAIL]. Uploaded images can contain metadata; remove information you do not want to share before uploading.
 
-The Platform should clearly distinguish public from restricted visibility.
+## 9. Browser storage, age and changes
 
-## 6. Private and draft media
+The Cookie Policy describes browser storage and how to change optional choices: [COOKIE SETTINGS LINK]
 
-Private/draft Venue and Event images are delivered through authorization-controlled or signed access.
+Accounts are for people aged **[MINIMUM AGE]** or older. Contact privacy support if you believe an underage person has supplied personal data.
 
-A private page should not rely solely on hiding the page while leaving its files publicly accessible.
-
-YKCircle may use short-lived signed media credentials and protected file routes.
-
-Access/security logs related to protected media may be retained for security/debugging for an appropriately limited period.
-
-## 7. Images and media processing
-
-Uploaded images may be validated, resized, re-encoded, stripped of metadata, scanned for malicious content, moderated and stored privately until authorized/publication state permits access.
-
-Do not expose unnecessary EXIF/location metadata publicly.
-
-If a third-party moderation or media processor is introduced, update this Policy and provider inventory.
-
-## 8. Device location, maps and places
-
-YKCircle may use a mapping/location provider, currently expected to include Google Maps Platform functionality, for address/place search, map display and Venue/Event coordinates.
-
-When an external map is loaded, the map provider may receive technical information such as IP address, device/browser information and interaction data according to its own privacy terms.
-
-Do not request precise browser/mobile location merely to determine timezone.
-
-Precise current location should be requested contextually, for example after the user selects "Near me."
-
-Provide a manual city/location alternative where practical.
-
-## 9. Timezones
-
-YKCircle may detect the device timezone at session/app use and use it to display timestamps.
-
-Venue availability and venue booking are primarily interpreted using the Venue timezone.
-
-Event occurrences keep their canonical Event timezone.
-
-Device timezone, profile city and precise location are separate data points.
-
-## 10. Organizers, Venue sellers and attendee/booking data
-
-When a user joins or buys a ticket to an Event, relevant data may be shared with the Event organizer/seller where necessary to administer the Event.
-
-When an organizer requests a Venue, relevant booking and buyer Billing Profile data may be shared with the Venue organization where necessary to review the booking and issue/manage an invoice.
-
-Do not share private contact information merely because a user can view an Event or Venue.
-
-YKCircle should provide only the information necessary for the relevant role/workflow.
-
-## 11. Payments and connected accounts
-
-Payments may be handled by [PAYMENT PROVIDER].
-
-For organizer ticket sales using a connected-account/direct-charge architecture:
-
-- payment is created on the organizer's connected Payment Account;
-- the provider may collect KYC/identity/bank information directly;
-- YKCircle receives limited account/payment status needed to operate ticketing;
-- YKCircle does not need to store raw KYC documents merely because the provider verifies the seller.
-
-Payment providers may act as independent controllers for some processing.
-
-Payment-provider privacy information: [PAYMENT PROVIDER PRIVACY LINK]
-
-## 12. YKCircle purchases
-
-If a user purchases a YKCircle subscription or platform service, YKCircle processes selected buyer Billing Profile, order/subscription details, tax data, provider payment reference, invoice/accounting information, and cancellation/withdrawal records where applicable.
-
-## 13. Venue invoices
-
-Venue-issued invoices stored through YKCircle may contain personal data of the Venue seller and organizer/buyer.
-
-Access must be limited to authorized seller users, the buyer and authorized YKCircle administrators where necessary.
-
-Issued financial records may need to be retained after ordinary account/content deletion.
-
-## 14. Seller/trader information
-
-For paid Event sellers and commercial Venue providers, YKCircle may process/display information necessary to identify the seller and comply with consumer/marketplace obligations.
-
-Depending on applicable law and YKCircle's size/status, YKCircle may request additional trader verification information.
-
-Do not publicly display full private Billing Profile data; use a dedicated public seller-information view.
-
-## 15. Fraud, trust and platform compliance
-
-YKCircle may process account, Event, Venue, payment-status, device/network and activity signals to prevent fake Events, fraudulent ticket sales, payment abuse, impersonation, account takeover, spam and circumvention of restrictions.
-
-Where required, YKCircle may preserve data for investigation, claims, reporting or legal compliance.
-
-## 16. Service providers and subprocessors
-
-YKCircle may use service providers for hosting/storage, email, authentication/security, maps/location, payment processing, analytics, error monitoring, support and media processing.
-
-Maintain/publish an accurate provider list rather than inventing one.
-
-Subprocessor/provider list: [SUBPROCESSOR LIST URL]
-
-## 17. International transfers
-
-If personal data is transferred outside the EEA, YKCircle will use an applicable GDPR transfer mechanism where required, such as an adequacy decision or appropriate contractual safeguards.
-
-## 18. Retention
-
-Retention must be based on actual purpose and legal requirements.
-
-Separate categories should include active account data, deleted/anonymized account data, public/private content, messages, Event participation, Venue booking records, security/protected-media logs, moderation reports/appeals, fraud records, marketing consent, payment references and issued invoices/accounting records.
-
-YKCircle accounting records that qualify as Swedish accounting information may need to be kept for the statutory accounting retention period.
-
-Do not automatically delete issued invoices merely because an account, Event or Venue is deleted.
-
-Venue sellers remain responsible for their own legal accounting obligations for invoices issued in their name.
-
-Do not retain unrelated personal data indefinitely.
-
-## 19. Account deletion
-
-Users should be able to initiate account deletion from settings.
-
-Deletion should revoke sessions, remove/deactivate public profile, delete/anonymize eligible content/data, revoke private-media access where appropriate, and preserve only data still needed for legal, accounting, security, fraud, dispute or moderation purposes.
-
-Account deletion: [ACCOUNT DELETION URL]
-
-## 20. Your rights
-
-Subject to GDPR and applicable exceptions, users may have rights including information, access, correction, deletion, restriction, portability, objection, withdrawal of consent and objection to direct marketing.
-
-Privacy requests: [PRIVACY REQUEST URL / EMAIL]
-
-In Sweden, the supervisory authority is Integritetsskyddsmyndigheten (IMY).
-
-## 21. Cookies and similar technologies
-
-See the Cookie and Similar Technologies Policy.
-
-Cookie settings: [COOKIE SETTINGS LINK]
-
-## 22. Security
-
-YKCircle should use appropriate technical and organizational safeguards including secure authentication, RBAC/object-level authorization, encryption in transit, secret management, input/file validation, rate limiting, protected private media, secure payment-provider integrations, webhook verification, audit logging, backups and dependency/security updates.
-
-No system can guarantee absolute security.
-
-## 23. Minors
-
-Current minimum age: **[MINIMUM AGE]**.
-
-Do not enable younger users until dedicated privacy/safety requirements have been reviewed.
-
-## 24. Changes
-
-Material changes will be communicated where required.
-
-Privacy notices should not be framed as consent when consent is not the applicable lawful basis.
-
-## 25. Contact
-
-[PRIVACY EMAIL]
+This notice will be updated when actual processing changes. Material changes will be brought to your attention. A privacy notice explains processing; it does not make consent the basis for every use of your information.

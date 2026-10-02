@@ -236,6 +236,7 @@ export class Database {
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_registrations (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL,
+        selected_food_options JSON NULL,
         user_id INT UNSIGNED NULL, attendee_name VARCHAR(160) NULL, attendee_email VARCHAR(255) NULL, attendee_phone VARCHAR(40) NULL, status ENUM('Pending', 'Confirmed', 'Cancelled', 'Attended', 'Declined', 'Withdrawn') NOT NULL DEFAULT 'Pending', payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY event_user_unique (event_id, user_id), INDEX (user_id),
@@ -268,6 +269,7 @@ export class Database {
       )`);
       await this.pool.execute(`CREATE TABLE IF NOT EXISTS event_participants (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, event_id INT UNSIGNED NOT NULL,
+        selected_food_options JSON NULL,
         user_id INT UNSIGNED NULL, participant_name VARCHAR(160) NOT NULL, participant_phone VARCHAR(40) NULL,
         status ENUM('Pending', 'Attended', 'No Show') NOT NULL DEFAULT 'Pending', payment_status ENUM('Not Required', 'Payment Required', 'Paid') NOT NULL DEFAULT 'Payment Required',
         participant_email VARCHAR(255) NULL, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

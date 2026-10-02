@@ -50,16 +50,24 @@ test('serves public API resources and validates unsubscribe requests', async (t)
 
   const legalIndex = await fetch(`${baseUrl}/api/legal-documents`);
   const legalDocuments = await legalIndex.json();
-  assert.equal(legalDocuments.length, 9);
+  assert.equal(legalDocuments.length, 4);
   for (const item of legalDocuments) {
     const page = await fetch(`${baseUrl}/${item.slug}`);
     assert.equal(page.status, 200, `${item.slug} must be public`);
     assert.match(await page.text(), /Current version:/);
   }
-  const venueTerms = await fetch(`${baseUrl}/venue-terms`);
-  const venueTermsHtml = await venueTerms.text();
-  assert.match(venueTermsHtml, /<pre><code>Seller:/);
-  assert.doesNotMatch(venueTermsHtml, /```text/);
+  for (const slug of ['organizer-terms', 'venue-terms', 'tickets-refunds', 'paid-services', 'marketplace-transparency', 'paid_services_terms', 'organizer_terms']) {
+    assert.equal((await fetch(baseUrl + '/api/legal-documents/' + slug)).status, 404, slug + ' must not be published');
+    assert.equal((await fetch(baseUrl + '/' + slug)).status, 404);
+  }
+  const operator = await (await fetch(baseUrl + '/api/operator')).json();
+  assert.equal('organizationNumber' in operator, false);
+  assert.equal('vatNumber' in operator, false);
+  for (const route of ['/operator', '/company', '/terms', '/privacy']) {
+    const html = await (await fetch(baseUrl + route)).text();
+    assert.doesNotMatch(html, /href="\/(?:paid-services|tickets-refunds|organizer-terms|venue-terms|marketplace-transparency)"/);
+    assert.doesNotMatch(html, /Organisation number|VAT number|Company information/);
+  }
 
   const invalid = await fetch(`${baseUrl}/api/email/unsubscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'invalid', reason: 'Unknown' }) });
   assert.equal(invalid.status, 400);

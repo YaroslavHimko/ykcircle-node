@@ -32,11 +32,8 @@ test('legal contact links are clickable and account deletion points to the profi
   assert.match(privacy.content, /\[https:\/\/preview\.ykcircle\.test\/profile\]\(https:\/\/preview\.ykcircle\.test\/profile\)/);
   assert.match(privacy.content, /\(mailto:privacy@ykcircle\.test\)/);
   assert.doesNotMatch(privacy.content, /settings\/privacy/);
-  const terms = await legalDocument('organizer-terms', config());
-  assert.match(terms.content, /\(https:\/\/preview\.ykcircle\.test\/contact\)/);
-  const paid = await legalDocument('paid-services', config());
-  assert.match(paid.content, /Not available until YKCircle paid services are launched/);
-  assert.doesNotMatch(paid.content, /account\/billing\/withdrawal/);
+  assert.equal(await legalDocument('organizer-terms', config()), null);
+  assert.equal(await legalDocument('paid-services', config()), null);
 });
 
 test('manager and invitation emails use reachable routes, preserving configured queries', async () => {
