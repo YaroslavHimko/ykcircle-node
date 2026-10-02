@@ -102,6 +102,7 @@ test('escapes personal data and URL-encodes tokens in transactional emails', asy
   await service.sendVerification('person@example.test', '<Admin>', 'a token&value');
 
   assert.match(calls[0].html, /Hi &lt;Admin&gt;/);
-  assert.match(calls[0].html, /token=a%20token%26value/);
+  const verificationLink = calls[0].html.match(/href="([^"]*verify-email[^"]*)"/)[1].replaceAll('&amp;', '&');
+  assert.equal(new URL(verificationLink).searchParams.get('token'), 'a token&value');
   assert.match(calls[0].subject, /Yk <Circle>/);
 });

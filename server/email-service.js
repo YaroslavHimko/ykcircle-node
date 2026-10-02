@@ -1,3 +1,4 @@
+import { actionUrl } from './urls.js';
 import { logoImage } from './branding.js';
 import nodemailer from 'nodemailer';
 import crypto from 'node:crypto';
@@ -29,8 +30,9 @@ const senderAddress = (value, name, fallback) => {
 };
 
 export class EmailService {
-  constructor({ smtp, domain, brandName, noReplyFrom, verificationUrl, passwordResetUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, unsubscribeUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, replyTo, privacyReplyTo, database }) {
+  constructor({ smtp, domain, siteUrl, brandName, noReplyFrom, verificationUrl, passwordResetUrl, managerEventUrl, eventDetailsUrl, invitationResponseUrl, groupInvitationUrl, unsubscribeEndpointUrl, unsubscribeSecret, notificationFrom, invitationFrom, replyTo, privacyReplyTo, database }) {
     this.domain = domain;
+    this.siteUrl = siteUrl || `https://${domain}`;
     this.brandName = brandName;
     const senderName = !brandName || brandName === domain ? 'YKCircle' : brandName;
     this.noReplyFrom = senderAddress(noReplyFrom, senderName, `notifications@${domain}`);
@@ -46,7 +48,6 @@ export class EmailService {
     this.notificationFrom = senderAddress(notificationFrom, `${senderName} Events`, `notifications@${domain}`);
     this.invitationFrom = senderAddress(invitationFrom, `${senderName} Invitations`, `notifications@${domain}`);
     this.database = database;
-    this.unsubscribeUrl = unsubscribeUrl;
     this.unsubscribeEndpointUrl = unsubscribeEndpointUrl;
     this.unsubscribeSecret = unsubscribeSecret;
     this.mailer = this.createMailer(smtp.verification);
@@ -64,7 +65,7 @@ export class EmailService {
       if (rows[0]?.marketingOptIn) allowed.push(email);
     }
     if (!allowed.length) return { accepted: [], rejected: recipients, suppressed: true };
-    const unsubscribeLink = `${this.unsubscribeEndpointUrl}?token=${encodeURIComponent(this.unsubscribeToken(allowed[0]))}`;
+    const unsubscribeLink = actionUrl(this.unsubscribeEndpointUrl, { query: { token: this.unsubscribeToken(allowed[0]) } });
     return this.sendMail(this.notificationMailer, { ...message, from: this.noReplyFrom, to: allowed, text: `${message.text || ''}\n\nUnsubscribe from marketing emails: ${unsubscribeLink}`, html: `${brandEmailHtml(message.html)}<p><a href="${escapeHtml(unsubscribeLink)}">Unsubscribe from marketing emails</a></p>` });
   }
 
@@ -79,14 +80,14 @@ export class EmailService {
 
   layout(content, subtitle = '') {
     const brandName = escapeHtml(this.brandName);
-    const brandUrl = `https://${this.domain}`;
+    const brandUrl = this.siteUrl;
     return `<div style="margin:0;background:#f8f5f1;padding:40px 16px;font-family:Arial,sans-serif;color:#251e18"><div style="max-width:600px;margin:auto;background:#fffdfa;border:1px solid #dfd2c7;border-radius:4px;overflow:hidden"><div style="height:6px;background:#c94b1b"></div><div style="background:#f8f5f1;border-bottom:1px solid #dfd2c7;padding:28px 32px"><a href="${escapeHtml(brandUrl)}" style="font-family:Georgia,serif;font-size:24px;font-weight:700;letter-spacing:-0.3px;color:#c94b1b;text-decoration:none">${brandName}</a>${subtitle ? `<div style="color:#76675e;font-size:13px;margin-top:8px">${subtitle}</div>` : ''}</div><div style="padding:36px 32px"><style>h1{font-family:Georgia,serif;color:#251e18;font-size:28px;line-height:1.2;margin:0 0 16px}a{color:#316f68}</style>${content}</div><div style="border-top:1px solid #dfd2c7;padding:20px 32px;font-size:12px;color:#76675e">&copy; ${brandName}</div></div></div>`;
   }
 
   customerLayout(branding, content, subtitle = '') {
     const name = escapeHtml(branding.brandName || branding.managerName || branding.legalName || branding.title || 'Event organizer');
     const logo = logoImage(branding.logoImage);
-    return `<div style="margin:0;background:#f5f5f5;padding:32px 16px;font-family:Arial,sans-serif;color:#202020"><div style="max-width:600px;margin:auto;background:#fff;border:1px solid #ddd"><header style="padding:28px 32px;border-bottom:1px solid #ddd">${logo ? `<img src="cid:customer-logo" alt="${name} logo" width="${Math.round(logo.width * Math.min(240 / logo.width, 88 / logo.height, 1))}" height="${Math.round(logo.height * Math.min(240 / logo.width, 88 / logo.height, 1))}" style="display:block;max-width:100%;object-fit:contain;margin-bottom:16px">` : ''}<div style="font-size:24px;font-weight:700;color:#202020">${name}</div>${subtitle ? `<p style="font-size:13px;color:#666">${escapeHtml(subtitle)}</p>` : ''}</header><div style="padding:28px 32px">${content}</div><footer style="padding:16px 32px;border-top:1px solid #eee;font-size:11px;color:#777">Delivered via <a href="https://${escapeHtml(this.domain)}" style="color:#777">${escapeHtml(this.brandName)}</a></footer></div></div>`;
+    return `<div style="margin:0;background:#f5f5f5;padding:32px 16px;font-family:Arial,sans-serif;color:#202020"><div style="max-width:600px;margin:auto;background:#fff;border:1px solid #ddd"><header style="padding:28px 32px;border-bottom:1px solid #ddd">${logo ? `<img src="cid:customer-logo" alt="${name} logo" width="${Math.round(logo.width * Math.min(240 / logo.width, 88 / logo.height, 1))}" height="${Math.round(logo.height * Math.min(240 / logo.width, 88 / logo.height, 1))}" style="display:block;max-width:100%;object-fit:contain;margin-bottom:16px">` : ''}<div style="font-size:24px;font-weight:700;color:#202020">${name}</div>${subtitle ? `<p style="font-size:13px;color:#666">${escapeHtml(subtitle)}</p>` : ''}</header><div style="padding:28px 32px">${content}</div><footer style="padding:16px 32px;border-top:1px solid #eee;font-size:11px;color:#777">Delivered via <a href="${escapeHtml(this.siteUrl)}" style="color:#777">${escapeHtml(this.brandName)}</a></footer></div></div>`;
   }
 
   sendCustomerMail(mailer, branding, message) {
@@ -103,10 +104,10 @@ export class EmailService {
   }
 
   sendVerification(email, name, token) {
-    const url = `${this.verificationUrl}?token=${encodeURIComponent(token)}`;
+    const url = actionUrl(this.verificationUrl, { query: { token } });
     return this.sendMail(this.mailer, { from: this.noReplyFrom, to: email, subject: `Verify your ${this.brandName} email address`,
       text: `Hi ${name},\n\nVerify your email address by opening this link:\n${url}\n\nThis link expires in 24 hours.`,
-      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Confirm your email address</h1><p style="font-size:16px;line-height:1.6;color:#526078">Thanks for creating your account. Click the button below to verify your email and finish setting up your profile.</p><p style="margin:28px 0"><a href="${url}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Verify my email</a></p><p style="font-size:13px;line-height:1.5;color:#7b879b">This verification link expires in 24 hours. If you did not create this account, you can safely ignore this email.</p>`) });
+      html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Confirm your email address</h1><p style="font-size:16px;line-height:1.6;color:#526078">Thanks for creating your account. Click the button below to verify your email and finish setting up your profile.</p><p style="margin:28px 0"><a href="${escapeHtml(url)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Verify my email</a></p><p style="font-size:13px;line-height:1.5;color:#7b879b">This verification link expires in 24 hours. If you did not create this account, you can safely ignore this email.</p>`) });
   }
 
   async sendTickets(order, orderUrl) {
@@ -132,7 +133,7 @@ export class EmailService {
   }
 
   sendPasswordReset(email, name, token) {
-    const url = `${this.passwordResetUrl}?token=${encodeURIComponent(token)}`;
+    const url = actionUrl(this.passwordResetUrl, { query: { token } });
     return this.sendMail(this.mailer, { from: this.noReplyFrom, to: email, subject: `Reset your ${this.brandName} password`,
       text: `Hi ${name},\n\nReset your password by opening this link:\n${url}\n\nThis link expires in one hour. If you did not request a password reset, you can safely ignore this email.`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Reset your password</h1><p style="font-size:16px;line-height:1.6;color:#526078">We received a request to reset your password. Use the button below to choose a new one.</p><p style="margin:28px 0"><a href="${escapeHtml(url)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Reset password</a></p><p style="font-size:13px;line-height:1.5;color:#7b879b">This link expires in one hour. If you did not request a password reset, you can safely ignore this email.</p>`) });
@@ -187,9 +188,9 @@ export class EmailService {
 
   async sendEventInvitation(email, name, event) {
     if (!await optionalEmailAllowed(this.database, email, 'eventInvitations')) return { accepted: [], rejected: [], suppressed: true };
-    const eventUrl = `${this.eventDetailsUrl.replace(/\/$/, '')}/${event.id}`;
-    const acceptUrl = `${this.invitationResponseUrl}?token=${encodeURIComponent(event.invitationToken)}&action=accept`;
-    const declineUrl = `${this.invitationResponseUrl}?token=${encodeURIComponent(event.invitationToken)}&action=decline`;
+    const eventUrl = actionUrl(this.eventDetailsUrl, { path: [event.id] });
+    const acceptUrl = actionUrl(this.invitationResponseUrl, { query: { token: event.invitationToken, action: 'accept' } });
+    const declineUrl = actionUrl(this.invitationResponseUrl, { query: { token: event.invitationToken, action: 'decline' } });
     const start = formatEventDate(event.startsAt, event.timezone);
     return this.sendCustomerMail(this.invitationMailer, event, { from: this.invitationFrom, to: email, subject: `You are invited to ${event.title}`,
       text: `Hi ${name},\n\nYou have been invited to ${event.title}.\n\nLocation: ${event.location || 'To be announced'}\nStarts: ${start}\n\nConfirm invitation: ${acceptUrl}\nDecline invitation: ${declineUrl}\nView event and register: ${eventUrl}`,
@@ -198,9 +199,8 @@ export class EmailService {
 
   async sendGroupInvitation(email, name, group, token) {
     if (!await optionalEmailAllowed(this.database, email, 'groupInvitations')) return { accepted: [], rejected: [], suppressed: true };
-    const responseUrl = `${this.groupInvitationUrl}?token=${encodeURIComponent(token)}`;
-    const acceptUrl = `${responseUrl}&action=accept`;
-    const declineUrl = `${responseUrl}&action=decline`;
+    const acceptUrl = actionUrl(this.groupInvitationUrl, { query: { token, action: 'accept' } });
+    const declineUrl = actionUrl(this.groupInvitationUrl, { query: { token, action: 'decline' } });
     return this.sendMail(this.invitationMailer, { from: this.invitationFrom, to: email, subject: `You are invited to join ${group.name}`,
       text: `Hi ${name || 'there'},\n\nYou have been invited to join the private group ${group.name}.\n\nAccept invitation: ${acceptUrl}\nDecline invitation: ${declineUrl}\n\nIf you do not yet have an account, register with this email address before accepting.`,
       html: this.layout(`<p style="font-size:17px">Hi ${escapeHtml(name || 'there')},</p><h1>You are invited to a private group</h1><p style="font-size:16px;line-height:1.6;color:#526078">You have been invited to join <strong>${escapeHtml(group.name)}</strong>.</p><p style="font-size:14px;line-height:1.6;color:#526078">If you do not yet have an account, register with this email address before accepting the invitation.</p><p style="margin:28px 0 12px"><a href="${escapeHtml(acceptUrl)}" style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Accept invitation</a></p><p style="margin:12px 0"><a href="${escapeHtml(declineUrl)}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">Decline invitation</a></p>`, 'Private group invitation') });
@@ -208,7 +208,7 @@ export class EmailService {
 
   async sendGroupEventNotification(email, name, group, event) {
     if (!await optionalEmailAllowed(this.database, email, 'groupEventAnnouncements')) return { accepted: [], rejected: [], suppressed: true };
-    const eventUrl = `${this.eventDetailsUrl.replace(/\/$/, '')}/${event.eventId || event.id}`;
+    const eventUrl = actionUrl(this.eventDetailsUrl, { path: [event.eventId || event.id] });
     const start = formatEventDate(event.startsAt, event.timezone);
     const end = event.endsAt ? formatEventDate(event.endsAt, event.timezone) : null;
     return this.sendCustomerMail(this.notificationMailer, event, { from: this.notificationFrom, to: email, subject: `New event in ${group.name}: ${event.title}`,
@@ -216,15 +216,15 @@ export class EmailService {
       html: this.customerLayout(event, `<p style="font-size:17px">Hi ${escapeHtml(name)},</p><h1>New group event</h1><p style="font-size:16px;line-height:1.6;color:#526078"><strong>${escapeHtml(group.name)}</strong> has posted a new event for its members.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px;line-height:1.7"><strong>${escapeHtml(event.title)}</strong><br><span style="color:#526078">${escapeHtml(event.description || 'Event details are available on the event page.')}</span><br><br><strong>Location:</strong> ${escapeHtml(event.location || 'To be announced')}<br><strong>Starts:</strong> ${escapeHtml(start)}${end ? `<br><strong>Ends:</strong> ${escapeHtml(end)}` : ''}</div><p style="margin:28px 0"><a href="${escapeHtml(eventUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View event</a></p>`, 'Group update') });
   }
 
-  async sendManagerRegistrationNotification(email, managerName, customerName, customerEmail, eventTitle, eventId, registrationId) {
+  async sendManagerRegistrationNotification(email, managerName, customerName, customerEmail, eventTitle, eventId) {
     const [owners] = await this.database.execute('SELECT role FROM users WHERE LOWER(email) = LOWER(?)', [email]);
     if (!['organizer', 'venue_owner'].includes(owners[0]?.role)) return;
     const [events] = await this.database.execute('SELECT participation_fee AS fee, brand_name AS brandName, logo_image AS logoImage FROM events WHERE id = ?', [eventId]);
     const branding = { ...events[0], managerName, title: eventTitle };
     const fee = Number(events[0]?.fee) > 0 ? ` Fee: ${Number(events[0].fee).toFixed(2)} SEK.` : '';
-    const registrationUrl = `${this.managerEventUrl.replace(/\/$/, '')}/${eventId}/registrations/${registrationId}`;
+    const registrationUrl = actionUrl(this.managerEventUrl, { path: [eventId], query: { manage: '1' } });
     return this.sendCustomerMail(this.notificationMailer, branding, { from: this.notificationFrom, to: email, subject: `New registration for ${eventTitle}`,
-      text: `Hi ${managerName},\n\n${customerName} (${customerEmail}) has registered for your event: ${eventTitle}.${fee}`,
+      text: `Hi ${managerName},\n\n${customerName} (${customerEmail}) has registered for your event: ${eventTitle}.${fee}\n\nView registrations: ${registrationUrl}`,
       html: this.customerLayout(branding, `<p style="font-size:17px">Hi ${escapeHtml(managerName)},</p><h1>New event registration</h1><p style="font-size:16px;line-height:1.6;color:#526078">A new customer has registered for your event.</p><div style="background:#f8fafc;border-radius:10px;padding:16px;font-size:15px"><strong>Event</strong><br>${escapeHtml(eventTitle)}${Number(events[0]?.fee) > 0 ? `<br><strong>Fee:</strong> ${escapeHtml(Number(events[0].fee).toFixed(2))} SEK` : ''}<br><br><strong>Customer</strong><br>${escapeHtml(customerName)}<br>${escapeHtml(customerEmail)}</div><p style="margin:28px 0"><a href="${escapeHtml(registrationUrl)}" style="display:inline-block;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:9px;padding:14px 22px;font-weight:700">View registration</a></p>`, 'Event management') });
   }
 

@@ -56,7 +56,7 @@ const replacementValues = (config = {}) => {
   '[REPORT URL]': `${siteUrl}/report`,
   '[APPEAL URL]': `${siteUrl}/appeal`,
   '[PRIVACY REQUEST URL / EMAIL]': privacyEmail,
-  '[ACCOUNT DELETION URL]': `${siteUrl}/settings/privacy`,
+  '[ACCOUNT DELETION URL]': `${siteUrl}/profile`,
   '[COOKIE SETTINGS LINK]': `${siteUrl}/cookies`,
   '[SUBPROCESSOR LIST URL]': `${siteUrl}/subprocessors`,
   '[WITHDRAWAL FUNCTION URL]': configured(legal.withdrawalFunctionUrl, 'Not available until YKCircle paid services are launched'),
@@ -70,8 +70,16 @@ const replacementValues = (config = {}) => {
   };
 };
 
+const contactLink = (value) => {
+  const text = String(value);
+  if (/^https?:\/\/[^\s]+$/i.test(text) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
+    const href = (text.includes('://') ? text : `mailto:${text}`).replace(/[()[\]]/g, character => `%${character.charCodeAt(0).toString(16)}`);
+    return `[${text.replace(/[\[\]]/g, '')}](${href})`;
+  }
+  return text;
+};
 const renderContent = (content, config) => Object.entries(replacementValues(config))
-  .reduce((rendered, [token, value]) => rendered.replaceAll(token, value), content);
+  .reduce((rendered, [token, value]) => rendered.replaceAll(token, () => contactLink(value)), content);
 
 export const legalDocument = async (slug, config = null) => {
   const document = documents.find((candidate) => candidate.slug === slug || candidate.documentType === slug);

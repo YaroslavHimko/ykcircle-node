@@ -32,7 +32,7 @@ const legalHtml = (markdown) => {
       continue;
     }
     if (codeLines) { codeLines.push(rawLine); continue; }
-    const line = escapeHtml(rawLine);
+    const line = escapeHtml(rawLine).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/gi, '<a href="$2">$1</a>');
     if (line.startsWith('# ')) { closeList(); html.push(`<h1>${line.slice(2)}</h1>`); continue; }
     if (line.startsWith('## ')) { closeList(); html.push(`<h2>${line.slice(3)}</h2>`); continue; }
     if (line.startsWith('### ')) { closeList(); html.push(`<h3>${line.slice(4)}</h3>`); continue; }

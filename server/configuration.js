@@ -1,3 +1,5 @@
+import { webUrl } from './urls.js';
+
 const ftpConfig = ({ host, user, password, uploadPath, publicUrl, tlsServername, secure, timeoutMs }) => ({
   host,
   user,
@@ -63,11 +65,11 @@ export class Configuration {
       paymentProviderPrivacyUrl: process.env.PAYMENT_PROVIDER_PRIVACY_URL ?? legalValues.paymentProviderPrivacyUrl ?? null,
       billingSupportEmail: process.env.BILLING_SUPPORT_EMAIL ?? legalValues.billingSupportEmail ?? `billing@${domain}`,
       ticketSupportEmail: process.env.TICKET_SUPPORT_EMAIL ?? legalValues.ticketSupportEmail ?? this.operator.supportEmail,
-      ticketSupportUrl: process.env.TICKET_SUPPORT_URL ?? legalValues.ticketSupportUrl ?? null,
+      ticketSupportUrl: process.env.TICKET_SUPPORT_URL ?? legalValues.ticketSupportUrl ?? `${siteUrl}/contact`,
       venueSupportEmail: process.env.VENUE_SUPPORT_EMAIL ?? legalValues.venueSupportEmail ?? this.operator.supportEmail,
-      venueSupportUrl: process.env.VENUE_SUPPORT_URL ?? legalValues.venueSupportUrl ?? null,
-      organizerSupportUrl: process.env.ORGANIZER_SUPPORT_URL ?? legalValues.organizerSupportUrl ?? null,
-      businessSupportUrl: process.env.BUSINESS_SUPPORT_URL ?? legalValues.businessSupportUrl ?? null,
+      venueSupportUrl: process.env.VENUE_SUPPORT_URL ?? legalValues.venueSupportUrl ?? `${siteUrl}/contact`,
+      organizerSupportUrl: process.env.ORGANIZER_SUPPORT_URL ?? legalValues.organizerSupportUrl ?? `${siteUrl}/contact`,
+      businessSupportUrl: process.env.BUSINESS_SUPPORT_URL ?? legalValues.businessSupportUrl ?? `${siteUrl}/contact`,
       withdrawalFunctionUrl: process.env.WITHDRAWAL_FUNCTION_URL ?? legalValues.withdrawalFunctionUrl ?? null,
       analyticsProviders: process.env.ANALYTICS_PROVIDERS ?? legalValues.analyticsProviders ?? null,
       marketingProviders: process.env.MARKETING_PROVIDERS ?? legalValues.marketingProviders ?? null,
@@ -113,15 +115,17 @@ export class Configuration {
       urls: {
         verification: process.env.EMAIL_VERIFICATION_URL || emailUrls.verification || values.emailVerificationUrl || `${siteUrl}/verify-email`,
         passwordReset: process.env.PASSWORD_RESET_URL || emailUrls.passwordReset || values.passwordResetUrl || `${siteUrl}/reset-password`,
-        managerEvent: process.env.MANAGER_EVENT_URL || emailUrls.managerEvent || values.managerEventUrl || `${siteUrl}/manager/events`,
+        managerEvent: process.env.MANAGER_EVENT_URL || emailUrls.managerEvent || values.managerEventUrl || `${siteUrl}/events`,
         eventDetails: process.env.EVENT_DETAILS_URL || emailUrls.eventDetails || values.eventDetailsUrl || `${siteUrl}/events`,
         invitationResponse: process.env.INVITATION_RESPONSE_URL || emailUrls.invitationResponse || values.invitationResponseUrl || `${siteUrl}/invitation-response`,
         groupInvitation: process.env.GROUP_INVITATION_URL || emailUrls.groupInvitation || values.groupInvitationUrl || `${siteUrl}/group-invitation`,
         login: process.env.LOGIN_URL || emailUrls.login || values.loginUrl || `${siteUrl}/login`,
-        unsubscribe: process.env.UNSUBSCRIBE_URL || emailUrls.unsubscribe || values.unsubscribeUrl || `${siteUrl}/unsubscribe`,
         unsubscribeEndpoint: process.env.UNSUBSCRIBE_ENDPOINT_URL || emailUrls.unsubscribeEndpoint || values.unsubscribeEndpointUrl || `${apiUrl}/api/email/unsubscribe`,
       },
     };
+
+    for (const [label, value] of Object.entries({ SITE_URL: siteUrl, API_URL: apiUrl, ...this.email.urls })) webUrl(value, label);
+    for (const [label, value] of Object.entries(this.legal)) if (label.endsWith('Url') && value) webUrl(value, label);
 
     const ftpValues = values.ftp || {};
     const profile = ftpValues.profilePictures || values.ftpProfilePictures;
