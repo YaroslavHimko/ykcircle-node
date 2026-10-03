@@ -6,6 +6,7 @@
 	"scripts": {
 		"start": "node server/index.js",
 		"dev": "node --watch server/index.js",
+		"smtp:check": "node scripts/check-smtp.js",
 		"test": "node --test",
 		"test:coverage": "node --test --experimental-test-coverage"
 	},
