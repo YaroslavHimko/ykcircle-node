@@ -12,16 +12,18 @@ server cannot override pipeline values. Do not add deployment values to these fi
 
 ## Local development
 
-`.env.example` is a credential-free template. `.env` is ignored by Git and contains
-local defaults. Set a separate random `AUTH_SECRET` and local service credentials
-before starting locally:
+`.env.example` is a credential-free template. `.env` is the private, Git-ignored
+local runtime configuration. Use a separate random `AUTH_SECRET` for local sessions.
+Start the API with:
 
 ```sh
-node --env-file=.env server/index.js
+npm run dev
 ```
 
-`npm start` does not automatically load `.env`. Never copy staging or production
-credentials into either template. Production requires explicit `DOMAIN`, `SITE_URL`,
+`npm run dev` loads `.env`; `npm start` uses only the process environment. Keep
+credentials out of `.env.example` and JavaScript configuration files. If `.env`
+uses staging services, local operations affect that shared staging database,
+mailbox and upload storage. Production requires explicit `DOMAIN`, `SITE_URL`,
 and `API_URL`; development URL defaults point to localhost.
 
 ## Deployment variable groups
