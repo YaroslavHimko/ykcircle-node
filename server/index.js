@@ -142,7 +142,16 @@ const start = async () => {
   ticketTimer.unref();
   void recoverTickets();
 
-  const server = app.listen(config.runtime.port, () => console.log(`API listening on port ${config.runtime.port}`));
+  const server = app.listen(config.runtime.port, () => {
+    console.log(`API listening on port ${config.runtime.port}`);
+    // Run once per process, only when requested. A diagnostic failure must not
+    // prevent the API from starting or stop it from serving requests.
+    if (process.env.SMTP_DIAGNOSTICS === 'true') {
+      void import('./smtp-diagnostics.js')
+        .then(({ checkSmtpConnection }) => checkSmtpConnection(config.email.smtp))
+        .catch(error => console.error('SMTP diagnostic failed:', error.message));
+    }
+  });
   const shutdown = () => { clearInterval(ticketTimer); server.close(async () => { await database.close(); process.exit(0); }); };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
