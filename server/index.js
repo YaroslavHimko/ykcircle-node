@@ -4,6 +4,7 @@ import cors from 'cors';
 import { Database } from './database.js';
 import { EmailService } from './email-service.js';
 import { Configuration } from './configuration.js';
+import configurationValues from './config.js';
 import { Queries } from './queries.js';
 import { Api } from './api.js';
 import { FtpService } from './ftp-service.js';
@@ -24,17 +25,8 @@ const securityHeaders = (req, res, next) => {
   next();
 };
 
-const loadConfiguration = async () => {
-  try {
-    return (await import('./config.local.js')).default;
-  } catch (error) {
-    if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error;
-    return (await import('./config.js')).default;
-  }
-};
-
 const start = async () => {
-  const config = new Configuration(await loadConfiguration());
+  const config = new Configuration(configurationValues);
   console.info('Google Maps configuration:', {
     enabled: config.runtime.maps.enabled,
     browserApiKeyPresent: Boolean(config.runtime.maps.browserApiKey),
