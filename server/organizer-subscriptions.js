@@ -215,16 +215,30 @@ export class OrganizerSubscriptions {
       s.provider_customer_id AS providerCustomerId, s.provider_subscription_id AS providerSubscriptionId
       FROM platform_subscriptions s JOIN platform_products p ON p.id=s.product_id LEFT JOIN users u ON u.id=s.subscriber_user_id
       LEFT JOIN organizations o ON o.id=s.subscriber_organization_id ORDER BY s.updated_at DESC LIMIT 500`);
-    const [entitlements] = await this.database.execute(`SELECT e.id, e.user_id AS userId, e.organization_id AS organizationId, COALESCE(o.name,u.name) AS customerName,
+    const [entitlements] = await this.database.execute(`SELECT e.id, e.user_id AS userId, e.organization_id AS organizationId, COALESCE(o.name,u.name) AS customerName, u.email,
       e.feature, e.source_type AS source, e.source_id AS sourceId, e.starts_at AS startsAt, e.ends_at AS endsAt, e.revoked_at AS revokedAt
       FROM platform_entitlements e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN organizations o ON o.id=e.organization_id WHERE e.feature=? ORDER BY e.id DESC LIMIT 1000`, [PUBLISH_EVENT]);
     return { subscriptions, entitlements };
   }
-  async grant({ owner, source = 'admin', endsAt, reason }, actorId) {
+  async grant({ owner, email, source = 'admin', endsAt, reason }, actorId) {
     if (!['admin', 'early_access', 'promotion', 'partner', 'grandfathered', 'trial'].includes(source) || typeof reason !== 'string' || !reason.trim() || reason.length > 1000 || !endsAt || !Number.isFinite(Date.parse(endsAt)) || Date.parse(endsAt) <= Date.now()) throw accessError('INVALID_GRANT', 'A reason, allowed access source, and future expiry are required.', 422);
+    if (email !== undefined) {
+      if (owner != null) throw accessError('INVALID_GRANT', 'Provide an email address or an organizer, not both.', 422);
+      if (typeof email !== 'string' || email.trim().length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) throw accessError('INVALID_EMAIL', 'Enter a valid account email address.', 422);
+      email = email.trim().toLowerCase();
+    } else {
+      // Legacy clients and organization grants must specify the recipient.
+      // Never fall back to granting access to the acting administrator.
+      owner = parseOwner(owner);
+    }
     const connection = await this.database.getConnection();
     try {
       await connection.beginTransaction();
+      if (email !== undefined) {
+        const [users] = await connection.execute('SELECT id FROM users WHERE LOWER(email)=? AND deleted_at IS NULL FOR UPDATE', [email]);
+        if (!users.length) throw accessError('USER_NOT_FOUND', 'No registered account matches that email address.', 404);
+        owner = { type: 'user', id: Number(users[0].id) };
+      }
       const [result] = await connection.execute(`INSERT INTO platform_entitlements (user_id, organization_id, feature, source_type, ends_at) VALUES (?, ?, ?, ?, ?)`, [owner.type === 'user' ? owner.id : null, owner.type === 'organization' ? owner.id : null, PUBLISH_EVENT, source, new Date(endsAt)]);
       await this.audit(connection, actorId, 'entitlement_granted', result.insertId, { owner, source, endsAt, reason });
       await connection.commit(); return { id: result.insertId };
@@ -262,6 +276,6 @@ export function registerSubscriptionRoutes(app, { service, authenticate, require
   app.post('/api/subscriptions/portal', authenticate, handler((req) => service.portal(parseOwner(req.body.owner, req.user.id), req.user.id, subscriptionFeature(req.body.feature))));
   app.post('/api/subscriptions/:id/cancel', authenticate, handler((req) => service.cancel(parseOwner(req.body.owner, req.user.id), req.user.id, Number(req.params.id))));
   app.get('/api/admin/subscriptions', authenticate, staff, handler(() => service.customers()));
-  app.post('/api/admin/subscriptions/grants', authenticate, staff, handler((req) => service.grant({ ...req.body, owner: parseOwner(req.body.owner, req.user.id) }, req.user.id)));
+  app.post('/api/admin/subscriptions/grants', authenticate, staff, handler((req) => service.grant(req.body, req.user.id)));
   app.post('/api/admin/subscriptions/grants/:id/revoke', authenticate, staff, handler((req) => service.revoke(Number(req.params.id), req.user.id, req.body.reason)));
 }

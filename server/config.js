@@ -1,6 +1,13 @@
-const domain = process.env.DOMAIN || 'ykcircle.com';
-const siteUrl = (process.env.SITE_URL || `https://${domain}`).replace(/\/$/, '');
-const apiUrl = (process.env.API_URL || `https://api.${domain}`).replace(/\/$/, '');
+// Deployment values come exclusively from the runtime environment.
+// Local defaults must never point to a deployed service.
+if (process.env.NODE_ENV === 'production') {
+  for (const name of ['DOMAIN', 'SITE_URL', 'API_URL']) {
+    if (!process.env[name]?.trim()) throw new Error(`${name} must be set in the deployment environment.`);
+  }
+}
+const domain = process.env.DOMAIN || 'localhost';
+const siteUrl = (process.env.SITE_URL || 'http://localhost:5173').replace(/\/$/, '');
+const apiUrl = (process.env.API_URL || 'http://localhost:3001').replace(/\/$/, '');
 
 export default {
   site: {
