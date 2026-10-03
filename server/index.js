@@ -40,6 +40,14 @@ const start = async () => {
     browserApiKeyPresent: Boolean(config.runtime.maps.browserApiKey),
     requiresConsent: config.runtime.maps.requiresConsent,
   });
+  // Log only connection settings, never SMTP credentials or the full config.
+  console.info('SMTP connection configuration:', {
+    host: config.email.smtp.host,
+    port: config.email.smtp.port,
+    secure: config.email.smtp.secure,
+    node: process.version,
+    openssl: process.versions.openssl,
+  });
   const database = new Database(config.database);
   const queries = new Queries(database);
   const emailService = new EmailService({
