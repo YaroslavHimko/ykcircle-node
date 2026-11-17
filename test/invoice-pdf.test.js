@@ -1,14 +1,40 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { renderInvoicePdf } from '../server/invoice-pdf.js';
+import { renderInvoicePdf } from '../src/services/billing/invoice-pdf.js';
 
 test('renders a structured invoice and preserves Swedish WinAnsi characters', () => {
   const pdf = renderInvoicePdf({
-    id: 12, invoiceNumber: 'YK-2026-12', issueDate: '2026-09-11', dueDate: '2026-10-11', currency: 'SEK', subtotal: 1000, taxAmount: 250, totalAmount: 1250,
-    seller: { legalName: 'Mälarö Möten AB', addressLine1: 'Östra Ågatan 1', postalCode: '111 22', city: 'Stockholm' },
-    buyer: { legalName: 'Åke Öberg', addressLine1: 'Ängsvägen 2', postalCode: '222 33', city: 'Malmö' },
+    id: 12,
+    invoiceNumber: 'YK-2026-12',
+    issueDate: '2026-09-11',
+    dueDate: '2026-10-11',
+    currency: 'SEK',
+    subtotal: 1000,
+    taxAmount: 250,
+    totalAmount: 1250,
+    seller: {
+      legalName: 'Mälarö Möten AB',
+      addressLine1: 'Östra Ågatan 1',
+      postalCode: '111 22',
+      city: 'Stockholm',
+    },
+    buyer: {
+      legalName: 'Åke Öberg',
+      addressLine1: 'Ängsvägen 2',
+      postalCode: '222 33',
+      city: 'Malmö',
+    },
     booking: { venueName: 'Södergården', eventTitle: 'Höstträff' },
-    items: [{ description: 'Lokalkostnad för årsmöte', quantity: 1, unit: 'st', unitPrice: 1000, taxRate: 25, total: 1250 }],
+    items: [
+      {
+        description: 'Lokalkostnad för årsmöte',
+        quantity: 1,
+        unit: 'st',
+        unitPrice: 1000,
+        taxRate: 25,
+        total: 1250,
+      },
+    ],
     paymentInstructions: { bankgiro: '123-4567' },
   });
   const contents = pdf.toString('latin1');
@@ -21,8 +47,19 @@ test('renders a structured invoice and preserves Swedish WinAnsi characters', ()
 
 test('renders booking service periods as Swedish venue-local date and time', () => {
   const pdf = renderInvoicePdf({
-    id: 13, invoiceNumber: 'YK-2026-13', issueDate: '2026-09-11', dueDate: '2026-10-11', currency: 'SEK', subtotal: 1, taxAmount: 0, totalAmount: 1,
-    booking: { startsAt: '2026-09-14T00:00:00.000Z', endsAt: '2026-09-14T23:59:00.000Z', venueTimezone: 'Europe/Stockholm' },
+    id: 13,
+    invoiceNumber: 'YK-2026-13',
+    issueDate: '2026-09-11',
+    dueDate: '2026-10-11',
+    currency: 'SEK',
+    subtotal: 1,
+    taxAmount: 0,
+    totalAmount: 1,
+    booking: {
+      startsAt: '2026-09-14T00:00:00.000Z',
+      endsAt: '2026-09-14T23:59:00.000Z',
+      venueTimezone: 'Europe/Stockholm',
+    },
     items: [],
   });
   const contents = pdf.toString('latin1');

@@ -1,22 +1,37 @@
 {
-	"name": "ykcircle-api",
-	"type": "module",
-	"version": "0.0.0",
-	"private": true,
-	"scripts": {
-		"start": "node server/index.js",
-		"dev": "node --env-file=.env --watch server/index.js",
-		"smtp:check": "node scripts/check-smtp.js",
-		"test": "node --test",
-		"test:coverage": "node --test --experimental-test-coverage"
-	},
-	"dependencies": {
-		"basic-ftp": "^6.2.0",
-		"cors": "^2.8.5",
-		"express": "^4.21.2",
-		"multer": "^2.2.0",
-		"mysql2": "^3.11.5",
-		"nodemailer": "^9.0.4",
-		"stripe": "^22.6.2"
-	}
+  "name": "ykcircle-api",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node src/application/main.js",
+    "dev": "node --env-file=.env --watch src/application/main.js",
+    "smtp:check": "node scripts/check-smtp.js",
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
+    "lint": "eslint src scripts test eslint.config.js",
+    "format": "prettier --write src scripts test package.json .prettierrc.json eslint.config.js README.md CONTRIBUTING.md CONFIGURATION.md docs/ARCHITECTURE.md .github",
+    "format:check": "prettier --check src scripts test package.json .prettierrc.json eslint.config.js README.md CONTRIBUTING.md CONFIGURATION.md docs/ARCHITECTURE.md .github",
+    "check:architecture": "node scripts/check-architecture.js",
+    "check": "npm run lint && npm run format:check && npm run check:architecture && npm test"
+  },
+  "dependencies": {
+    "basic-ftp": "^6.2.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "multer": "^2.2.0",
+    "mysql2": "^3.11.5",
+    "nodemailer": "^9.0.4",
+    "stripe": "^22.6.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "acorn": "8.19.0",
+    "eslint": "10.15.0",
+    "globals": "17.14.0",
+    "prettier": "3.10.1"
+  },
+  "engines": {
+    "node": ">=24.11.1 <25"
+  }
 }

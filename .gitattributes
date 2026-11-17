@@ -1,0 +1,11 @@
+*.js text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+README.md text eol=lf
+CONTRIBUTING.md text eol=lf
+CONFIGURATION.md text eol=lf
+docs/ARCHITECTURE.md text eol=lf
+.editorconfig text eol=lf
+.prettierignore text eol=lf
+.node-version text eol=lf
+.gitignore text eol=lf

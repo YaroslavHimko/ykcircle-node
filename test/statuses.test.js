@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { EVENT_STATUSES, isEventStatus } from '../server/event-status.js';
-import { INVITATION_STATUSES, isInvitationStatus } from '../server/invitation-status.js';
-import { PARTICIPANT_STATUSES, isParticipantStatus } from '../server/participant-status.js';
-import { REGISTRATION_STATUSES, isRegistrationStatus } from '../server/registration-status.js';
-import { EMAIL_UNSUBSCRIBE_REASONS } from '../server/email-unsubscribe-reasons.js';
+import { EVENT_STATUSES, isEventStatus } from '../src/domain/events/event-status.js';
+import { INVITATION_STATUSES, isInvitationStatus } from '../src/domain/events/invitation-status.js';
+import {
+  PARTICIPANT_STATUSES,
+  isParticipantStatus,
+} from '../src/domain/events/participant-status.js';
+import {
+  REGISTRATION_STATUSES,
+  isRegistrationStatus,
+} from '../src/domain/events/registration-status.js';
+import { EMAIL_UNSUBSCRIBE_REASONS } from '../src/domain/accounts/email-unsubscribe-reasons.js';
 
 const statusModules = [
   [EVENT_STATUSES, isEventStatus],

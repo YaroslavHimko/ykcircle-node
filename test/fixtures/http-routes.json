@@ -1,0 +1,1252 @@
+[
+  {
+    "path": "/api/payment-webhooks/stripe",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/payment-webhooks/stripe/subscriptions",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/payment-webhooks/stripe/thin",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/health",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/event-statuses",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/registration-statuses",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/invitation-statuses",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/participant-statuses",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/legal-documents",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/legal-documents/:slug",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": ["/api/operator", "/api/company"],
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/subprocessors",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/terms",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/privacy",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/community-guidelines",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/cookies",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": ["/operator", "/company"],
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/subprocessors",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/report",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/contact",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/appeal",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/event-categories",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/event-types",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/timezones",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/email/unsubscribe-reasons",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/email/unsubscribe",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/email/unsubscribe",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/uploads/test/:filename",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/invitations/respond",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/legal-readiness",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/legal-documents/:slug/accept",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/uploads/test/:filename",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/uploads/test/:filename",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/media/venue/:token/:filename",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/media/venue/:filename",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/media/event/:token/:filename",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/media/event/:filename",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/maps/places-activity",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/reports",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/uploads/test/:filename",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/media/group/:token/:filename",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/media/group/:filename",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/uploads/test/:filename",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/product-configuration",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/admin/configuration",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/my/article-access",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/subscriptions/options",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/subscriptions/me",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/subscriptions/checkout",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/subscriptions/portal",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/subscriptions/:id/cancel",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/admin/subscriptions",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/subscriptions/grants",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/subscriptions/grants/:id/revoke",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/maps/config",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/events/drafts",
+    "methods": ["post"],
+    "handlers": 6
+  },
+  {
+    "path": "/api/groups/:id/events/drafts",
+    "methods": ["post"],
+    "handlers": 5
+  },
+  {
+    "path": "/api/events/:id/cover",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/schedule",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id",
+    "methods": ["patch"],
+    "handlers": 5
+  },
+  {
+    "path": "/api/events/:id/publish",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venue-types",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/venue-event-types",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/venue-amenities",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/organizations",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/organizations/:id",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/organizations/:id",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/my/organizations",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/organizations/:id/members/:userId",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/account/payments-overview",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/me/billing-profiles",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/me/billing-profiles",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/me/billing-profiles/:id",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/me/billing-profiles/:id",
+    "methods": ["delete"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/me/billing-profiles/:id/payment-accounts",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/me/billing-profiles/:id/payment-accounts",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/payment-accounts/:id/onboarding-link",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/payment-accounts/:id/status",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/payment-settings",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/financial-readiness",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/payment-settings",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/ticket-types",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/events/:id/ticket-types/manage",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/ticket-checkout",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/events/:id/ticket-types",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/ticket-checkout",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/me/representative-events",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/check-in",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/representatives",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/representatives",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/representatives/:userId",
+    "methods": ["delete"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/tickets/check-in",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/me/tickets",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/ticket-orders/:id",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/ticket-orders/:id/confirm",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/ticket-orders/:id/resend",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/ticket-orders/:id/checkout",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/ticket-orders/:id/cancel",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/ticket-orders/:id/refunds",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/invoices",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/invoices/:id",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/invoices/:id/download",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/invoices/:id/pdf",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/test-payments",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/invoices/:id/mark-paid",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/platform/products",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/admin/platform/billing-profile",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/platform/products",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/platform/products/:id",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/platform/products/:id/prices",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/platform/orders",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/platform/orders/:id/checkout",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/platform/subscriptions",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/platform/subscriptions/:id/cancel",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venues",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venues/mine",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/my/venues",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/manager/venues",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/venues",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/venues/:id/moderation",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/submit-for-review",
+    "methods": ["post"],
+    "handlers": 4
+  },
+  {
+    "path": "/api/venues",
+    "methods": ["post"],
+    "handlers": 7
+  },
+  {
+    "path": "/api/venues/:id/media",
+    "methods": ["post"],
+    "handlers": 4
+  },
+  {
+    "path": "/api/venues/:id/bookings",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/availability",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venues/:id/calendar",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/booking-settings",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/booking-settings",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/financial-settings",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/financial-settings",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/financial-readiness",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/availability-overrides",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/availability-blocks",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/blocks",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/availability-blocks/:blockId",
+    "methods": ["delete"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/external-reservations",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/reservations",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/external-reservations/:reservationId/cancel",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/availability",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id",
+    "methods": ["patch"],
+    "handlers": 6
+  },
+  {
+    "path": "/api/venues/:id",
+    "methods": ["delete"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/inquiries",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/inquiries",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:venueId/inquiries/:id",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venues/:id/save",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venues/:id/save",
+    "methods": ["delete"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venues/:id/reports",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/my/saved-venues",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venues/:id/similar",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venues/slug/:slug",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venues/:id",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/venue-booking",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/venue-booking",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venue-bookings/:id/billing-readiness",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venue-bookings/:id/external-invoice",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venue-bookings/:id/buyer-billing-profile",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venue-bookings/:id/external-invoice",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venue-bookings/:id/external-invoice/mark-paid",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/venue-booking/cancel",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venue-bookings/:id",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/venue-bookings/:id/messages",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/venue-bookings/:id/messages",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/registrations",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/auth/register",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/auth/resend-verification",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/auth/forgot-password",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/auth/reset-password",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/auth/verify-email",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/auth/login",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/auth/profile/email-preferences",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/auth/profile/email-preferences",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/auth/profile",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/auth/profile/picture",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/auth/profile/marketing-preferences",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/auth/profile/timezone-preference",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/auth/export",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/auth/profile",
+    "methods": ["delete"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/admin/contact-messages",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/users/:id/role",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/users",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/manager/users",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/manager/users/:id/role",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/reports",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/reports/:id",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/admin/moderation/decisions",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/appeals",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/admin/appeals/:id",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/article-categories",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/articles",
+    "methods": ["get"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/articles/:slug",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/my/articles",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/articles",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/articles/:id",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/articles/:id/status",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/articles/:id/cover",
+    "methods": ["post"],
+    "handlers": 4
+  },
+  {
+    "path": "/api/articles/:id/media",
+    "methods": ["post"],
+    "handlers": 4
+  },
+  {
+    "path": "/api/articles/:articleId/media/:mediaId",
+    "methods": ["delete"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/groups",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/my/groups",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/my/groups/managed",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/group-invitations/respond",
+    "methods": ["post"],
+    "handlers": 1
+  },
+  {
+    "path": "/api/groups/:id/invitations",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/groups/:id/invitations",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/groups/:id/cover",
+    "methods": ["post"],
+    "handlers": 4
+  },
+  {
+    "path": "/api/groups/:id",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:id/threads",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:id/threads",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:groupId/threads/:threadId/messages",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:groupId/threads/:threadId/messages",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:groupId/threads/:threadId",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:id",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/groups/:id",
+    "methods": ["delete"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/groups/:id/join",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:id/membership",
+    "methods": ["delete"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:id/members",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/groups/:id/members",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/groups/:id/members/:userId",
+    "methods": ["delete"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/rating",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/rating",
+    "methods": ["put"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/threads",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/threads",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:eventId/threads/:threadId/messages",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:eventId/threads/:threadId/messages",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:eventId/threads/:threadId",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id",
+    "methods": ["delete"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/my/events",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/my/attending-events",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/invitations",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:eventId/invitations/:invitationId/resend",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/invitations",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:eventId/invitations/:invitationId/status",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/status",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/status",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/followups",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/followups/:audience",
+    "methods": ["put"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/followups/:audience/send",
+    "methods": ["post"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/registrations",
+    "methods": ["post"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/my/registrations",
+    "methods": ["get"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:eventId/withdraw",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/registrations/:id/withdraw",
+    "methods": ["patch"],
+    "handlers": 2
+  },
+  {
+    "path": "/api/events/:id/participants",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/events/:id/registrations",
+    "methods": ["get"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/participants/:id/status",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/participants/:id/payment-status",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/registrations/:id/payment-status",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/registrations/:id/status",
+    "methods": ["patch"],
+    "handlers": 3
+  },
+  {
+    "path": "/api/contact",
+    "methods": ["post"],
+    "handlers": 2
+  }
+]

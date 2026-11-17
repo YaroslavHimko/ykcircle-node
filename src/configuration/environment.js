@@ -1,0 +1,190 @@
+// Deployment values come exclusively from the runtime environment.
+// Local defaults must never point to a deployed service.
+if (process.env.NODE_ENV === 'production') {
+  for (const name of ['DOMAIN', 'SITE_URL', 'API_URL']) {
+    if (!process.env[name]?.trim())
+      throw new Error(`${name} must be set in the deployment environment.`);
+  }
+}
+const domain = process.env.DOMAIN || 'localhost';
+const siteUrl = (process.env.SITE_URL || 'http://localhost:5173').replace(/\/$/, '');
+const apiUrl = (process.env.API_URL || 'http://localhost:3001').replace(/\/$/, '');
+
+export default {
+  site: {
+    domain,
+    siteUrl,
+    apiUrl,
+    brandName: process.env.BRAND_NAME || domain,
+  },
+  operator: {
+    name: process.env.PLATFORM_OPERATOR_NAME,
+    email: process.env.PLATFORM_OPERATOR_EMAIL || process.env.SUPPORT_EMAIL || `support@${domain}`,
+    privacyEmail: process.env.PRIVACY_EMAIL || `privacy@${domain}`,
+    supportEmail: process.env.SUPPORT_EMAIL || `support@${domain}`,
+    moderationEmail: process.env.MODERATION_EMAIL || `moderation@${domain}`,
+    country: process.env.PLATFORM_COUNTRY || 'Sweden',
+    organisationNumber: process.env.PLATFORM_ORGANISATION_NUMBER || null,
+    vatNumber: process.env.PLATFORM_VAT_NUMBER || null,
+    registeredAddress: process.env.PLATFORM_REGISTERED_ADDRESS || null,
+  },
+  legal: {
+    paymentProvider: process.env.PAYMENT_PROVIDER || null,
+    paymentProviderPrivacyUrl: process.env.PAYMENT_PROVIDER_PRIVACY_URL || null,
+    billingSupportEmail: process.env.BILLING_SUPPORT_EMAIL || `billing@${domain}`,
+    ticketSupportEmail:
+      process.env.TICKET_SUPPORT_EMAIL || process.env.SUPPORT_EMAIL || `support@${domain}`,
+    ticketSupportUrl: process.env.TICKET_SUPPORT_URL || `${siteUrl}/contact`,
+    venueSupportEmail:
+      process.env.VENUE_SUPPORT_EMAIL || process.env.SUPPORT_EMAIL || `support@${domain}`,
+    venueSupportUrl: process.env.VENUE_SUPPORT_URL || `${siteUrl}/contact`,
+    organizerSupportUrl: process.env.ORGANIZER_SUPPORT_URL || `${siteUrl}/contact`,
+    businessSupportUrl: process.env.BUSINESS_SUPPORT_URL || `${siteUrl}/contact`,
+    withdrawalFunctionUrl: process.env.WITHDRAWAL_FUNCTION_URL || null,
+    analyticsProviders: process.env.ANALYTICS_PROVIDERS || null,
+    marketingProviders: process.env.MARKETING_PROVIDERS || null,
+    cookieInventory: process.env.COOKIE_INVENTORY || null,
+    // Keep this raw. Configuration validates optional JSON safely so an
+    // incomplete deployment value cannot prevent the API from starting.
+    subprocessors: process.env.SUBPROCESSORS_JSON || null,
+    directChargeVerified: process.env.PAYMENT_DIRECT_CHARGE_VERIFIED === 'true',
+  },
+  database: {
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    port: Number(process.env.DB_PORT || 3306),
+  },
+  email: {
+    replyTo: process.env.EMAIL_REPLY_TO || process.env.SUPPORT_EMAIL || `support@${domain}`,
+    smtp: {
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: process.env.SMTP_SECURE === 'true',
+      // Shared SMTP login for all automatic emails; per-stream overrides are optional.
+      transactional: {
+        user: process.env.SMTP_USER || `notifications@${domain}`,
+        password: process.env.SMTP_PASSWORD,
+      },
+      verification: {
+        user: process.env.SMTP_VERIFICATION_USER,
+        password: process.env.SMTP_VERIFICATION_PASSWORD,
+      },
+      notification: {
+        user: process.env.NOTIFICATION_USER || process.env.APPLICATION_NOTIFICATION_USER,
+        password:
+          process.env.NOTIFICATION_PASSWORD || process.env.APPLICATION_NOTIFICATION_PASSWORD,
+      },
+      invitation: { user: process.env.INVITATION_USER, password: process.env.INVITATION_PASSWORD },
+    },
+    from: {
+      noReply: process.env.NO_REPLY_FROM || `notifications@${domain}`,
+      notification:
+        process.env.NOTIFICATION_FROM ||
+        process.env.APPLICATION_NOTIFICATION_FROM ||
+        `notifications@${domain}`,
+      invitation: process.env.INVITATION_FROM || `notifications@${domain}`,
+    },
+    urls: {
+      verification: process.env.EMAIL_VERIFICATION_URL || `${siteUrl}/verify-email`,
+      passwordReset: process.env.PASSWORD_RESET_URL || `${siteUrl}/reset-password`,
+      managerEvent: process.env.MANAGER_EVENT_URL || `${siteUrl}/events`,
+      eventDetails: process.env.EVENT_DETAILS_URL || `${siteUrl}/events`,
+      invitationResponse: process.env.INVITATION_RESPONSE_URL || `${siteUrl}/invitation-response`,
+      groupInvitation: process.env.GROUP_INVITATION_URL || `${siteUrl}/group-invitation`,
+      login: process.env.LOGIN_URL || `${siteUrl}/login`,
+      unsubscribeEndpoint:
+        process.env.UNSUBSCRIBE_ENDPOINT_URL || `${apiUrl}/api/email/unsubscribe`,
+    },
+  },
+  ftp: {
+    profilePictures: {
+      host: process.env.FTP_PROFILE_HOST || process.env.FTP_PROFILE_IP,
+      user: process.env.FTP_PROFILE_USERNAME,
+      password: process.env.FTP_PROFILE_PASSWORD,
+      uploadPath: process.env.FTP_PROFILE_UPLOAD_PATH,
+      publicUrl: process.env.FTP_PROFILE_PUBLIC_URL || `${apiUrl}/uploads/profile-pictures`,
+      tlsServername: process.env.FTP_PROFILE_TLS_SERVERNAME,
+      secure: process.env.FTP_PROFILE_SECURE === 'true',
+      timeoutMs: Number(process.env.FTP_PROFILE_TIMEOUT_MS || 30000),
+    },
+    events: {
+      host:
+        process.env.FTP_EVENT_HOST ||
+        process.env.FTP_HOST ||
+        process.env.FTP_HOSTNAME ||
+        process.env.FTP_IP,
+      user: process.env.FTP_EVENT_USERNAME,
+      password: process.env.FTP_EVENT_PASSWORD,
+      uploadPath: process.env.FTP_EVENT_UPLOAD_PATH,
+      publicUrl: process.env.FTP_EVENT_PUBLIC_URL || `${apiUrl}/uploads/event-covers`,
+      tlsServername: process.env.FTP_EVENT_TLS_SERVERNAME || process.env.FTP_TLS_SERVERNAME,
+      secure: process.env.FTP_EVENT_SECURE === 'true',
+      timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
+    },
+    venues: {
+      host:
+        process.env.FTP_VENUE_HOST ||
+        process.env.FTP_HOST ||
+        process.env.FTP_HOSTNAME ||
+        process.env.FTP_IP,
+      user: process.env.FTP_VENUE_USERNAME,
+      password: process.env.FTP_VENUE_PASSWORD,
+      uploadPath: process.env.FTP_VENUE_UPLOAD_PATH,
+      publicUrl: process.env.FTP_VENUE_PUBLIC_URL || `${apiUrl}/uploads/venue-images`,
+      tlsServername: process.env.FTP_VENUE_TLS_SERVERNAME || process.env.FTP_TLS_SERVERNAME,
+      secure: process.env.FTP_VENUE_SECURE === 'true',
+      timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
+    },
+    groups: {
+      host:
+        process.env.FTP_GROUP_HOST ||
+        process.env.FTP_HOST ||
+        process.env.FTP_HOSTNAME ||
+        process.env.FTP_IP,
+      user: process.env.FTP_GROUP_USERNAME,
+      password: process.env.FTP_GROUP_PASSWORD,
+      uploadPath: process.env.FTP_GROUP_UPLOAD_PATH,
+      publicUrl: process.env.FTP_GROUP_PUBLIC_URL || `${apiUrl}/uploads/group-covers`,
+      tlsServername: process.env.FTP_GROUP_TLS_SERVERNAME || process.env.FTP_TLS_SERVERNAME,
+      secure: process.env.FTP_GROUP_SECURE === 'true',
+      timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
+    },
+    articles: {
+      host:
+        process.env.FTP_ARTICLE_HOST ||
+        process.env.FTP_HOST ||
+        process.env.FTP_HOSTNAME ||
+        process.env.FTP_IP,
+      user: process.env.FTP_ARTICLE_USERNAME,
+      password: process.env.FTP_ARTICLE_PASSWORD,
+      uploadPath: process.env.FTP_ARTICLE_UPLOAD_PATH,
+      publicUrl: process.env.FTP_ARTICLE_PUBLIC_URL || `${apiUrl}/uploads/article-images`,
+      tlsServername: process.env.FTP_ARTICLE_TLS_SERVERNAME || process.env.FTP_TLS_SERVERNAME,
+      secure: process.env.FTP_ARTICLE_SECURE === 'true',
+      timeoutMs: Number(process.env.FTP_TIMEOUT_MS || 30000),
+    },
+  },
+  runtime: {
+    uploadsDir: process.env.UPLOADS_DIR || 'uploads',
+    port: Number(process.env.PORT || 3001),
+    authSecret: process.env.AUTH_SECRET,
+    maps: {
+      enabled: process.env.GOOGLE_MAPS_ENABLED === 'true',
+      browserApiKey: process.env.GOOGLE_MAPS_BROWSER_API_KEY,
+      serverApiKey: process.env.GOOGLE_MAPS_SERVER_API_KEY,
+      requiresConsent: process.env.GOOGLE_MAPS_REQUIRES_CONSENT === 'true',
+    },
+    stripe: {
+      secretKey: process.env.STRIPE_SECRET_KEY,
+      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+      subscriptionWebhookSecret: process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET,
+    },
+    minimumUserAge: Number(process.env.MINIMUM_USER_AGE || 18),
+    paidEventsEnabled: process.env.ENABLE_PAID_EVENTS === 'true',
+    paidServicesEnabled: process.env.ENABLE_PAID_SERVICES === 'true',
+    legalRequireReady: process.env.LEGAL_REQUIRE_READY === 'true',
+  },
+};
