@@ -1,14 +1,15 @@
 # Runtime configuration
 
-The API starts with `server/config.js`, which reads runtime environment variables.
+The API starts at `src/application/main.js`, reads runtime environment variables
+through `src/configuration/environment.js`, and validates them in
+`src/configuration/configuration.js`.
 Inject staging and production settings through the deployment pipeline's environment
 and secret settings. They must be available to the running Node process, not only
 to a build step. Restart the API after changing them. Run deployed instances with
 `NODE_ENV=production` and `npm start`.
 
-`server/config.local.js` and `server/config.example.js` only re-export the shared
-configuration. Startup does not load `config.local.js`, so an old copy left on a
-server cannot override pipeline values. Do not add deployment values to these files.
+Startup does not load local JavaScript configuration files. Use `.env.example` as
+the local template and provide deployment values through the process environment.
 
 ## Local development
 

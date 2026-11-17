@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
 import express from 'express';
-import { Api } from '../server/api.js';
-import { EMAIL_UNSUBSCRIBE_REASONS } from '../server/email-unsubscribe-reasons.js';
+import { Api } from '../src/api/api.js';
+import { EMAIL_UNSUBSCRIBE_REASONS } from '../src/domain/accounts/email-unsubscribe-reasons.js';
 
 const ftp = (path) => ({ publicPath: () => path });
 
@@ -16,24 +16,60 @@ test('serves public API resources and validates unsubscribe requests', async (t)
   const app = express();
   app.use(express.json());
   new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: 'a sufficiently random test secret that exceeds thirty two characters', maps: { enabled: true, browserApiKey: 'restricted-browser-key', serverApiKey: 'must-not-leak', requiresConsent: true } } },
-    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+    config: {
+      site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' },
+      runtime: {
+        authSecret: 'a sufficiently random test secret that exceeds thirty two characters',
+        maps: {
+          enabled: true,
+          browserApiKey: 'restricted-browser-key',
+          serverApiKey: 'must-not-leak',
+          requiresConsent: true,
+        },
+      },
+    },
+    database: {},
+    queries,
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: ftp('/uploads/events'),
+    venueFtpService: ftp('/uploads/venue-images'),
+    groupFtpService: ftp('/uploads/groups'),
+    articleFtpService: ftp('/uploads/articles'),
   }).register(app);
   const server = await new Promise((resolve) => {
     const listener = app.listen(0, () => resolve(listener));
   });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  t.after(
+    () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
   const health = await fetch(`${baseUrl}/health`);
   assert.deepEqual(await health.json(), { status: 'ok' });
 
   const statuses = await fetch(`${baseUrl}/api/event-statuses`);
-  assert.deepEqual(await statuses.json(), ['Draft', 'Published', 'Cancelled', 'Completed', 'Archived']);
+  assert.deepEqual(await statuses.json(), [
+    'Draft',
+    'Published',
+    'Cancelled',
+    'Completed',
+    'Archived',
+  ]);
 
   const maps = await fetch(`${baseUrl}/api/maps/config`);
-  assert.deepEqual(await maps.json(), { enabled: true, browserApiKey: 'restricted-browser-key', requiresConsent: true });
-  assert.equal(maps.headers.get('cache-control'), 'public, max-age=300, stale-while-revalidate=86400');
+  assert.deepEqual(await maps.json(), {
+    enabled: true,
+    browserApiKey: 'restricted-browser-key',
+    requiresConsent: true,
+  });
+  assert.equal(
+    maps.headers.get('cache-control'),
+    'public, max-age=300, stale-while-revalidate=86400',
+  );
   assert.equal(maps.headers.get('x-robots-tag'), 'noindex, noarchive');
 
   const communityPosts = await fetch(`${baseUrl}/api/community/posts`);
@@ -56,8 +92,20 @@ test('serves public API resources and validates unsubscribe requests', async (t)
     assert.equal(page.status, 200, `${item.slug} must be public`);
     assert.match(await page.text(), /Current version:/);
   }
-  for (const slug of ['organizer-terms', 'venue-terms', 'tickets-refunds', 'paid-services', 'marketplace-transparency', 'paid_services_terms', 'organizer_terms']) {
-    assert.equal((await fetch(baseUrl + '/api/legal-documents/' + slug)).status, 404, slug + ' must not be published');
+  for (const slug of [
+    'organizer-terms',
+    'venue-terms',
+    'tickets-refunds',
+    'paid-services',
+    'marketplace-transparency',
+    'paid_services_terms',
+    'organizer_terms',
+  ]) {
+    assert.equal(
+      (await fetch(baseUrl + '/api/legal-documents/' + slug)).status,
+      404,
+      slug + ' must not be published',
+    );
     assert.equal((await fetch(baseUrl + '/' + slug)).status, 404);
   }
   const operator = await (await fetch(baseUrl + '/api/operator')).json();
@@ -65,15 +113,26 @@ test('serves public API resources and validates unsubscribe requests', async (t)
   assert.equal('vatNumber' in operator, false);
   for (const route of ['/operator', '/company', '/terms', '/privacy']) {
     const html = await (await fetch(baseUrl + route)).text();
-    assert.doesNotMatch(html, /href="\/(?:paid-services|tickets-refunds|organizer-terms|venue-terms|marketplace-transparency)"/);
+    assert.doesNotMatch(
+      html,
+      /href="\/(?:paid-services|tickets-refunds|organizer-terms|venue-terms|marketplace-transparency)"/,
+    );
     assert.doesNotMatch(html, /Organisation number|VAT number|Company information/);
   }
 
-  const invalid = await fetch(`${baseUrl}/api/email/unsubscribe`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: 'invalid', reason: 'Unknown' }) });
+  const invalid = await fetch(`${baseUrl}/api/email/unsubscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: 'invalid', reason: 'Unknown' }),
+  });
   assert.equal(invalid.status, 400);
   assert.equal(preferenceCalls.length, 0);
 
-  const retiredContentType = await fetch(`${baseUrl}/api/reports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entityType: 'community_post' }) });
+  const retiredContentType = await fetch(`${baseUrl}/api/reports`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entityType: 'community_post' }),
+  });
   assert.equal(retiredContentType.status, 422);
 });
 
@@ -83,57 +142,149 @@ test('returns a backend-selected next available interval for an unavailable date
   const queries = {
     initialize: async () => {},
     calculateVenueAvailability: async (_venueId, from, to) => ({
-      venueId: 9, timezone: 'Europe/Stockholm', bookingMode: 'hourly', slotIncrementMinutes: 30,
-      minimumBookingMinutes: 60, maximumBookingMinutes: null, bufferBeforeMinutes: 0, bufferAfterMinutes: 0,
-      dates: from === to
-        ? [{ date: from, availabilityStatus: 'unavailable', availableIntervals: [], unavailableIntervals: [{ start: '10:00', end: '11:00' }] }]
-        : [{ date: nextDate, availabilityStatus: 'available', availableIntervals: [{ start: '10:00', end: '12:00' }] }],
+      venueId: 9,
+      timezone: 'Europe/Stockholm',
+      bookingMode: 'hourly',
+      slotIncrementMinutes: 30,
+      minimumBookingMinutes: 60,
+      maximumBookingMinutes: null,
+      bufferBeforeMinutes: 0,
+      bufferAfterMinutes: 0,
+      dates:
+        from === to
+          ? [
+              {
+                date: from,
+                availabilityStatus: 'unavailable',
+                availableIntervals: [],
+                unavailableIntervals: [{ start: '10:00', end: '11:00' }],
+              },
+            ]
+          : [
+              {
+                date: nextDate,
+                availabilityStatus: 'available',
+                availableIntervals: [{ start: '10:00', end: '12:00' }],
+              },
+            ],
     }),
   };
   const app = express();
   app.use(express.json());
   new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: 'a sufficiently random test secret that exceeds thirty two characters', maps: {} } },
-    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+    config: {
+      site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' },
+      runtime: {
+        authSecret: 'a sufficiently random test secret that exceeds thirty two characters',
+        maps: {},
+      },
+    },
+    database: {},
+    queries,
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: ftp('/uploads/events'),
+    venueFtpService: ftp('/uploads/venue-images'),
+    groupFtpService: ftp('/uploads/groups'),
+    articleFtpService: ftp('/uploads/articles'),
   }).register(app);
-  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, () => resolve(listener));
+  });
+  t.after(
+    () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
 
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/venues/9/availability?date=${requestedDate}`);
+  const response = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/venues/9/availability?date=${requestedDate}`,
+  );
   assert.equal(response.status, 200);
   const availability = await response.json();
   assert.deepEqual(availability.slots, []);
   assert.deepEqual(availability.unavailableSlots, [{ startTime: '10:00', endTime: '11:00' }]);
-  assert.deepEqual(availability.nextAvailable, { date: nextDate, startTime: '10:00', endTime: '12:00' });
+  assert.deepEqual(availability.nextAvailable, {
+    date: nextDate,
+    startTime: '10:00',
+    endTime: '12:00',
+  });
 });
 
 test('returns invoices available to the signed-in user', async (t) => {
   const secret = 'a sufficiently random test secret that exceeds thirty two characters';
   const queries = {
     initialize: async () => {},
-    findUserById: async () => ({ id: 7, role: 'venue_owner', sessionVersion: 1, isEmailConfirmed: true }),
-    invoicesForViewer: async (userId, role, options) => [{ id: 19, sellerOrganizationName: 'Harbor Hall', status: 'issued', requestedBy: { userId, role, options } }],
+    findUserById: async () => ({
+      id: 7,
+      role: 'venue_owner',
+      sessionVersion: 1,
+      isEmailConfirmed: true,
+    }),
+    invoicesForViewer: async (userId, role, options) => [
+      {
+        id: 19,
+        sellerOrganizationName: 'Harbor Hall',
+        status: 'issued',
+        requestedBy: { userId, role, options },
+      },
+    ],
   };
   const app = express();
   app.use(express.json());
   new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
-    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+    config: {
+      site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' },
+      runtime: { authSecret: secret, maps: {} },
+    },
+    database: {},
+    queries,
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: ftp('/uploads/events'),
+    venueFtpService: ftp('/uploads/venue-images'),
+    groupFtpService: ftp('/uploads/groups'),
+    articleFtpService: ftp('/uploads/articles'),
   }).register(app);
-  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, () => resolve(listener));
+  });
+  t.after(
+    () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const payload = Buffer.from(
+    JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 }),
+  ).toString('base64url');
   const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
 
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/invoices`, { headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/invoices`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), [{ id: 19, sellerOrganizationName: 'Harbor Hall', status: 'issued', requestedBy: { userId: 7, role: 'venue_owner', options: { venueId: null } } }]);
+  assert.deepEqual(await response.json(), [
+    {
+      id: 19,
+      sellerOrganizationName: 'Harbor Hall',
+      status: 'issued',
+      requestedBy: { userId: 7, role: 'venue_owner', options: { venueId: null } },
+    },
+  ]);
 
-  const venueResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/invoices?venueId=4`, { headers: { Authorization: `Bearer ${token}` } });
+  const venueResponse = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/invoices?venueId=4`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
   assert.equal(venueResponse.status, 200);
   assert.equal((await venueResponse.json())[0].requestedBy.options.venueId, 4);
 
-  const invalidVenueResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/invoices?venueId=invalid`, { headers: { Authorization: `Bearer ${token}` } });
+  const invalidVenueResponse = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/invoices?venueId=invalid`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
   assert.equal(invalidVenueResponse.status, 422);
 });
 
@@ -142,24 +293,56 @@ test('does not publish an event until its selected venue confirms the booking', 
   let publishCalled = false;
   const queries = {
     initialize: async () => {},
-    findUserById: async () => ({ id: 7, role: 'manager', sessionVersion: 1, isEmailConfirmed: true }),
+    findUserById: async () => ({
+      id: 7,
+      role: 'manager',
+      sessionVersion: 1,
+      isEmailConfirmed: true,
+    }),
     richEvent: async () => ({ id: 12, venue: { id: 4 }, venueBookingStatus: 'requested' }),
-    publishRichEvent: async () => { publishCalled = true; },
+    publishRichEvent: async () => {
+      publishCalled = true;
+    },
   };
   const app = express();
   app.use(express.json());
   new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
-    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+    config: {
+      site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' },
+      runtime: { authSecret: secret, maps: {} },
+    },
+    database: {},
+    queries,
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: ftp('/uploads/events'),
+    venueFtpService: ftp('/uploads/venue-images'),
+    groupFtpService: ftp('/uploads/groups'),
+    articleFtpService: ftp('/uploads/articles'),
   }).register(app);
-  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, () => resolve(listener));
+  });
+  t.after(
+    () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const payload = Buffer.from(
+    JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 }),
+  ).toString('base64url');
   const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
 
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events/12/publish`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events/12/publish`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
   assert.equal(response.status, 409);
-  assert.deepEqual(await response.json(), { code: 'VENUE_BOOKING_NOT_CONFIRMED', error: 'The venue owner must confirm the booking before this event can be published.' });
+  assert.deepEqual(await response.json(), {
+    code: 'VENUE_BOOKING_NOT_CONFIRMED',
+    error: 'The venue owner must confirm the booking before this event can be published.',
+  });
   assert.equal(publishCalled, false);
 });
 
@@ -168,53 +351,123 @@ test('lets a verified venue owner submit a draft for review without granting app
   const submissions = [];
   const queries = {
     initialize: async () => {},
-    findUserById: async () => ({ id: 7, role: 'venue_owner', sessionVersion: 1, isEmailConfirmed: true }),
-    canManageVenue: async (venueId, userId, role) => venueId === 4 && userId === 7 && role === 'venue_owner',
-    submitVenueForModeration: async (venueId) => { submissions.push(venueId); return true; },
-    venue: async () => ({ id: 4, name: 'Harbor Hall', moderationStatus: 'pending', isActive: true, canManage: true }),
+    findUserById: async () => ({
+      id: 7,
+      role: 'venue_owner',
+      sessionVersion: 1,
+      isEmailConfirmed: true,
+    }),
+    canManageVenue: async (venueId, userId, role) =>
+      venueId === 4 && userId === 7 && role === 'venue_owner',
+    submitVenueForModeration: async (venueId) => {
+      submissions.push(venueId);
+      return true;
+    },
+    venue: async () => ({
+      id: 4,
+      name: 'Harbor Hall',
+      moderationStatus: 'pending',
+      isActive: true,
+      canManage: true,
+    }),
   };
   const app = express();
   app.use(express.json());
   new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
-    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+    config: {
+      site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' },
+      runtime: { authSecret: secret, maps: {} },
+    },
+    database: {},
+    queries,
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: ftp('/uploads/events'),
+    venueFtpService: ftp('/uploads/venue-images'),
+    groupFtpService: ftp('/uploads/groups'),
+    articleFtpService: ftp('/uploads/articles'),
   }).register(app);
-  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, () => resolve(listener));
+  });
+  t.after(
+    () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const payload = Buffer.from(
+    JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 }),
+  ).toString('base64url');
   const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
 
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/venues/4/submit-for-review`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/venues/4/submit-for-review`,
+    { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+  );
   assert.equal(response.status, 200);
   assert.deepEqual(submissions, [4]);
   assert.equal((await response.json()).moderationStatus, 'pending');
 
-  const approval = await fetch(`http://127.0.0.1:${server.address().port}/api/admin/venues/4/moderation`, {
-    method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ moderationStatus: 'approved' }),
-  });
+  const approval = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/admin/venues/4/moderation`,
+    {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ moderationStatus: 'approved' }),
+    },
+  );
   assert.equal(approval.status, 403);
   assert.deepEqual(await approval.json(), { error: 'Admin access required.' });
 });
 
-test('returns a signed cover URL for an owner\'s draft in the events list', async (t) => {
+test("returns a signed cover URL for an owner's draft in the events list", async (t) => {
   const secret = 'a sufficiently random test secret that exceeds thirty two characters';
   const queries = {
     initialize: async () => {},
-    findUserById: async () => ({ id: 7, role: 'organizer', sessionVersion: 1, isEmailConfirmed: true }),
-    eventsForViewer: async () => [{ id: 12, managerId: 7, status: 'Draft', visibility: 'Public', coverImage: 'event-12.png' }],
+    findUserById: async () => ({
+      id: 7,
+      role: 'organizer',
+      sessionVersion: 1,
+      isEmailConfirmed: true,
+    }),
+    eventsForViewer: async () => [
+      { id: 12, managerId: 7, status: 'Draft', visibility: 'Public', coverImage: 'event-12.png' },
+    ],
   };
   const app = express();
   app.use(express.json());
   new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
-    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+    config: {
+      site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' },
+      runtime: { authSecret: secret, maps: {} },
+    },
+    database: {},
+    queries,
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: ftp('/uploads/events'),
+    venueFtpService: ftp('/uploads/venue-images'),
+    groupFtpService: ftp('/uploads/groups'),
+    articleFtpService: ftp('/uploads/articles'),
   }).register(app);
-  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, () => resolve(listener));
+  });
+  t.after(
+    () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const payload = Buffer.from(
+    JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 }),
+  ).toString('base64url');
   const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
 
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events`, { headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   const [event] = await response.json();
   assert.equal(response.status, 200);
   assert.match(event.coverImage, /^\/api\/media\/event\//);
@@ -228,52 +481,120 @@ test('creates a requested venue booking with a timed venue draft', async (t) => 
   let createdDraft;
   const queries = {
     initialize: async () => {},
-    findUserById: async () => ({ id: 7, role: 'organizer', sessionVersion: 1, isEmailConfirmed: true }),
+    findUserById: async () => ({
+      id: 7,
+      role: 'organizer',
+      sessionVersion: 1,
+      isEmailConfirmed: true,
+    }),
     eventLocationVenue: async () => ({ id: 4, timezone: 'UTC' }),
-    createRichEventSeries: async (draft, options) => { createdDraft = draft; bookingOptions = options; return { seriesId: null, eventIds: [12] }; },
+    createRichEventSeries: async (draft, options) => {
+      createdDraft = draft;
+      bookingOptions = options;
+      return { seriesId: null, eventIds: [12] };
+    },
     richEvent: async () => ({ id: 12, title: 'Venue draft', coverImage: null }),
     eventVenueBooking: async () => ({ id: 22, venueId: 4, status: 'requested' }),
   };
   const app = express();
   app.use(express.json());
   new Api({
-    config: { site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' }, runtime: { authSecret: secret, maps: {} } },
-    database: {}, queries, emailService: {}, ftpService: ftp('/uploads/profiles'), eventFtpService: ftp('/uploads/events'), venueFtpService: ftp('/uploads/venue-images'), groupFtpService: ftp('/uploads/groups'), articleFtpService: ftp('/uploads/articles'),
+    config: {
+      site: { brandName: 'Yk Circle', siteUrl: 'https://ykcircle.test' },
+      runtime: { authSecret: secret, maps: {} },
+    },
+    database: {},
+    queries,
+    emailService: {},
+    ftpService: ftp('/uploads/profiles'),
+    eventFtpService: ftp('/uploads/events'),
+    venueFtpService: ftp('/uploads/venue-images'),
+    groupFtpService: ftp('/uploads/groups'),
+    articleFtpService: ftp('/uploads/articles'),
   }).register(app);
-  const server = await new Promise((resolve) => { const listener = app.listen(0, () => resolve(listener)); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  const payload = Buffer.from(JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 })).toString('base64url');
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, () => resolve(listener));
+  });
+  t.after(
+    () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const payload = Buffer.from(
+    JSON.stringify({ id: 7, sessionVersion: 1, exp: Date.now() + 60_000 }),
+  ).toString('base64url');
   const token = `${payload}.${crypto.createHmac('sha256', secret).update(payload).digest('base64url')}`;
 
   const response = await fetch(`http://127.0.0.1:${server.address().port}/api/events/drafts`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z', endsAtUtc: '2026-10-10T12:00:00Z', coverImage: 'http://localhost:3001/api/media/event/signed-token/event-12.png' }),
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Venue draft',
+      locationType: 'venue',
+      venueId: 4,
+      startsAtUtc: '2026-10-10T10:00:00Z',
+      endsAtUtc: '2026-10-10T12:00:00Z',
+      coverImage: 'http://localhost:3001/api/media/event/signed-token/event-12.png',
+    }),
   });
   assert.equal(response.status, 201);
   assert.equal(createdDraft.coverImage, 'event-12.png');
-  assert.deepEqual(bookingOptions, { bookVenue: true, role: 'organizer', buyerBillingProfileId: undefined });
+  assert.deepEqual(bookingOptions, {
+    bookVenue: true,
+    role: 'organizer',
+    buyerBillingProfileId: undefined,
+  });
   assert.equal((await response.json()).venueBooking.status, 'requested');
 
-  const incompleteTime = await fetch(`http://127.0.0.1:${server.address().port}/api/events/drafts`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z' }),
-  });
+  const incompleteTime = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/events/drafts`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Venue draft',
+        locationType: 'venue',
+        venueId: 4,
+        startsAtUtc: '2026-10-10T10:00:00Z',
+      }),
+    },
+  );
   assert.equal(incompleteTime.status, 422);
   assert.match((await incompleteTime.json()).fields.endsAt, /booking end time/);
 
-  queries.createRichEventSeries = async () => { throw Object.assign(new Error('Conflict'), { code: 'VENUE_UNAVAILABLE' }); };
+  queries.createRichEventSeries = async () => {
+    throw Object.assign(new Error('Conflict'), { code: 'VENUE_UNAVAILABLE' });
+  };
   const conflict = await fetch(`http://127.0.0.1:${server.address().port}/api/events/drafts`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z', endsAtUtc: '2026-10-10T12:00:00Z' }),
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Venue draft',
+      locationType: 'venue',
+      venueId: 4,
+      startsAtUtc: '2026-10-10T10:00:00Z',
+      endsAtUtc: '2026-10-10T12:00:00Z',
+    }),
   });
   assert.equal(conflict.status, 409);
   assert.equal((await conflict.json()).code, 'VENUE_UNAVAILABLE');
 
   let updatedDraft;
-  queries.updateRichEventAndBooking = async (...args) => { updatedDraft = args; return true; };
+  queries.updateRichEventAndBooking = async (...args) => {
+    updatedDraft = args;
+    return true;
+  };
   const update = await fetch(`http://127.0.0.1:${server.address().port}/api/events/12`, {
-    method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: 'Venue draft', locationType: 'venue', venueId: 4, startsAtUtc: '2026-10-10T10:00:00Z', endsAtUtc: '2026-10-10T12:00:00Z' }),
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Venue draft',
+      locationType: 'venue',
+      venueId: 4,
+      startsAtUtc: '2026-10-10T10:00:00Z',
+      endsAtUtc: '2026-10-10T12:00:00Z',
+    }),
   });
   assert.equal(update.status, 200);
   assert.equal(updatedDraft[3].venueId, 4);
